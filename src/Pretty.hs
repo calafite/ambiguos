@@ -44,9 +44,15 @@ prettyWithPrecedence currentPrecedence expression = case expression of
   J ->
     "J"
 
-  Lambda parameter body ->
+  Lambda parameter Nothing body ->
     let bodyText = prettyWithPrecedence TopLevelPrecedence body
         rendered = "\\" <> prettyIdentifier parameter <> " -> " <> bodyText
+    in parenthesizeIf (currentPrecedence > LambdaPrecedence) rendered
+
+  Lambda parameter (Just parameterType) body ->
+    let typeText = prettyWithPrecedence TopLevelPrecedence parameterType
+        bodyText = prettyWithPrecedence TopLevelPrecedence body
+        rendered = "\\(" <> prettyIdentifier parameter <> " : " <> typeText <> ") -> " <> bodyText
     in parenthesizeIf (currentPrecedence > LambdaPrecedence) rendered
 
   Annotation term annotationType ->
