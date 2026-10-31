@@ -1,0 +1,27 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Main (main) where
+
+import qualified Data.Text.IO as TextIO
+import Parser (parseExpression)
+import System.IO (hFlush, stdout)
+import Text.Megaparsec (errorBundlePretty)
+
+main :: IO ()
+main = do
+  putStrLn "Ambiguos Formal Verification System"
+  putStrLn "Enter an expression or 'quit' to terminate."
+  replLoop
+
+replLoop :: IO ()
+replLoop = do
+  putStr "> "
+  hFlush stdout
+  rawInput <- TextIO.getLine
+  if rawInput == "quit"
+    then putStrLn "Terminating session."
+    else do
+      case parseExpression rawInput of
+        Left parseError -> putStrLn (errorBundlePretty parseError)
+        Right abstractSyntaxTree -> print abstractSyntaxTree
+      replLoop
