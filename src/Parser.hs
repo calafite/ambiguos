@@ -78,13 +78,22 @@ parseAnnotation = do
      pure (Annotation termExpression typeExpression)
    ) <|> pure termExpression
 
+parseLambdaParameter :: Parser (Identifier, Maybe Expression)
+parseLambdaParameter =
+  try (Lexer.parentheses $ do
+    parameterName <- Lexer.identifier
+    _ <- Lexer.symbol ":"
+    parameterType <- expressionParser
+    pure (parameterName, Just parameterType))
+  <|> ((\name -> (name, Nothing)) <$> Lexer.identifier)
+
 parseLambda :: Parser Expression
 parseLambda = do
   _ <- Lexer.symbol "\\"
-  parameterName <- Lexer.identifier
+  (parameterName, maybeParameterType) <- parseLambdaParameter
   _ <- Lexer.symbol "->"
   body <- expressionParser
-  pure (Lambda parameterName body)
+  pure (Lambda parameterName maybeParameterType body)
 
 expressionParser :: Parser Expression
 expressionParser = parseLambda <|> parseAnnotation
