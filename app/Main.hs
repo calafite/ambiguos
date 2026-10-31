@@ -5,10 +5,9 @@ module Main (main) where
 import AST (Statement (..))
 import qualified Data.Text.IO as TextIO
 import Evaluation (normalize)
-import Parser (parseStatement)
+import Parser (parseStatement, renderParseError)
 import Pretty (prettyExpression, prettyIdentifier)
 import System.IO (hFlush, stdout)
-import Text.Megaparsec (errorBundlePretty)
 import TypeChecker
   ( Context (..)
   , checkDefinition
@@ -19,7 +18,7 @@ import TypeChecker
 
 main :: IO ()
 main = do
-  putStrLn "Ambiguos Formal Verification System"
+  putStrLn "Ambiguos Formal Verification System (Zero-Dependency Parser)"
   putStrLn "Commands: def <name> : <Type> = <term> | <expr> | quit"
   replLoop emptyContext
 
@@ -33,7 +32,7 @@ replLoop context = do
     else do
       case parseStatement rawInput of
         Left parseError -> do
-          putStrLn (errorBundlePretty parseError)
+          TextIO.putStrLn (renderParseError parseError)
           replLoop context
 
         Right (Definition name declaredType bodyTerm) ->

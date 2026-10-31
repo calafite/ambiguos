@@ -1,110 +1,167 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Parser
-  ( parseExpression
+  ( ParseError (..)
+  , parseExpression
   , parseStatement
+  , renderParseError
   ) where
 
 import AST (Expression (..), Identifier (..), Statement (..))
-import qualified Lexer
+import Control.Applicative (Alternative (..))
 import Data.Text (Text)
-import Data.Void (Void)
-import Text.Megaparsec
+import qualified Data.Text as Text
+import Lexer (LexError, Token (..), renderLexError, tokenize)
 
-type Parser = Parsec Void Text
+data ParseError
+  = ErrorLexical LexError
+  | UnexpectedEndOfInput
+  | ExpectedToken Text Token
+  | UnexpectedToken Token
+  deriving (Eq, Show)
 
-parseVariable :: Parser Expression
-parseVariable = Variable <$> Lexer.identifier
+newtype Parser a = Parser
+  { runParser :: [Token] -> Either ParseError (a, [Token])
+  }
 
-parseUniverse :: Parser Expression
-parseUniverse = Universe <$ Lexer.reservedKeyword "Type"
+instance Functor Parser where
+  fmap f (Parser p) = Parser $ \tokens -> do
+    (res, remaining) <- p tokens
+    pure (f res, remaining)
 
-parseIdentity :: Parser Expression
-parseIdentity = Identity <$ Lexer.reservedKeyword "Id"
+instance Applicative Parser where
+  pure val = Parser $ \tokens -> Right (val, tokens)
+  Parser pf <*> Parser pa = Parser $ \tokens -> do
+    (f, afterF) <- pf tokens
+    (a, afterA) <- pa afterF
+    pure (f a, afterA)
 
-parseReflexivity :: Parser Expression
-parseReflexivity = Reflexivity <$ Lexer.reservedKeyword "refl"
+instance Alternative Parser where
+  empty = Parser $ \_ -> Left UnexpectedEndOfInput
+  Parser p1 <|> Parser p2 = Parser $ \tokens ->
+    case p1 tokens of
+      Right result -> Right result
+      Left _       -> p2 tokens
 
-parseJ :: Parser Expression
-parseJ = J <$ Lexer.reservedKeyword "J"
+instance Monad Parser where
+  Parser p >>= f = Parser $ \tokens -> do
+    (val, remaining) <- p tokens
+    runParser (f val) remaining
+
+peekToken :: Parser (Maybe Token)
+peekToken = Parser $ \tokens -> case tokens of
+  []      -> Right (Nothing, [])
+  (t : _) -> Right (Just t, tokens)
+
+consumeToken :: Parser Token
+consumeToken = Parser $ \tokens -> case tokens of
+  []      -> Left UnexpectedEndOfInput
+  (t : ts) -> Right (t, ts)
+
+expectToken :: Token -> Text -> Parser ()
+expectToken expected description = do
+  t <- consumeToken
+  if t == expected
+    then pure ()
+    else Parser $ \_ -> Left (ExpectedToken description t)
+
+parseIdentifier :: Parser Identifier
+parseIdentifier = do
+  t <- consumeToken
+  case t of
+    TokenIdentifier ident -> pure ident
+    other -> Parser $ \_ -> Left (ExpectedToken "identifier" other)
 
 parseAtomicExpression :: Parser Expression
-parseAtomicExpression =
-  parseUniverse
-    <|> parseIdentity
-    <|> parseReflexivity
-    <|> parseJ
-    <|> parseVariable
-    <|> Lexer.parentheses expressionParser
+parseAtomicExpression = do
+  nextToken <- peekToken
+  case nextToken of
+    Just TokenKeywordType -> consumeToken >> pure Universe
+    Just TokenKeywordId   -> consumeToken >> pure Identity
+    Just TokenKeywordRefl -> consumeToken >> pure Reflexivity
+    Just TokenKeywordJ    -> consumeToken >> pure J
+    Just (TokenIdentifier ident) -> consumeToken >> pure (Variable ident)
+    Just TokenLeftParen -> do
+      consumeToken
+      expr <- expressionParser
+      expectToken TokenRightParen "')'"
+      pure expr
+    Just other -> Parser $ \_ -> Left (UnexpectedToken other)
+    Nothing    -> Parser $ \_ -> Left UnexpectedEndOfInput
 
 parseApplication :: Parser Expression
 parseApplication = do
-  headExpression <- parseAtomicExpression
-  argumentExpressions <- many parseAtomicExpression
-  pure (foldl Application headExpression argumentExpressions)
+  headExpr <- parseAtomicExpression
+  argExprs <- many parseAtomicExpression
+  pure (foldl Application headExpr argExprs)
 
-parseDependentBinder :: Parser (Identifier, Expression)
-parseDependentBinder = Lexer.parentheses $ do
-  parameterName <- Lexer.identifier
-  _ <- Lexer.symbol ":"
-  parameterType <- expressionParser
-  pure (parameterName, parameterType)
+parseDependentArrow :: Parser Expression
+parseDependentArrow = do
+  expectToken TokenLeftParen "'('"
+  parameterName <- parseIdentifier
+  expectToken TokenColon "':'"
+  domainType <- expressionParser
+  expectToken TokenRightParen "')'"
+  expectToken TokenArrow "'->'"
+  codomainType <- expressionParser
+  pure (Pi parameterName domainType codomainType)
+
+parseNonDependentArrow :: Parser Expression
+parseNonDependentArrow = do
+  domain <- parseApplication
+  isArrow <- (True <$ expectToken TokenArrow "'->'") <|> pure False
+  if isArrow
+    then do
+      codomain <- expressionParser
+      pure (Pi (Identifier "_") domain codomain)
+    else pure domain
 
 parseArrowOrApplication :: Parser Expression
 parseArrowOrApplication = parseDependentArrow <|> parseNonDependentArrow
-  where
-    parseDependentArrow = do
-      (parameterName, parameterType) <- try $ do
-        binder <- parseDependentBinder
-        _ <- Lexer.symbol "->"
-        pure binder
-      returnType <- expressionParser
-      pure (Pi parameterName parameterType returnType)
-
-    parseNonDependentArrow = do
-      domainType <- parseApplication
-      (do
-         _ <- Lexer.symbol "->"
-         codomainType <- expressionParser
-         pure (Pi (Identifier "_") domainType codomainType)
-       ) <|> pure domainType
 
 parseAnnotation :: Parser Expression
 parseAnnotation = do
-  termExpression <- parseArrowOrApplication
-  (do
-     _ <- Lexer.symbol ":"
-     typeExpression <- expressionParser
-     pure (Annotation termExpression typeExpression)
-   ) <|> pure termExpression
+  termExpr <- parseArrowOrApplication
+  isAnnotated <- (True <$ expectToken TokenColon "':'") <|> pure False
+  if isAnnotated
+    then do
+      annType <- expressionParser
+      pure (Annotation termExpr annType)
+    else pure termExpr
 
 parseLambdaParameter :: Parser (Identifier, Maybe Expression)
-parseLambdaParameter =
-  try (Lexer.parentheses $ do
-    parameterName <- Lexer.identifier
-    _ <- Lexer.symbol ":"
-    parameterType <- expressionParser
-    pure (parameterName, Just parameterType))
-  <|> ((\name -> (name, Nothing)) <$> Lexer.identifier)
+parseLambdaParameter = parseAnnotatedParameter <|> parseSimpleParameter
+  where
+    parseAnnotatedParameter = do
+      expectToken TokenLeftParen "'('"
+      name <- parseIdentifier
+      expectToken TokenColon "':'"
+      paramType <- expressionParser
+      expectToken TokenRightParen "')'"
+      pure (name, Just paramType)
+
+    parseSimpleParameter = do
+      name <- parseIdentifier
+      pure (name, Nothing)
 
 parseLambda :: Parser Expression
 parseLambda = do
-  _ <- Lexer.symbol "\\"
-  (parameterName, maybeParameterType) <- parseLambdaParameter
-  _ <- Lexer.symbol "->"
+  expectToken TokenBackslash "'\\'"
+  (parameterName, maybeParamType) <- parseLambdaParameter
+  expectToken TokenArrow "'->'"
   body <- expressionParser
-  pure (Lambda parameterName maybeParameterType body)
+  pure (Lambda parameterName maybeParamType body)
 
 expressionParser :: Parser Expression
 expressionParser = parseLambda <|> parseAnnotation
 
 parseDefinition :: Parser Statement
 parseDefinition = do
-  _ <- Lexer.reservedKeyword "def"
-  name <- Lexer.identifier
-  _ <- Lexer.symbol ":"
+  expectToken TokenKeywordDef "'def'"
+  name <- parseIdentifier
+  expectToken TokenColon "':'"
   declaredType <- expressionParser
-  _ <- Lexer.symbol "="
+  expectToken TokenEquals "'='"
   bodyTerm <- expressionParser
   pure (Definition name declaredType bodyTerm)
 
@@ -114,8 +171,32 @@ parseEvaluation = Evaluation <$> expressionParser
 statementParser :: Parser Statement
 statementParser = parseDefinition <|> parseEvaluation
 
-parseExpression :: Text -> Either (ParseErrorBundle Text Void) Expression
-parseExpression = parse (Lexer.spaceConsumer *> expressionParser <* eof) "<input>"
+runCompleteParser :: Parser a -> [Token] -> Either ParseError a
+runCompleteParser parser tokens =
+  case runParser parser tokens of
+    Right (result, []) -> Right result
+    Right (_, unconsumed : _) -> Left (UnexpectedToken unconsumed)
+    Left err -> Left err
 
-parseStatement :: Text -> Either (ParseErrorBundle Text Void) Statement
-parseStatement = parse (Lexer.spaceConsumer *> statementParser <* eof) "<input>"
+parseExpression :: Text -> Either ParseError Expression
+parseExpression input = do
+  tokens <- case tokenize input of
+    Left lexErr -> Left (ErrorLexical lexErr)
+    Right toks  -> Right toks
+  runCompleteParser expressionParser tokens
+
+parseStatement :: Text -> Either ParseError Statement
+parseStatement input = do
+  tokens <- case tokenize input of
+    Left lexErr -> Left (ErrorLexical lexErr)
+    Right toks  -> Right toks
+  runCompleteParser statementParser tokens
+
+renderParseError :: ParseError -> Text
+renderParseError err = case err of
+  ErrorLexical lexErr -> renderLexError lexErr
+  UnexpectedEndOfInput -> "Syntax error: Unexpected end of input."
+  ExpectedToken expected found ->
+    "Syntax error: Expected " <> expected <> ", but found: " <> Text.pack (show found)
+  UnexpectedToken token ->
+    "Syntax error: Unexpected token: " <> Text.pack (show token)

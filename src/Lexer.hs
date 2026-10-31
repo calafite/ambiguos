@@ -1,53 +1,90 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Lexer
-  ( Parser
-  , spaceConsumer
-  , lexeme
-  , symbol
-  , parentheses
-  , reservedKeyword
-  , identifier
+  ( Token (..)
+  , LexError (..)
+  , tokenize
+  , renderLexError
   ) where
 
 import AST (Identifier (..))
+import Data.Char (isAlpha, isAlphaNum, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Void (Void)
-import Text.Megaparsec
-import Text.Megaparsec.Char
-import qualified Text.Megaparsec.Char.Lexer as MegaparsecLexer
 
-type Parser = Parsec Void Text
+data Token
+  = TokenKeywordType
+  | TokenKeywordDef
+  | TokenKeywordId
+  | TokenKeywordRefl
+  | TokenKeywordJ
+  | TokenBackslash
+  | TokenArrow
+  | TokenColon
+  | TokenEquals
+  | TokenLeftParen
+  | TokenRightParen
+  | TokenIdentifier Identifier
+  deriving (Eq, Show)
 
-spaceConsumer :: Parser ()
-spaceConsumer = MegaparsecLexer.space
-  space1
-  (MegaparsecLexer.skipLineComment "--")
-  (MegaparsecLexer.skipBlockCommentNested "{-" "-}")
+data LexError
+  = UnexpectedCharacter Char
+  | UnterminatedBlockComment
+  deriving (Eq, Show)
 
-lexeme :: Parser a -> Parser a
-lexeme = MegaparsecLexer.lexeme spaceConsumer
+tokenize :: Text -> Either LexError [Token]
+tokenize = scanLoop . Text.stripStart
+  where
+    scanLoop remaining
+      | Text.null remaining = Right []
+      | Text.isPrefixOf "--" remaining =
+          let afterComment = Text.dropWhile (/= '\n') remaining
+          in scanLoop (Text.stripStart afterComment)
+      | Text.isPrefixOf "{-" remaining =
+          case skipBlockComment 1 (Text.drop 2 remaining) of
+            Left err -> Left err
+            Right afterBlock -> scanLoop (Text.stripStart afterBlock)
+      | Text.isPrefixOf "->" remaining =
+          (TokenArrow :) <$> scanLoop (Text.stripStart (Text.drop 2 remaining))
+      | otherwise =
+          let headChar = Text.head remaining
+              tailText = Text.tail remaining
+          in case headChar of
+               '\\' -> (TokenBackslash :) <$> scanLoop (Text.stripStart tailText)
+               ':'  -> (TokenColon :) <$> scanLoop (Text.stripStart tailText)
+               '='  -> (TokenEquals :) <$> scanLoop (Text.stripStart tailText)
+               '('  -> (TokenLeftParen :) <$> scanLoop (Text.stripStart tailText)
+               ')'  -> (TokenRightParen :) <$> scanLoop (Text.stripStart tailText)
+               c
+                 | isIdentStart c ->
+                     let (identText, rest) = Text.span isIdentPart remaining
+                         token = classifyIdentifier identText
+                     in (token :) <$> scanLoop (Text.stripStart rest)
+                 | isSpace c ->
+                     scanLoop (Text.stripStart tailText)
+                 | otherwise ->
+                     Left (UnexpectedCharacter c)
 
-symbol :: Text -> Parser Text
-symbol = MegaparsecLexer.symbol spaceConsumer
+    isIdentStart c = isAlpha c || c == '_'
+    isIdentPart c  = isAlphaNum c || c == '_'
 
-parentheses :: Parser a -> Parser a
-parentheses = between (symbol "(") (symbol ")")
+    classifyIdentifier text = case text of
+      "Type" -> TokenKeywordType
+      "def"  -> TokenKeywordDef
+      "Id"   -> TokenKeywordId
+      "refl" -> TokenKeywordRefl
+      "J"    -> TokenKeywordJ
+      _      -> TokenIdentifier (Identifier text)
 
-reservedKeywords :: [Text]
-reservedKeywords = ["Type", "def", "Id", "refl", "J"]
+    skipBlockComment :: Int -> Text -> Either LexError Text
+    skipBlockComment 0 text = Right text
+    skipBlockComment depth text
+      | Text.null text = Left UnterminatedBlockComment
+      | Text.isPrefixOf "{-" text = skipBlockComment (depth + 1) (Text.drop 2 text)
+      | Text.isPrefixOf "-}" text = skipBlockComment (depth - 1) (Text.drop 2 text)
+      | otherwise = skipBlockComment depth (Text.tail text)
 
-reservedKeyword :: Text -> Parser ()
-reservedKeyword keyword = lexeme . try $ do
-  _ <- string keyword
-  notFollowedBy (alphaNumChar <|> char '_')
-
-identifier :: Parser Identifier
-identifier = lexeme . try $ do
-  firstCharacter <- letterChar <|> char '_'
-  remainingCharacters <- many (alphaNumChar <|> char '_')
-  let candidateName = Text.pack (firstCharacter : remainingCharacters)
-  if candidateName `elem` reservedKeywords
-    then fail ("Reserved keyword cannot be used as an identifier: " ++ Text.unpack candidateName)
-    else pure (Identifier candidateName)
+renderLexError :: LexError -> Text
+renderLexError err = case err of
+  UnexpectedCharacter c -> "Lexical error: Unexpected character '" <> Text.singleton c <> "'"
+  UnterminatedBlockComment -> "Lexical error: Unterminated block comment '{- ... -}'"
