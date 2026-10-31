@@ -15,8 +15,8 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
-import qualified Data.Text as Text
 import Evaluation (areDefinitionallyEqual, evaluateWeakHeadNormalForm, normalize)
+import Pretty (prettyExpression)
 import Substitution (freeVariables, freshIdentifier, substitute)
 
 data TypeError
@@ -119,13 +119,13 @@ renderTypeError typeError = case typeError of
     "Unbound variable: '" <> name <> "'"
   TypeMismatch expected actual ->
     "Type mismatch:\n  Expected: "
-      <> Text.pack (show expected)
+      <> prettyExpression expected
       <> "\n  Actual:   "
-      <> Text.pack (show actual)
+      <> prettyExpression actual
   ExpectedFunctionType actual ->
     "Expected a function (Pi) type, but encountered:\n  "
-      <> Text.pack (show actual)
+      <> prettyExpression actual
   CannotSynthesizeType term ->
     "Cannot synthesize type for unannotated expression:\n  "
-      <> Text.pack (show term)
+      <> prettyExpression term
       <> "\nProvide an explicit type annotation: (term : Type)"
