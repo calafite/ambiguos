@@ -29,8 +29,12 @@ freeVariables expression = case expression of
   J ->
     Set.empty
 
-  Lambda parameter body ->
-    Set.delete parameter (freeVariables body)
+  Lambda parameter maybeParameterType body ->
+    let typeFreeVariables = case maybeParameterType of
+          Just parameterType -> freeVariables parameterType
+          Nothing -> Set.empty
+        bodyFreeVariables = Set.delete parameter (freeVariables body)
+    in Set.union typeFreeVariables bodyFreeVariables
 
   Application function argument ->
     Set.union (freeVariables function) (freeVariables argument)
@@ -78,21 +82,27 @@ substitute targetVariable replacementExpression sourceExpression =
         (substitute targetVariable replacementExpression term)
         (substitute targetVariable replacementExpression annotationType)
 
-    Lambda parameter body
-      | parameter == targetVariable -> Lambda parameter body
-      | Set.member parameter replacementFreeVariables ->
-          let freshParameter =
-                freshIdentifier
-                  parameter
-                  (Set.unions
-                    [ replacementFreeVariables
-                    , freeVariables body
-                    , Set.singleton targetVariable
-                    ])
-              renamedBody = substitute parameter (Variable freshParameter) body
-          in Lambda freshParameter (substitute targetVariable replacementExpression renamedBody)
-      | otherwise ->
-          Lambda parameter (substitute targetVariable replacementExpression body)
+    Lambda parameter maybeParameterType body ->
+      let substitutedType = fmap (substitute targetVariable replacementExpression) maybeParameterType
+          typeFreeVariables = case maybeParameterType of
+            Just parameterType -> freeVariables parameterType
+            Nothing -> Set.empty
+      in if parameter == targetVariable
+           then Lambda parameter substitutedType body
+           else if Set.member parameter replacementFreeVariables
+                  then
+                    let freshParameter =
+                          freshIdentifier
+                            parameter
+                            (Set.unions
+                              [ replacementFreeVariables
+                              , freeVariables body
+                              , typeFreeVariables
+                              , Set.singleton targetVariable
+                              ])
+                        renamedBody = substitute parameter (Variable freshParameter) body
+                    in Lambda freshParameter substitutedType (substitute targetVariable replacementExpression renamedBody)
+                  else Lambda parameter substitutedType (substitute targetVariable replacementExpression body)
 
     Pi parameter domain codomain ->
       let substitutedDomain = substitute targetVariable replacementExpression domain
@@ -138,14 +148,20 @@ alphaEquivalent leftExpression rightExpression =
     (Annotation t1 ty1, Annotation t2 ty2) ->
       alphaEquivalent t1 t2 && alphaEquivalent ty1 ty2
 
-    (Lambda param1 body1, Lambda param2 body2)
-      | param1 == param2 ->
-          alphaEquivalent body1 body2
-      | otherwise ->
-          let fresh = freshIdentifier param1 (Set.union (freeVariables body1) (freeVariables body2))
-              renamedBody1 = substitute param1 (Variable fresh) body1
-              renamedBody2 = substitute param2 (Variable fresh) body2
-          in alphaEquivalent renamedBody1 renamedBody2
+    (Lambda param1 type1 body1, Lambda param2 type2 body2) ->
+      let typesMatch = case (type1, type2) of
+            (Nothing, Nothing) -> True
+            (Just t1, Just t2) -> alphaEquivalent t1 t2
+            _ -> False
+      in if not typesMatch
+           then False
+           else if param1 == param2
+                  then alphaEquivalent body1 body2
+                  else
+                    let fresh = freshIdentifier param1 (Set.union (freeVariables body1) (freeVariables body2))
+                        renamedBody1 = substitute param1 (Variable fresh) body1
+                        renamedBody2 = substitute param2 (Variable fresh) body2
+                    in alphaEquivalent renamedBody1 renamedBody2
 
     (Pi param1 dom1 codom1, Pi param2 dom2 codom2)
       | not (alphaEquivalent dom1 dom2) ->
