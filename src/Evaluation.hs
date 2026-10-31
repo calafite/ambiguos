@@ -9,6 +9,14 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Substitution (alphaEquivalent, substitute)
 
+unfoldApplication :: Expression -> (Expression, [Expression])
+unfoldApplication expression = collect expression []
+  where
+    collect (Application function argument) arguments =
+      collect function (argument : arguments)
+    collect headExpression arguments =
+      (headExpression, arguments)
+
 evaluateWeakHeadNormalForm :: Map Identifier Expression -> Expression -> Expression
 evaluateWeakHeadNormalForm environment expression =
   case expression of
@@ -26,11 +34,32 @@ evaluateWeakHeadNormalForm environment expression =
       case evaluateWeakHeadNormalForm environment function of
         Lambda parameter body ->
           evaluateWeakHeadNormalForm environment (substitute parameter argument body)
-        neutralFunction ->
-          Application neutralFunction argument
+        evaluatedFunction ->
+          let combined = Application evaluatedFunction argument
+              (headExpression, arguments) = unfoldApplication combined
+          in case (headExpression, arguments) of
+               (J, _typeA : _x : _motiveP : baseCaseD : _y : proof : remainingArguments) ->
+                 let proofWhnf = evaluateWeakHeadNormalForm environment proof
+                     (proofHead, _) = unfoldApplication proofWhnf
+                 in if proofHead == Reflexivity
+                      then
+                        evaluateWeakHeadNormalForm
+                          environment
+                          (foldl Application baseCaseD remainingArguments)
+                      else combined
+               _ -> combined
 
     Universe ->
       Universe
+
+    Identity ->
+      Identity
+
+    Reflexivity ->
+      Reflexivity
+
+    J ->
+      J
 
     Lambda parameter body ->
       Lambda parameter body
@@ -46,6 +75,15 @@ normalize environment expression =
 
     Universe ->
       Universe
+
+    Identity ->
+      Identity
+
+    Reflexivity ->
+      Reflexivity
+
+    J ->
+      J
 
     Lambda parameter body ->
       Lambda parameter (normalize environment body)
