@@ -35,6 +35,15 @@ prettyWithPrecedence currentPrecedence expression = case expression of
   Universe ->
     "Type"
 
+  Identity ->
+    "Id"
+
+  Reflexivity ->
+    "refl"
+
+  J ->
+    "J"
+
   Lambda parameter body ->
     let bodyText = prettyWithPrecedence TopLevelPrecedence body
         rendered = "\\" <> prettyIdentifier parameter <> " -> " <> bodyText
