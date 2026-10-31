@@ -17,6 +17,9 @@ data Expression
   | Application Expression Expression
   | Pi Identifier Expression Expression
   | Annotation Expression Expression
+  | Identity
+  | Reflexivity
+  | J
   deriving (Eq, Show)
 
 data Statement
