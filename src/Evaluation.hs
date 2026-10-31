@@ -32,7 +32,7 @@ evaluateWeakHeadNormalForm environment expression =
 
     Application function argument ->
       case evaluateWeakHeadNormalForm environment function of
-        Lambda parameter body ->
+        Lambda parameter _ body ->
           evaluateWeakHeadNormalForm environment (substitute parameter argument body)
         evaluatedFunction ->
           let combined = Application evaluatedFunction argument
@@ -61,8 +61,8 @@ evaluateWeakHeadNormalForm environment expression =
     J ->
       J
 
-    Lambda parameter body ->
-      Lambda parameter body
+    Lambda parameter maybeParameterType body ->
+      Lambda parameter maybeParameterType body
 
     Pi parameter domain codomain ->
       Pi parameter domain codomain
@@ -85,8 +85,9 @@ normalize environment expression =
     J ->
       J
 
-    Lambda parameter body ->
-      Lambda parameter (normalize environment body)
+    Lambda parameter maybeParameterType body ->
+      let normalizedType = fmap (normalize environment) maybeParameterType
+      in Lambda parameter normalizedType (normalize environment body)
 
     Application function argument ->
       Application (normalize environment function) (normalize environment argument)
