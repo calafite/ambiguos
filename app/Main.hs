@@ -3,6 +3,7 @@
 module Main (main) where
 
 import qualified Data.Text.IO as TextIO
+import Evaluation (normalize)
 import Parser (parseExpression)
 import System.IO (hFlush, stdout)
 import Text.Megaparsec (errorBundlePretty)
@@ -23,5 +24,7 @@ replLoop = do
     else do
       case parseExpression rawInput of
         Left parseError -> putStrLn (errorBundlePretty parseError)
-        Right abstractSyntaxTree -> print abstractSyntaxTree
+        Right abstractSyntaxTree -> do
+          putStrLn ("Parsed:     " ++ show abstractSyntaxTree)
+          putStrLn ("Normalized: " ++ show (normalize abstractSyntaxTree))
       replLoop
