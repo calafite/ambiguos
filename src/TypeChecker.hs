@@ -154,13 +154,31 @@ synthesize context expression = case expression of
       nonFunctionType ->
         Left (ExpectedFunctionType nonFunctionType)
 
-  Lambda _ _ ->
+  Lambda parameter (Just parameterType) body -> do
+    check context parameterType Universe
+    let extendedContext = extendContextType parameter parameterType context
+    bodyType <- synthesize extendedContext body
+    pure (Pi parameter parameterType bodyType)
+
+  Lambda _ Nothing _ ->
     Left (CannotSynthesizeType expression)
 
 check :: Context -> Expression -> Expression -> Either TypeError ()
 check context expression expectedType =
   case (expression, evaluateWeakHeadNormalForm (contextValues context) expectedType) of
-    (Lambda parameter body, Pi binder domain codomain) -> do
+    (Lambda parameter maybeDeclaredType body, Pi binder domain codomain) -> do
+      case maybeDeclaredType of
+        Just declaredType -> do
+          check context declaredType Universe
+          if areDefinitionallyEqual (contextValues context) declaredType domain
+            then pure ()
+            else
+              Left
+                TypeMismatch
+                  { expectedType = domain
+                  , actualType   = normalize (contextValues context) declaredType
+                  }
+        Nothing -> pure ()
       let targetParameter
             | parameter == binder = parameter
             | Set.member parameter (freeVariables codomain) =
@@ -175,7 +193,7 @@ check context expression expectedType =
             extendContextType targetParameter domain context
       check extendedContext renamedBody substitutedCodomain
 
-    (Lambda _ _, notPiType) ->
+    (Lambda _ _ _, notPiType) ->
       Left (ExpectedFunctionType notPiType)
 
     (otherExpression, expectedTypeWhnf) -> do
