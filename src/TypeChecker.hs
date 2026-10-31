@@ -63,6 +63,60 @@ lookupContext identifier context =
     Nothing ->
       Left (UnboundVariable identifier)
 
+identityType :: Expression
+identityType =
+  Pi (Identifier "A") Universe
+    (Pi (Identifier "_") (Variable (Identifier "A"))
+      (Pi (Identifier "_") (Variable (Identifier "A")) Universe))
+
+reflexivityType :: Expression
+reflexivityType =
+  Pi (Identifier "A") Universe
+    (Pi (Identifier "x") (Variable (Identifier "A"))
+      (Application
+        (Application
+          (Application Identity (Variable (Identifier "A")))
+          (Variable (Identifier "x")))
+        (Variable (Identifier "x"))))
+
+jType :: Expression
+jType =
+  Pi (Identifier "A") Universe $
+  Pi (Identifier "x") (Variable (Identifier "A")) $
+  Pi (Identifier "P") motiveType $
+  Pi (Identifier "d") baseCaseType $
+  Pi (Identifier "y") (Variable (Identifier "A")) $
+  Pi (Identifier "p") proofType codomainType
+  where
+    motiveType =
+      Pi (Identifier "y") (Variable (Identifier "A"))
+        (Pi (Identifier "_")
+          (Application
+            (Application
+              (Application Identity (Variable (Identifier "A")))
+              (Variable (Identifier "x")))
+            (Variable (Identifier "y")))
+          Universe)
+
+    baseCaseType =
+      Application
+        (Application (Variable (Identifier "P")) (Variable (Identifier "x")))
+        (Application
+          (Application Reflexivity (Variable (Identifier "A")))
+          (Variable (Identifier "x")))
+
+    proofType =
+      Application
+        (Application
+          (Application Identity (Variable (Identifier "A")))
+          (Variable (Identifier "x")))
+        (Variable (Identifier "y"))
+
+    codomainType =
+      Application
+        (Application (Variable (Identifier "P")) (Variable (Identifier "y")))
+        (Variable (Identifier "p"))
+
 synthesize :: Context -> Expression -> Either TypeError Expression
 synthesize context expression = case expression of
   Variable identifier ->
@@ -70,6 +124,15 @@ synthesize context expression = case expression of
 
   Universe ->
     pure Universe
+
+  Identity ->
+    pure identityType
+
+  Reflexivity ->
+    pure reflexivityType
+
+  J ->
+    pure jType
 
   Annotation term annotationType -> do
     check context annotationType Universe
