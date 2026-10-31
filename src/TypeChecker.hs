@@ -2,11 +2,13 @@
 
 module TypeChecker
   ( TypeError (..)
-  , Context
+  , Context (..)
   , emptyContext
-  , extendContext
+  , extendContextType
+  , extendContextDefinition
   , synthesize
   , check
+  , checkDefinition
   , renderTypeError
   ) where
 
@@ -31,20 +33,31 @@ data TypeError
   | CannotSynthesizeType Expression
   deriving (Eq, Show)
 
-newtype Context = Context
-  { unContext :: Map Identifier Expression
+data Context = Context
+  { contextTypes  :: Map Identifier Expression
+  , contextValues :: Map Identifier Expression
   } deriving (Eq, Show)
 
 emptyContext :: Context
-emptyContext = Context Map.empty
+emptyContext = Context
+  { contextTypes  = Map.empty
+  , contextValues = Map.empty
+  }
 
-extendContext :: Identifier -> Expression -> Context -> Context
-extendContext identifier expressionType (Context currentBindings) =
-  Context (Map.insert identifier expressionType currentBindings)
+extendContextType :: Identifier -> Expression -> Context -> Context
+extendContextType identifier expressionType context =
+  context { contextTypes = Map.insert identifier expressionType (contextTypes context) }
+
+extendContextDefinition :: Identifier -> Expression -> Expression -> Context -> Context
+extendContextDefinition identifier expressionType expressionValue context =
+  context
+    { contextTypes  = Map.insert identifier expressionType (contextTypes context)
+    , contextValues = Map.insert identifier expressionValue (contextValues context)
+    }
 
 lookupContext :: Identifier -> Context -> Either TypeError Expression
-lookupContext identifier (Context currentBindings) =
-  case Map.lookup identifier currentBindings of
+lookupContext identifier context =
+  case Map.lookup identifier (contextTypes context) of
     Just expressionType ->
       pure expressionType
     Nothing ->
@@ -65,13 +78,13 @@ synthesize context expression = case expression of
 
   Pi parameter domain codomain -> do
     check context domain Universe
-    let extendedContext = extendContext parameter domain context
+    let extendedContext = extendContextType parameter domain context
     check extendedContext codomain Universe
     pure Universe
 
   Application function argument -> do
     functionType <- synthesize context function
-    case evaluateWeakHeadNormalForm functionType of
+    case evaluateWeakHeadNormalForm (contextValues context) functionType of
       Pi parameter domain codomain -> do
         check context argument domain
         pure (substitute parameter argument codomain)
@@ -83,7 +96,7 @@ synthesize context expression = case expression of
 
 check :: Context -> Expression -> Expression -> Either TypeError ()
 check context expression expectedType =
-  case (expression, evaluateWeakHeadNormalForm expectedType) of
+  case (expression, evaluateWeakHeadNormalForm (contextValues context) expectedType) of
     (Lambda parameter body, Pi binder domain codomain) -> do
       let targetParameter
             | parameter == binder = parameter
@@ -96,7 +109,7 @@ check context expression expectedType =
           substitutedCodomain =
             substitute binder (Variable targetParameter) codomain
           extendedContext =
-            extendContext targetParameter domain context
+            extendContextType targetParameter domain context
       check extendedContext renamedBody substitutedCodomain
 
     (Lambda _ _, notPiType) ->
@@ -104,14 +117,20 @@ check context expression expectedType =
 
     (otherExpression, expectedTypeWhnf) -> do
       synthesizedType <- synthesize context otherExpression
-      if areDefinitionallyEqual synthesizedType expectedTypeWhnf
+      if areDefinitionallyEqual (contextValues context) synthesizedType expectedTypeWhnf
         then pure ()
         else
           Left
             TypeMismatch
               { expectedType = expectedTypeWhnf
-              , actualType   = normalize synthesizedType
+              , actualType   = normalize (contextValues context) synthesizedType
               }
+
+checkDefinition :: Context -> Identifier -> Expression -> Expression -> Either TypeError Context
+checkDefinition context name declaredType bodyTerm = do
+  check context declaredType Universe
+  check context bodyTerm declaredType
+  pure (extendContextDefinition name declaredType bodyTerm context)
 
 renderTypeError :: TypeError -> Text
 renderTypeError typeError = case typeError of
