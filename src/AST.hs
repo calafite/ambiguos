@@ -15,4 +15,5 @@ data Expression
   | Lambda Identifier Expression
   | Application Expression Expression
   | Pi Identifier Expression Expression
+  | Annotation Expression Expression
   deriving (Eq, Show)
