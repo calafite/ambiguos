@@ -20,6 +20,15 @@ freeVariables expression = case expression of
   Universe ->
     Set.empty
 
+  Identity ->
+    Set.empty
+
+  Reflexivity ->
+    Set.empty
+
+  J ->
+    Set.empty
+
   Lambda parameter body ->
     Set.delete parameter (freeVariables body)
 
@@ -55,6 +64,9 @@ substitute targetVariable replacementExpression sourceExpression =
       | otherwise -> Variable identifier
 
     Universe -> Universe
+    Identity -> Identity
+    Reflexivity -> Reflexivity
+    J -> J
 
     Application function argument ->
       Application
@@ -109,6 +121,15 @@ alphaEquivalent leftExpression rightExpression =
       id1 == id2
 
     (Universe, Universe) ->
+      True
+
+    (Identity, Identity) ->
+      True
+
+    (Reflexivity, Reflexivity) ->
+      True
+
+    (J, J) ->
       True
 
     (Application f1 a1, Application f2 a2) ->
