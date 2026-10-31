@@ -19,9 +19,21 @@ parseVariable = Variable <$> Lexer.identifier
 parseUniverse :: Parser Expression
 parseUniverse = Universe <$ Lexer.reservedKeyword "Type"
 
+parseIdentity :: Parser Expression
+parseIdentity = Identity <$ Lexer.reservedKeyword "Id"
+
+parseReflexivity :: Parser Expression
+parseReflexivity = Reflexivity <$ Lexer.reservedKeyword "refl"
+
+parseJ :: Parser Expression
+parseJ = J <$ Lexer.reservedKeyword "J"
+
 parseAtomicExpression :: Parser Expression
 parseAtomicExpression =
   parseUniverse
+    <|> parseIdentity
+    <|> parseReflexivity
+    <|> parseJ
     <|> parseVariable
     <|> Lexer.parentheses expressionParser
 

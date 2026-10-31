@@ -36,7 +36,7 @@ parentheses :: Parser a -> Parser a
 parentheses = between (symbol "(") (symbol ")")
 
 reservedKeywords :: [Text]
-reservedKeywords = ["Type", "def"]
+reservedKeywords = ["Type", "def", "Id", "refl", "J"]
 
 reservedKeyword :: Text -> Parser ()
 reservedKeyword keyword = lexeme . try $ do
