@@ -13,7 +13,7 @@ newtype Identifier = Identifier
 data Expression
   = Variable Identifier
   | Universe
-  | Lambda Identifier Expression
+  | Lambda Identifier (Maybe Expression) Expression
   | Application Expression Expression
   | Pi Identifier Expression Expression
   | Annotation Expression Expression
