@@ -1,0 +1,29 @@
+cabal-version:      3.4
+name:               ambiguos
+version:            0.1.0.0
+license:            MIT
+license-file:       LICENSE
+author:             calafite
+maintainer:         calafite@tutamail.com
+category:           Development
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+
+common warnings
+    ghc-options: -Wall
+
+executable ambiguos
+    import:           warnings
+    main-is:          Main.hs
+    other-modules:    AST
+                    , Lexer
+                    , Parser
+
+    build-depends:    base ^>=4.20.2.0
+                    , megaparsec
+                    , text
+                    , mtl
+                    , containers
+
+    hs-source-dirs:   app, src
+    default-language: Haskell2010
