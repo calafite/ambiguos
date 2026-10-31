@@ -16,6 +16,7 @@ executable ambiguos
     import:           warnings
     main-is:          Main.hs
     other-modules:    AST
+                    , Evaluation
                     , Lexer
                     , Parser
                     , Substitution
