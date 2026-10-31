@@ -5,6 +5,7 @@ module Main (main) where
 import qualified Data.Text.IO as TextIO
 import Evaluation (normalize)
 import Parser (parseExpression)
+import Pretty (prettyExpression)
 import System.IO (hFlush, stdout)
 import Text.Megaparsec (errorBundlePretty)
 import TypeChecker (emptyContext, renderTypeError, synthesize)
@@ -31,6 +32,6 @@ replLoop = do
             Left typeError ->
               TextIO.putStrLn ("Type Error: " <> renderTypeError typeError)
             Right inferredType -> do
-              putStrLn ("Type:       " ++ show (normalize inferredType))
-              putStrLn ("Normalized: " ++ show (normalize abstractSyntaxTree))
+              TextIO.putStrLn ("Type:       " <> prettyExpression (normalize inferredType))
+              TextIO.putStrLn ("Normalized: " <> prettyExpression (normalize abstractSyntaxTree))
       replLoop
