@@ -2,9 +2,10 @@
 
 module Parser
   ( parseExpression
+  , parseStatement
   ) where
 
-import AST (Expression (..), Identifier (..))
+import AST (Expression (..), Identifier (..), Statement (..))
 import qualified Lexer
 import Data.Text (Text)
 import Data.Void (Void)
@@ -76,5 +77,24 @@ parseLambda = do
 expressionParser :: Parser Expression
 expressionParser = parseLambda <|> parseAnnotation
 
+parseDefinition :: Parser Statement
+parseDefinition = do
+  _ <- Lexer.reservedKeyword "def"
+  name <- Lexer.identifier
+  _ <- Lexer.symbol ":"
+  declaredType <- expressionParser
+  _ <- Lexer.symbol "="
+  bodyTerm <- expressionParser
+  pure (Definition name declaredType bodyTerm)
+
+parseEvaluation :: Parser Statement
+parseEvaluation = Evaluation <$> expressionParser
+
+statementParser :: Parser Statement
+statementParser = parseDefinition <|> parseEvaluation
+
 parseExpression :: Text -> Either (ParseErrorBundle Text Void) Expression
 parseExpression = parse (Lexer.spaceConsumer *> expressionParser <* eof) "<input>"
+
+parseStatement :: Text -> Either (ParseErrorBundle Text Void) Statement
+parseStatement = parse (Lexer.spaceConsumer *> statementParser <* eof) "<input>"

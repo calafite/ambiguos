@@ -1,6 +1,7 @@
 module AST
   ( Identifier (..)
   , Expression (..)
+  , Statement (..)
   ) where
 
 import Data.Text (Text)
@@ -16,4 +17,9 @@ data Expression
   | Application Expression Expression
   | Pi Identifier Expression Expression
   | Annotation Expression Expression
+  deriving (Eq, Show)
+
+data Statement
+  = Definition Identifier Expression Expression
+  | Evaluation Expression
   deriving (Eq, Show)
