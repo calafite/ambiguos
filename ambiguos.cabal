@@ -18,6 +18,7 @@ executable ambiguos
     other-modules:    AST
                     , Lexer
                     , Parser
+                    , Substitution
 
     build-depends:    base ^>=4.20.2.0
                     , megaparsec
