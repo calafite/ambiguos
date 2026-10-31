@@ -4,7 +4,7 @@ module Parser
   ( parseExpression
   ) where
 
-import AST (Expression (..), Identifier)
+import AST (Expression (..), Identifier (..))
 import qualified Lexer
 import Data.Text (Text)
 import Data.Void (Void)
@@ -18,14 +18,6 @@ parseVariable = Variable <$> Lexer.identifier
 parseUniverse :: Parser Expression
 parseUniverse = Universe <$ Lexer.reservedKeyword "Type"
 
-parseLambda :: Parser Expression
-parseLambda = do
-  _ <- Lexer.symbol "\\"
-  parameterName <- Lexer.identifier
-  _ <- Lexer.symbol "->"
-  body <- expressionParser
-  pure (Lambda parameterName body)
-
 parseAtomicExpression :: Parser Expression
 parseAtomicExpression =
   parseUniverse
@@ -38,8 +30,51 @@ parseApplication = do
   argumentExpressions <- many parseAtomicExpression
   pure (foldl Application headExpression argumentExpressions)
 
+parseDependentBinder :: Parser (Identifier, Expression)
+parseDependentBinder = Lexer.parentheses $ do
+  parameterName <- Lexer.identifier
+  _ <- Lexer.symbol ":"
+  parameterType <- expressionParser
+  pure (parameterName, parameterType)
+
+parseArrowOrApplication :: Parser Expression
+parseArrowOrApplication = parseDependentArrow <|> parseNonDependentArrow
+  where
+    parseDependentArrow = do
+      (parameterName, parameterType) <- try $ do
+        binder <- parseDependentBinder
+        _ <- Lexer.symbol "->"
+        pure binder
+      returnType <- expressionParser
+      pure (Pi parameterName parameterType returnType)
+
+    parseNonDependentArrow = do
+      domainType <- parseApplication
+      (do
+         _ <- Lexer.symbol "->"
+         codomainType <- expressionParser
+         pure (Pi (Identifier "_") domainType codomainType)
+       ) <|> pure domainType
+
+parseAnnotation :: Parser Expression
+parseAnnotation = do
+  termExpression <- parseArrowOrApplication
+  (do
+     _ <- Lexer.symbol ":"
+     typeExpression <- expressionParser
+     pure (Annotation termExpression typeExpression)
+   ) <|> pure termExpression
+
+parseLambda :: Parser Expression
+parseLambda = do
+  _ <- Lexer.symbol "\\"
+  parameterName <- Lexer.identifier
+  _ <- Lexer.symbol "->"
+  body <- expressionParser
+  pure (Lambda parameterName body)
+
 expressionParser :: Parser Expression
-expressionParser = parseLambda <|> parseApplication
+expressionParser = parseLambda <|> parseAnnotation
 
 parseExpression :: Text -> Either (ParseErrorBundle Text Void) Expression
 parseExpression = parse (Lexer.spaceConsumer *> expressionParser <* eof) "<input>"
