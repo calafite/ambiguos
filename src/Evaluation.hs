@@ -4,24 +4,30 @@ module Evaluation
   , areDefinitionallyEqual
   ) where
 
-import AST (Expression (..))
+import AST (Expression (..), Identifier)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Substitution (alphaEquivalent, substitute)
 
-evaluateWeakHeadNormalForm :: Expression -> Expression
-evaluateWeakHeadNormalForm expression =
+evaluateWeakHeadNormalForm :: Map Identifier Expression -> Expression -> Expression
+evaluateWeakHeadNormalForm environment expression =
   case expression of
+    Variable identifier ->
+      case Map.lookup identifier environment of
+        Just value ->
+          evaluateWeakHeadNormalForm environment value
+        Nothing ->
+          Variable identifier
+
     Annotation term _annotationType ->
-      evaluateWeakHeadNormalForm term
+      evaluateWeakHeadNormalForm environment term
 
     Application function argument ->
-      case evaluateWeakHeadNormalForm function of
+      case evaluateWeakHeadNormalForm environment function of
         Lambda parameter body ->
-          evaluateWeakHeadNormalForm (substitute parameter argument body)
+          evaluateWeakHeadNormalForm environment (substitute parameter argument body)
         neutralFunction ->
           Application neutralFunction argument
-
-    Variable identifier ->
-      Variable identifier
 
     Universe ->
       Universe
@@ -32,9 +38,9 @@ evaluateWeakHeadNormalForm expression =
     Pi parameter domain codomain ->
       Pi parameter domain codomain
 
-normalize :: Expression -> Expression
-normalize expression =
-  case evaluateWeakHeadNormalForm expression of
+normalize :: Map Identifier Expression -> Expression -> Expression
+normalize environment expression =
+  case evaluateWeakHeadNormalForm environment expression of
     Variable identifier ->
       Variable identifier
 
@@ -42,17 +48,17 @@ normalize expression =
       Universe
 
     Lambda parameter body ->
-      Lambda parameter (normalize body)
+      Lambda parameter (normalize environment body)
 
     Application function argument ->
-      Application (normalize function) (normalize argument)
+      Application (normalize environment function) (normalize environment argument)
 
     Pi parameter domain codomain ->
-      Pi parameter (normalize domain) (normalize codomain)
+      Pi parameter (normalize environment domain) (normalize environment codomain)
 
     Annotation term _annotationType ->
-      normalize term
+      normalize environment term
 
-areDefinitionallyEqual :: Expression -> Expression -> Bool
-areDefinitionallyEqual leftExpression rightExpression =
-  alphaEquivalent (normalize leftExpression) (normalize rightExpression)
+areDefinitionallyEqual :: Map Identifier Expression -> Expression -> Expression -> Bool
+areDefinitionallyEqual environment leftExpression rightExpression =
+  alphaEquivalent (normalize environment leftExpression) (normalize environment rightExpression)
