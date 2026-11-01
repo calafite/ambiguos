@@ -21,6 +21,9 @@ executable ambiguos
                     , Automata.Parser
                     , Automata.Types
                     , Evaluation
+                    , Grammar.Analysis
+                    , Grammar.Specification
+                    , Grammar.Types
                     , Lexer
                     , Parser
                     , Pretty
