@@ -36,6 +36,7 @@ evaluateWeakHeadNormalForm environment expression =
                     let combined = Application evaluatedFunction argument
                         (headExpression, arguments) = unfoldApplication combined
                      in case (headExpression, arguments) of
+                            -- iota-reduction for J
                             (J, _typeA : _x : _motiveP : baseCaseD : _y : proof : remainingArguments) ->
                                 let proofWhnf = evaluateWeakHeadNormalForm environment proof
                                     (proofHead, _) = unfoldApplication proofWhnf
@@ -45,15 +46,36 @@ evaluateWeakHeadNormalForm environment expression =
                                                 environment
                                                 (foldl Application baseCaseD remainingArguments)
                                         else combined
+                            -- iota-reduction for natRec: natRec P z s zero -> z; natRec P z s (succ n) -> s n (natRec P z s n)
+                            (NatRec, motiveP : baseCaseZ : stepS : targetN : remainingArguments) ->
+                                let nWhnf = evaluateWeakHeadNormalForm environment targetN
+                                    (nHead, nArgs) = unfoldApplication nWhnf
+                                 in case nHead of
+                                        Zero ->
+                                            evaluateWeakHeadNormalForm
+                                                environment
+                                                (foldl Application baseCaseZ remainingArguments)
+                                        Succ ->
+                                            case nArgs of
+                                                [k] ->
+                                                    let recCall = foldl Application NatRec [motiveP, baseCaseZ, stepS, k]
+                                                        stepResult = foldl Application stepS [k, recCall]
+                                                     in evaluateWeakHeadNormalForm
+                                                            environment
+                                                            (foldl Application stepResult remainingArguments)
+                                                _ -> combined
+                                        _ -> combined
                             _ -> combined
-        Universe ->
-            Universe
-        Identity ->
-            Identity
-        Reflexivity ->
-            Reflexivity
-        J ->
-            J
+        Universe -> Universe
+        Identity -> Identity
+        Reflexivity -> Reflexivity
+        J -> J
+        VoidType -> VoidType
+        Abort -> Abort
+        NatType -> NatType
+        Zero -> Zero
+        Succ -> Succ
+        NatRec -> NatRec
         Lambda parameter maybeParameterType body ->
             Lambda parameter maybeParameterType body
         Pi parameter domain codomain ->
@@ -64,14 +86,16 @@ normalize environment expression =
     case evaluateWeakHeadNormalForm environment expression of
         Variable identifier ->
             Variable identifier
-        Universe ->
-            Universe
-        Identity ->
-            Identity
-        Reflexivity ->
-            Reflexivity
-        J ->
-            J
+        Universe -> Universe
+        Identity -> Identity
+        Reflexivity -> Reflexivity
+        J -> J
+        VoidType -> VoidType
+        Abort -> Abort
+        NatType -> NatType
+        Zero -> Zero
+        Succ -> Succ
+        NatRec -> NatRec
         Lambda parameter maybeParameterType body ->
             let normalizedType = fmap (normalize environment) maybeParameterType
              in Lambda parameter normalizedType (normalize environment body)
