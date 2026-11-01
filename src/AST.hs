@@ -21,6 +21,12 @@ data Expression
     | Identity
     | Reflexivity
     | J
+    | VoidType
+    | Abort
+    | NatType
+    | Zero
+    | Succ
+    | NatRec
     deriving (Eq, Show)
 
 data Statement
