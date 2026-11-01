@@ -16,6 +16,10 @@ executable ambiguos
     import:           warnings
     main-is:          Main.hs
     other-modules:    AST
+                    , Automata.DFA
+                    , Automata.NFA
+                    , Automata.Parser
+                    , Automata.Types
                     , Evaluation
                     , Lexer
                     , Parser
