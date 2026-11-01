@@ -10,7 +10,6 @@ import qualified Data.Set as Set
 import Grammar.Types
 import Lexer (Token)
 
--- | Computes the FIRST set for each non-terminal via fixed-point iteration
 firstSets :: CFG -> Map NonTerminal (Set (Maybe Token))
 firstSets cfg = iterateUntilFixedPoint (step (cfgProductions cfg)) initialMap
   where
@@ -23,7 +22,7 @@ firstSets cfg = iterateUntilFixedPoint (step (cfgProductions cfg)) initialMap
               in Map.insert headVar (Set.union existing bodyFirst) acc
             ) current prods
 
-    deriveSequenceFirst _ [] = Set.singleton Nothing -- Epsilon
+    deriveSequenceFirst _ [] = Set.singleton Nothing
     deriveSequenceFirst currentMap (sym : rest) = case sym of
       TerminalSymbol t -> Set.singleton (Just t)
       NonTerminalSymbol nt ->
@@ -32,11 +31,9 @@ firstSets cfg = iterateUntilFixedPoint (step (cfgProductions cfg)) initialMap
              then Set.union (Set.delete Nothing ntFirst) (deriveSequenceFirst currentMap rest)
              else ntFirst
 
--- | Computes the FOLLOW set for each non-terminal
 followSets :: CFG -> Map NonTerminal (Set (Maybe Token)) -> Map NonTerminal (Set (Maybe Token))
 followSets cfg firsts = iterateUntilFixedPoint (step (cfgProductions cfg)) initialMap
   where
-    -- End-of-input marker is represented by Nothing in the start symbol's FOLLOW set
     initialMap = Map.fromList
       [ (nt, if nt == cfgStartSymbol cfg then Set.singleton Nothing else Set.empty)
       | nt <- Set.toList (cfgNonTerminals cfg)
@@ -46,9 +43,10 @@ followSets cfg firsts = iterateUntilFixedPoint (step (cfgProductions cfg)) initi
       foldl (processProduction current) current prods
 
     processProduction current acc (Production headVar body) =
-      snd (foldr (propagate headVar) (Set.findWithDefault Set.empty headVar current, acc) body)
+      let initialTrailer = Map.findWithDefault Set.empty headVar current
+      in snd (foldr propagate (initialTrailer, acc) body)
 
-    propagate headVar symbol (trailer, followAcc) = case symbol of
+    propagate symbol (trailer, followAcc) = case symbol of
       TerminalSymbol t ->
         (Set.singleton (Just t), followAcc)
       NonTerminalSymbol b ->
