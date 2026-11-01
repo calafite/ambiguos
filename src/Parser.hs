@@ -4,6 +4,7 @@ module Parser
   ( ParseError (..)
   , parseExpression
   , parseStatement
+  , parseProgram
   , renderParseError
   ) where
 
@@ -200,3 +201,11 @@ renderParseError err = case err of
     "Syntax error: Expected " <> expected <> ", but found: " <> Text.pack (show found)
   UnexpectedToken token ->
     "Syntax error: Unexpected token: " <> Text.pack (show token)
+
+
+parseProgram :: Text -> Either ParseError [Statement]
+parseProgram input = do
+    tokens <- case tokenize input of
+        Left lexErr -> Left (ErrorLexical lexErr)
+        Right toks  -> Right toks
+    runCompleteParser (many statementParser) tokens
