@@ -1,0 +1,26 @@
+-- Polymorphic Identity Function
+def id : (A : Type) -> (x : A) -> A
+  = \(A : Type) -> \(x : A) -> x
+
+-- Propositional Equality: Symmetry
+def sym : (A : Type) -> (x : A) -> (y : A) -> Id A x y -> Id A y x
+  = \(A : Type) -> \(x : A) -> \(y : A) -> \p ->
+      J A x (\(z : A) -> \q -> Id A z x) (refl A x) y p
+
+-- Propositional Equality: Transitivity
+def trans : (A : Type) -> (x : A) -> (y : A) -> (z : A) -> Id A x y -> Id A y z -> Id A x z
+  = \(A : Type) -> \(x : A) -> \(y : A) -> \(z : A) -> \p -> \q ->
+      J A y (\(w : A) -> \_ -> Id A x w) p z q
+
+-- Church Booleans
+def Bool : Type
+  = (P : Type) -> P -> P -> P
+
+def true : Bool
+  = \(P : Type) -> \(t : P) -> \(f : P) -> t
+
+def false : Bool
+  = \(P : Type) -> \(t : P) -> \(f : P) -> f
+
+def not : Bool -> Bool
+  = \b -> \(P : Type) -> \(t : P) -> \(f : P) -> b P f t
