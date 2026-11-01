@@ -28,13 +28,14 @@ data Token
   | TokenLeftParen
   | TokenRightParen
   | TokenIdentifier Identifier
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 data LexError
   = UnexpectedCharacter Char
   | UnterminatedBlockComment
   deriving (Eq, Show)
 
+-- | Formal regular expression for Identifiers: ([a-zA-Z_])([a-zA-Z0-9_])*
 dfaIdentifier :: DFA
 dfaIdentifier = compileNFAToDFA (compileRegexToNFA regex)
   where
@@ -44,6 +45,7 @@ dfaIdentifier = compileNFAToDFA (compileRegexToNFA regex)
     restPattern = matchAny (alphaChars ++ digitChars)
     regex = Concat startPattern (Star restPattern)
 
+-- | Formal regular expression for the Arrow symbol: '->'
 dfaArrow :: DFA
 dfaArrow = compileNFAToDFA (compileRegexToNFA (literalString "->"))
 
@@ -52,18 +54,23 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
   where
     scanLoop remaining
       | null remaining = Right []
+      -- Skip single-line comments
       | take 2 remaining == "--" =
           let afterComment = dropWhile (/= '\n') remaining
           in scanLoop (dropWhile isSpace afterComment)
+      -- Skip block comments
       | take 2 remaining == "{-" =
           case skipBlockComment 1 (drop 2 remaining) of
             Left err -> Left err
             Right afterBlock -> scanLoop (dropWhile isSpace afterBlock)
+      -- Match arrows using the compiled DFA
       | Just (_, rest) <- matchPrefixDFA dfaArrow remaining =
           (TokenArrow :) <$> scanLoop (dropWhile isSpace rest)
+      -- Match identifiers and keywords using the compiled DFA
       | Just (identStr, rest) <- matchPrefixDFA dfaIdentifier remaining =
           let token = classifyIdentifier (Text.pack identStr)
           in (token :) <$> scanLoop (dropWhile isSpace rest)
+      -- Single-character punctuation tokens
       | otherwise =
           let headChar = head remaining
               rest = tail remaining
