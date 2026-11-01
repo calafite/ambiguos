@@ -1,18 +1,136 @@
--- 1. Polymorphic Identity Function
-def id : (A : Type) -> (x : A) -> A
+{- ==========================================================================
+   Ambiguos Standard Prelude
+   Conventions:
+     - Types: PascalCase (Type, Nat, Bool, Pair, Either, Maybe, List, Id)
+     - Definitions and Proofs: camelCase (identity, addition, additionZeroRight)
+     - Full descriptive names (successor, predecessor, multiplication, etc.)
+   ========================================================================== -}
+
+
+{- --------------------------------------------------------------------------
+   1. FUNCTION COMBINATORS (Data.Function)
+   -------------------------------------------------------------------------- -}
+
+def identity : (A : Type) -> (x : A) -> A
   = \(A : Type) -> \(x : A) -> x
 
--- 2. Propositional Equality: Symmetry
-def sym : (A : Type) -> (x : A) -> (y : A) -> Id A x y -> Id A y x
+def constant : (A : Type) -> (B : Type) -> A -> B -> A
+  = \(A : Type) -> \(B : Type) -> \(x : A) -> \(y : B) -> x
+
+def flip : (A : Type) -> (B : Type) -> (C : Type) -> (A -> B -> C) -> B -> A -> C
+  = \(A : Type) -> \(B : Type) -> \(C : Type) -> \(f : A -> B -> C) -> \(y : B) -> \(x : A) -> f x y
+
+
+{- --------------------------------------------------------------------------
+   2. PROPOSITIONAL EQUALITY (Id, refl, J)
+   -------------------------------------------------------------------------- -}
+
+def symmetry : (A : Type) -> (x : A) -> (y : A) -> Id A x y -> Id A y x
   = \(A : Type) -> \(x : A) -> \(y : A) -> \p ->
       J A x (\(z : A) -> \q -> Id A z x) (refl A x) y p
 
--- 3. Propositional Equality: Transitivity
-def trans : (A : Type) -> (x : A) -> (y : A) -> (z : A) -> Id A x y -> Id A y z -> Id A x z
+def transitivity : (A : Type) -> (x : A) -> (y : A) -> (z : A) -> Id A x y -> Id A y z -> Id A x z
   = \(A : Type) -> \(x : A) -> \(y : A) -> \(z : A) -> \p -> \q ->
       J A y (\(w : A) -> \_ -> Id A x w) p z q
 
--- 4. Church Booleans
+def congruence : (A : Type) -> (B : Type) -> (f : A -> B) -> (x : A) -> (y : A) -> Id A x y -> Id B (f x) (f y)
+  = \(A : Type) -> \(B : Type) -> \(f : A -> B) -> \(x : A) -> \(y : A) -> \p ->
+      J A x (\(z : A) -> \_ -> Id B (f x) (f z)) (refl B (f x)) y p
+
+def substitute : (A : Type) -> (P : A -> Type) -> (x : A) -> (y : A) -> Id A x y -> P x -> P y
+  = \(A : Type) -> \(P : A -> Type) -> \(x : A) -> \(y : A) -> \p -> \px ->
+      J A x (\(z : A) -> \_ -> P z) px y p
+
+
+{- --------------------------------------------------------------------------
+   3. INTUITIONISTIC LOGIC & NEGATION (Void / False)
+   -------------------------------------------------------------------------- -}
+
+def Not : Type -> Type
+  = \(A : Type) -> A -> Void
+
+def absurd : (A : Type) -> Void -> A
+  = abort
+
+def doubleNegation : (A : Type) -> A -> Not (Not A)
+  = \(A : Type) -> \(x : A) -> \(na : Not A) -> na x
+
+
+{- --------------------------------------------------------------------------
+   4. THE UNIT TYPE (Data.Tuple / Truth)
+   -------------------------------------------------------------------------- -}
+
+def Unit : Type
+  = (R : Type) -> R -> R
+
+def unit : Unit
+  = \(R : Type) -> \(x : R) -> x
+
+
+{- --------------------------------------------------------------------------
+   5. PAIRS & PRODUCTS (Data.Tuple / Conjunction)
+   -------------------------------------------------------------------------- -}
+
+def Pair : Type -> Type -> Type
+  = \(A : Type) -> \(B : Type) -> (R : Type) -> (A -> B -> R) -> R
+
+def pair : (A : Type) -> (B : Type) -> A -> B -> Pair A B
+  = \(A : Type) -> \(B : Type) -> \(x : A) -> \(y : B) -> \(R : Type) -> \(f : A -> B -> R) -> f x y
+
+def first : (A : Type) -> (B : Type) -> Pair A B -> A
+  = \(A : Type) -> \(B : Type) -> \p -> p A (\(x : A) -> \(y : B) -> x)
+
+def second : (A : Type) -> (B : Type) -> Pair A B -> B
+  = \(A : Type) -> \(B : Type) -> \p -> p B (\(x : A) -> \(y : B) -> y)
+
+def swap : (A : Type) -> (B : Type) -> Pair A B -> Pair B A
+  = \(A : Type) -> \(B : Type) -> \p -> pair B A (second A B p) (first A B p)
+
+def nonContradiction : (A : Type) -> Not (Pair A (Not A))
+  = \(A : Type) -> \p -> (second A (Not A) p) (first A (Not A) p)
+
+
+{- --------------------------------------------------------------------------
+   6. SUMS & COPRODUCTS (Data.Either / Disjunction)
+   -------------------------------------------------------------------------- -}
+
+def Either : Type -> Type -> Type
+  = \(A : Type) -> \(B : Type) -> (R : Type) -> (A -> R) -> (B -> R) -> R
+
+def left : (A : Type) -> (B : Type) -> A -> Either A B
+  = \(A : Type) -> \(B : Type) -> \(x : A) -> \(R : Type) -> \(l : A -> R) -> \(r : B -> R) -> l x
+
+def right : (A : Type) -> (B : Type) -> B -> Either A B
+  = \(A : Type) -> \(B : Type) -> \(y : B) -> \(R : Type) -> \(l : A -> R) -> \(r : B -> R) -> r y
+
+def either : (A : Type) -> (B : Type) -> (C : Type) -> (A -> C) -> (B -> C) -> Either A B -> C
+  = \(A : Type) -> \(B : Type) -> \(C : Type) -> \(f : A -> C) -> \(g : B -> C) -> \e -> e C f g
+
+
+{- --------------------------------------------------------------------------
+   7. OPTIONALITY (Data.Maybe)
+   -------------------------------------------------------------------------- -}
+
+def Maybe : Type -> Type
+  = \(A : Type) -> (R : Type) -> R -> (A -> R) -> R
+
+def nothing : (A : Type) -> Maybe A
+  = \(A : Type) -> \(R : Type) -> \(n : R) -> \(j : A -> R) -> n
+
+def just : (A : Type) -> A -> Maybe A
+  = \(A : Type) -> \(x : A) -> \(R : Type) -> \(n : R) -> \(j : A -> R) -> j x
+
+def maybe : (A : Type) -> (B : Type) -> B -> (A -> B) -> Maybe A -> B
+  = \(A : Type) -> \(B : Type) -> \(defaultValue : B) -> \(f : A -> B) -> \m -> m B defaultValue f
+
+def fromMaybe : (A : Type) -> A -> Maybe A -> A
+  = \(A : Type) -> \(defaultValue : A) -> \m -> m A defaultValue (\(x : A) -> x)
+
+
+{- --------------------------------------------------------------------------
+   8. BOOLEANS (Data.Bool)
+   -------------------------------------------------------------------------- -}
+
 def Bool : Type
   = (P : Type) -> P -> P -> P
 
@@ -25,23 +143,106 @@ def false : Bool
 def not : Bool -> Bool
   = \b -> \(P : Type) -> \(t : P) -> \(f : P) -> b P f t
 
--- 5. Logical Negation
-def Not : Type -> Type
-  = \(A : Type) -> A -> Void
+def booleanAnd : Bool -> Bool -> Bool
+  = \a -> \b -> a Bool b false
 
--- 6. Theorem: true != false
--- Discriminator mapping Bool to Type: true maps to Type, false maps to Void
+def booleanOr : Bool -> Bool -> Bool
+  = \a -> \b -> a Bool true b
+
+def booleanXor : Bool -> Bool -> Bool
+  = \a -> \b -> a Bool (not b) b
+
+def booleanEliminator : (A : Type) -> A -> A -> Bool -> A
+  = \(A : Type) -> \(t : A) -> \(f : A) -> \b -> b A t f
+
 def boolToType : Bool -> Type
   = \b -> b Type Type Void
 
--- If true = false, we transport Type across the proof to obtain a value in Void
-def true_neq_false : Not (Id Bool true false)
+def trueNotEqualFalse : Not (Id Bool true false)
   = \p -> J Bool true (\(b : Bool) -> \_ -> boolToType b) Type false p
 
--- 7. Peano Arithmetic: Addition via natRec
-def add : Nat -> Nat -> Nat
-  = \x -> \y -> natRec (\_ -> Nat) y (\_ -> \rec -> succ rec) x
 
--- 8. Theorem: 0 + y = y (Holds definitionally by iota-reduction!)
-def add_zero : (y : Nat) -> Id Nat (add zero y) y
+{- --------------------------------------------------------------------------
+   9. PEANO ARITHMETIC (Data.Nat)
+   -------------------------------------------------------------------------- -}
+
+def predecessor : Nat -> Nat
+  = \n -> natRec (\_ -> Nat) 0 (\(k : Nat) -> \_ -> k) n
+
+def addition : Nat -> Nat -> Nat
+  = \x -> \y -> natRec (\_ -> Nat) y (\_ -> \rec -> successor rec) x
+
+def multiplication : Nat -> Nat -> Nat
+  = \x -> \y -> natRec (\_ -> Nat) 0 (\_ -> \rec -> addition y rec) x
+
+def power : Nat -> Nat -> Nat
+  = \base -> \exponent -> natRec (\_ -> Nat) 1 (\_ -> \rec -> multiplication base rec) exponent
+
+def factorial : Nat -> Nat
+  = \n -> natRec (\_ -> Nat) 1 (\(k : Nat) -> \(rec : Nat) -> multiplication (successor k) rec) n
+
+
+{- --------------------------------------------------------------------------
+   10. ARITHMETIC THEOREMS & INDUCTIVE PROOFS
+   -------------------------------------------------------------------------- -}
+
+def additionZeroLeft : (y : Nat) -> Id Nat (addition 0 y) y
   = \(y : Nat) -> refl Nat y
+
+-- | Right Identity: x + 0 = x (proved by induction on x)
+def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
+  = \x -> natRec (\(n : Nat) -> Id Nat (addition n 0) n)
+                 (refl Nat 0)
+                 (\(k : Nat) -> \(inductionHypothesis : Id Nat (addition k 0) k) ->
+                     congruence Nat Nat successor (addition k 0) k inductionHypothesis)
+                 x
+
+-- | Right Successor: x + successor(y) = successor(x + y) (proved by induction on x)
+def additionSuccessorRight : (x : Nat) -> (y : Nat) -> Id Nat (addition x (successor y)) (successor (addition x y))
+  = \x -> \y -> natRec (\(n : Nat) -> Id Nat (addition n (successor y)) (successor (addition n y)))
+                       (refl Nat (successor y))
+                       (\(k : Nat) -> \(inductionHypothesis : Id Nat (addition k (successor y)) (successor (addition k y))) ->
+                           congruence Nat Nat successor (addition k (successor y)) (successor (addition k y)) inductionHypothesis)
+                       x
+
+def theoremTwoPlusThree : Id Nat (addition 2 3) 5
+  = refl Nat 5
+
+def theoremTwoTimesThree : Id Nat (multiplication 2 3) 6
+  = refl Nat 6
+
+def theoremTwoCubed : Id Nat (power 2 3) 8
+  = refl Nat 8
+
+def theoremFactorialThree : Id Nat (factorial 3) 6
+  = refl Nat 6
+
+
+{- --------------------------------------------------------------------------
+   11. LISTS & HIGHER-ORDER OPERATIONS (Data.List)
+   -------------------------------------------------------------------------- -}
+
+def List : Type -> Type
+  = \(A : Type) -> (R : Type) -> R -> (A -> R -> R) -> R
+
+def nil : (A : Type) -> List A
+  = \(A : Type) -> \(R : Type) -> \(n : R) -> \(c : A -> R -> R) -> n
+
+def cons : (A : Type) -> A -> List A -> List A
+  = \(A : Type) -> \(x : A) -> \(xs : List A) ->
+      \(R : Type) -> \(n : R) -> \(c : A -> R -> R) -> c x (xs R n c)
+
+def foldRight : (A : Type) -> (B : Type) -> (A -> B -> B) -> B -> List A -> B
+  = \(A : Type) -> \(B : Type) -> \(f : A -> B -> B) -> \(initial : B) -> \xs -> xs B initial f
+
+def length : (A : Type) -> List A -> Nat
+  = \(A : Type) -> \xs -> xs Nat 0 (\(x : A) -> \(accumulator : Nat) -> successor accumulator)
+
+def map : (A : Type) -> (B : Type) -> (A -> B) -> List A -> List B
+  = \(A : Type) -> \(B : Type) -> \(f : A -> B) -> \xs ->
+      \(R : Type) -> \(n : R) -> \(c : B -> R -> R) ->
+          xs R n (\(x : A) -> \(recursiveResult : R) -> c (f x) recursiveResult)
+
+def append : (A : Type) -> List A -> List A -> List A
+  = \(A : Type) -> \(xs : List A) -> \(ys : List A) ->
+      xs (List A) ys (\(x : A) -> \(recursiveResult : List A) -> cons A x recursiveResult)
