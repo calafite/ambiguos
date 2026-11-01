@@ -89,19 +89,21 @@ replLoop context = do
 
 loadFile :: Context -> FilePath -> IO (Maybe Context)
 loadFile initialContext filePath = do
-    fileContentResult <- Exception.try (TextIO.readFile filePath) :: IO (Either Exception.IOException Text.Text)
-        case fileContentResult of
-            Left ioError -> do
-                putStrLn ("File error: Could not read file '" ++ filePath ++ "': " ++ show ioError)
-                pure Nothing
-            Right content ->
-                case parseProgram content of
-                    Left parseError -> do
-                        TextIO.putStrLn (renderParseError parseError)
-                        pure Nothing
+  fileContentResult <- Exception.try (TextIO.readFile filePath)
+  case fileContentResult of
+    Left ioError -> do
+      let err = ioError :: Exception.IOException
+      putStrLn ("File error: Could not read file '" ++ filePath ++ "': " ++ show err)
+      pure Nothing
 
-                    Right statements ->
-                        runStatements initialContext statements
+    Right content ->
+      case parseProgram content of
+        Left parseError -> do
+          TextIO.putStrLn (renderParseError parseError)
+          pure Nothing
+
+        Right statements ->
+          runStatements initialContext statements
 
 runStatements :: Context -> [Statement] -> IO (Maybe Context)
 runStatements currentContext [] = pure (Just currentContext)
