@@ -139,18 +139,46 @@ jType =
             (Application (Variable (Identifier "P")) (Variable (Identifier "y")))
             (Variable (Identifier "p"))
 
+abortType :: Expression
+abortType =
+    Pi
+        (Identifier "A")
+        Universe
+        (Pi (Identifier "_") VoidType (Variable (Identifier "A")))
+
+succType :: Expression
+succType =
+    Pi (Identifier "_") NatType NatType
+
+natRecType :: Expression
+natRecType =
+    Pi (Identifier "P") pType
+        $ Pi (Identifier "z") zType
+        $ Pi (Identifier "s") sType
+        $ Pi (Identifier "n") NatType codomainType
+  where
+    pType = Pi (Identifier "_") NatType Universe
+    zType = Application (Variable (Identifier "P")) Zero
+    nVar = Variable (Identifier "n")
+    pn = Application (Variable (Identifier "P")) nVar
+    psuccn = Application (Variable (Identifier "P")) (Application Succ nVar)
+    sType = Pi (Identifier "n") NatType (Pi (Identifier "_") pn psuccn)
+    codomainType = Application (Variable (Identifier "P")) nVar
+
 synthesize :: Context -> Expression -> Either TypeError Expression
 synthesize context expression = case expression of
     Variable identifier ->
         lookupContext identifier context
-    Universe ->
-        pure Universe
-    Identity ->
-        pure identityType
-    Reflexivity ->
-        pure reflexivityType
-    J ->
-        pure jType
+    Universe -> pure Universe
+    Identity -> pure identityType
+    Reflexivity -> pure reflexivityType
+    J -> pure jType
+    VoidType -> pure Universe
+    Abort -> pure abortType
+    NatType -> pure Universe
+    Zero -> pure NatType
+    Succ -> pure succType
+    NatRec -> pure natRecType
     Annotation term annotationType -> do
         check context annotationType Universe
         check context term annotationType
