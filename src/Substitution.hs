@@ -16,14 +16,16 @@ freeVariables :: Expression -> Set Identifier
 freeVariables expression = case expression of
     Variable identifier ->
         Set.singleton identifier
-    Universe ->
-        Set.empty
-    Identity ->
-        Set.empty
-    Reflexivity ->
-        Set.empty
-    J ->
-        Set.empty
+    Universe -> Set.empty
+    Identity -> Set.empty
+    Reflexivity -> Set.empty
+    J -> Set.empty
+    VoidType -> Set.empty
+    Abort -> Set.empty
+    NatType -> Set.empty
+    Zero -> Set.empty
+    Succ -> Set.empty
+    NatRec -> Set.empty
     Lambda parameter maybeParameterType body ->
         let typeFreeVariables = case maybeParameterType of
                 Just parameterType -> freeVariables parameterType
@@ -62,6 +64,12 @@ substitute targetVariable replacementExpression sourceExpression =
         Identity -> Identity
         Reflexivity -> Reflexivity
         J -> J
+        VoidType -> VoidType
+        Abort -> Abort
+        NatType -> NatType
+        Zero -> Zero
+        Succ -> Succ
+        NatRec -> NatRec
         Application function argument ->
             Application
                 (substitute targetVariable replacementExpression function)
@@ -118,16 +126,17 @@ substitute targetVariable replacementExpression sourceExpression =
 alphaEquivalent :: Expression -> Expression -> Bool
 alphaEquivalent leftExpression rightExpression =
     case (leftExpression, rightExpression) of
-        (Variable id1, Variable id2) ->
-            id1 == id2
-        (Universe, Universe) ->
-            True
-        (Identity, Identity) ->
-            True
-        (Reflexivity, Reflexivity) ->
-            True
-        (J, J) ->
-            True
+        (Variable id1, Variable id2) -> id1 == id2
+        (Universe, Universe) -> True
+        (Identity, Identity) -> True
+        (Reflexivity, Reflexivity) -> True
+        (J, J) -> True
+        (VoidType, VoidType) -> True
+        (Abort, Abort) -> True
+        (NatType, NatType) -> True
+        (Zero, Zero) -> True
+        (Succ, Succ) -> True
+        (NatRec, NatRec) -> True
         (Application f1 a1, Application f2 a2) ->
             alphaEquivalent f1 f2 && alphaEquivalent a1 a2
         (Annotation t1 ty1, Annotation t2 ty2) ->

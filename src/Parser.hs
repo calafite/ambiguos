@@ -77,21 +77,17 @@ parseAtomicExpression :: Parser Expression
 parseAtomicExpression = do
     nextToken <- peekToken
     case nextToken of
-        Just TokenKeywordType -> do
-            _ <- consumeToken
-            pure Universe
-        Just TokenKeywordId -> do
-            _ <- consumeToken
-            pure Identity
-        Just TokenKeywordRefl -> do
-            _ <- consumeToken
-            pure Reflexivity
-        Just TokenKeywordJ -> do
-            _ <- consumeToken
-            pure J
-        Just (TokenIdentifier ident) -> do
-            _ <- consumeToken
-            pure (Variable ident)
+        Just TokenKeywordType -> Universe <$ consumeToken
+        Just TokenKeywordId -> Identity <$ consumeToken
+        Just TokenKeywordRefl -> Reflexivity <$ consumeToken
+        Just TokenKeywordJ -> J <$ consumeToken
+        Just TokenKeywordVoid -> VoidType <$ consumeToken
+        Just TokenKeywordAbort -> Abort <$ consumeToken
+        Just TokenKeywordNat -> NatType <$ consumeToken
+        Just TokenKeywordZero -> Zero <$ consumeToken
+        Just TokenKeywordSucc -> Succ <$ consumeToken
+        Just TokenKeywordNatRec -> NatRec <$ consumeToken
+        Just (TokenIdentifier ident) -> Variable ident <$ consumeToken
         Just TokenLeftParen -> do
             _ <- consumeToken
             expr <- expressionParser
@@ -203,6 +199,13 @@ parseStatement input = do
         Right toks -> Right toks
     runCompleteParser statementParser tokens
 
+parseProgram :: Text -> Either ParseError [Statement]
+parseProgram input = do
+    tokens <- case tokenize input of
+        Left lexErr -> Left (ErrorLexical lexErr)
+        Right toks -> Right toks
+    runCompleteParser (many statementParser) tokens
+
 renderParseError :: ParseError -> Text
 renderParseError err = case err of
     ErrorLexical lexErr -> renderLexError lexErr
@@ -211,10 +214,3 @@ renderParseError err = case err of
         "Syntax error: Expected " <> expected <> ", but found: " <> Text.pack (show found)
     UnexpectedToken token ->
         "Syntax error: Unexpected token: " <> Text.pack (show token)
-
-parseProgram :: Text -> Either ParseError [Statement]
-parseProgram input = do
-    tokens <- case tokenize input of
-        Left lexErr -> Left (ErrorLexical lexErr)
-        Right toks -> Right toks
-    runCompleteParser (many statementParser) tokens

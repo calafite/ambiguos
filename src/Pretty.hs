@@ -31,14 +31,16 @@ prettyWithPrecedence :: Precedence -> Expression -> Text
 prettyWithPrecedence currentPrecedence expression = case expression of
     Variable identifier ->
         prettyIdentifier identifier
-    Universe ->
-        "Type"
-    Identity ->
-        "Id"
-    Reflexivity ->
-        "refl"
-    J ->
-        "J"
+    Universe -> "Type"
+    Identity -> "Id"
+    Reflexivity -> "refl"
+    J -> "J"
+    VoidType -> "Void"
+    Abort -> "abort"
+    NatType -> "Nat"
+    Zero -> "zero"
+    Succ -> "succ"
+    NatRec -> "natRec"
     Lambda parameter Nothing body ->
         let bodyText = prettyWithPrecedence TopLevelPrecedence body
             rendered = "\\" <> prettyIdentifier parameter <> " -> " <> bodyText
