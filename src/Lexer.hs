@@ -21,6 +21,12 @@ data Token
     | TokenKeywordId
     | TokenKeywordRefl
     | TokenKeywordJ
+    | TokenKeywordVoid
+    | TokenKeywordAbort
+    | TokenKeywordNat
+    | TokenKeywordZero
+    | TokenKeywordSucc
+    | TokenKeywordNatRec
     | TokenBackslash
     | TokenArrow
     | TokenColon
@@ -82,6 +88,12 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
         "Id" -> TokenKeywordId
         "refl" -> TokenKeywordRefl
         "J" -> TokenKeywordJ
+        "Void" -> TokenKeywordVoid
+        "abort" -> TokenKeywordAbort
+        "Nat" -> TokenKeywordNat
+        "zero" -> TokenKeywordZero
+        "succ" -> TokenKeywordSucc
+        "natRec" -> TokenKeywordNatRec
         _ -> TokenIdentifier (Identifier text)
 
     skipBlockComment :: Int -> String -> Either LexError String
