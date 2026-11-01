@@ -18,7 +18,7 @@ import TypeChecker
 
 main :: IO ()
 main = do
-  putStrLn "Ambiguos Formal Verification System (Zero-Dependency Parser)"
+  putStrLn "Ambiguos Formal Verification System (Automata-Powered Lexer & CFG Parser)"
   putStrLn "Commands: def <name> : <Type> = <term> | <expr> | quit"
   replLoop emptyContext
 

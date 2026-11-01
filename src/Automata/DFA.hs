@@ -1,6 +1,9 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Automata.DFA
   ( compileNFAToDFA
   , simulateDFA
+  , matchPrefixDFA
   , exportDFAToJSON
   ) where
 
@@ -86,6 +89,23 @@ simulateDFA dfa inputString =
   where
     step Nothing _ = Nothing
     step (Just current) symbol = Map.lookup (current, symbol) (dfaTransitions dfa)
+
+matchPrefixDFA :: DFA -> String -> Maybe (String, String)
+matchPrefixDFA dfa input = go (dfaStartState dfa) input [] Nothing
+  where
+    go currentState remaining currentMatched lastAccept =
+      let updatedAccept =
+            if Set.member currentState (dfaAcceptStates dfa)
+              then Just (reverse currentMatched, remaining)
+              else lastAccept
+      in case remaining of
+           [] -> updatedAccept
+           (c : cs) ->
+             case Map.lookup (currentState, c) (dfaTransitions dfa) of
+               Just nextState ->
+                 go nextState cs (c : currentMatched) updatedAccept
+               Nothing ->
+                 updatedAccept
 
 exportDFAToJSON :: DFA -> Text
 exportDFAToJSON dfa =

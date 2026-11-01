@@ -4,6 +4,8 @@ module Automata.Types
   , Regex (..)
   , NFA (..)
   , DFA (..)
+  , matchAny
+  , literalString
   ) where
 
 import Data.Map.Strict (Map)
@@ -24,8 +26,18 @@ data Regex
   | Star Regex
   deriving (Eq, Show)
 
+matchAny :: [Symbol] -> Regex
+matchAny [] = Empty
+matchAny [c] = Literal c
+matchAny (c : cs) = Union (Literal c) (matchAny cs)
+
+literalString :: String -> Regex
+literalString [] = Epsilon
+literalString [c] = Literal c
+literalString (c : cs) = Concat (Literal c) (literalString cs)
+
 data NFA = NFA
-  { nfaStates      :: Set State
+  { nfaStates       :: Set State
   , nfaAlphabet    :: Set Symbol
   , nfaTransitions :: Map (State, Maybe Symbol) (Set State)
   , nfaStartState  :: State
@@ -33,7 +45,7 @@ data NFA = NFA
   } deriving (Eq, Show)
 
 data DFA = DFA
-  { dfaStates      :: Set State
+  { dfaStates       :: Set State
   , dfaAlphabet    :: Set Symbol
   , dfaTransitions :: Map (State, Symbol) State
   , dfaStartState  :: State
