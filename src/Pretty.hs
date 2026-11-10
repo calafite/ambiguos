@@ -69,8 +69,8 @@ prettyWithPrecedence currentPrecedence expression =
                 Variable identifier ->
                     prettyIdentifier identifier
                 Universe (-1) -> "Type"
-                Universe 0    -> "Type 0"
-                Universe n    -> "Type " <> Text.pack (show n)
+                Universe 0 -> "Type 0"
+                Universe n -> "Type " <> Text.pack (show n)
                 Identity -> "Id"
                 Reflexivity -> "refl"
                 J -> "J"
