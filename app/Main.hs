@@ -12,6 +12,7 @@ import Parser (parseProgram, parseStatement, renderParseError)
 import Pretty (prettyExpression, prettyIdentifier)
 import System.Environment (getArgs)
 import System.IO (hFlush, stdout)
+import qualified System.Process as Process
 import TypeChecker (
     Context (..),
     checkDefinition,
@@ -52,7 +53,7 @@ printWelcomeBanner :: IO ()
 printWelcomeBanner = do
     TextIO.putStrLn ("\n" <> bold (magenta "Ambiguos") <> " " <> dim "v0.1.0" <> " — " <> dim "Formal Verification System")
     TextIO.putStrLn (dim "Calculus of Constructions with Martin-Löf Identity")
-    TextIO.putStrLn (dim "Commands: def <name> : <Type> = <term> | :load <file> | quit\n")
+    TextIO.putStrLn (dim "Commands: def <name> = <term> | :load <file> | :!<command> | quit\n")
 
 replLoop :: Context -> IO ()
 replLoop context = do
@@ -62,6 +63,10 @@ replLoop context = do
     case rawInput of
         "quit" -> TextIO.putStrLn (dim "Terminating session.")
         _
+            | Text.isPrefixOf ":!" rawInput -> do
+                let shellCommand = Text.unpack (Text.strip (Text.drop 2 rawInput))
+                runShellCommand shellCommand
+                replLoop context
             | Text.isPrefixOf ":load " rawInput || Text.isPrefixOf ":l " rawInput -> do
                 let filePath = Text.unpack (Text.strip (Text.dropWhile (/= ' ') rawInput))
                 maybeUpdatedContext <- loadFile context filePath
@@ -73,12 +78,12 @@ replLoop context = do
                     Left parseError -> do
                         TextIO.putStrLn (red "✗ " <> renderParseError parseError)
                         replLoop context
-                    Right (Definition name declaredType bodyTerm) ->
-                        case checkDefinition context name declaredType bodyTerm of
+                    Right (Definition name maybeType bodyTerm) ->
+                        case checkDefinition context name maybeType bodyTerm of
                             Left typeError -> do
                                 TextIO.putStrLn (red "✗ " <> renderTypeError typeError)
                                 replLoop context
-                            Right updatedContext -> do
+                            Right (updatedContext, finalType) -> do
                                 TextIO.putStrLn
                                     ( green "✓"
                                         <> " Defined "
@@ -86,7 +91,7 @@ replLoop context = do
                                         <> " "
                                         <> dim ":"
                                         <> " "
-                                        <> magenta (prettyExpression declaredType)
+                                        <> magenta (prettyExpression finalType)
                                     )
                                 replLoop updatedContext
                     Right (Evaluation expression) -> do
@@ -98,6 +103,13 @@ replLoop context = do
                                 TextIO.putStrLn ("  " <> dim ":" <> " " <> magenta (prettyExpression (normalize values inferredType)))
                                 TextIO.putStrLn ("  " <> dim "=" <> " " <> bold (green (prettyExpression (normalize values expression))))
                         replLoop context
+
+runShellCommand :: String -> IO ()
+runShellCommand cmd = do
+    cmdResult <- Exception.try (Process.callCommand cmd) :: IO (Either Exception.IOException ())
+    case cmdResult of
+        Left err -> TextIO.putStrLn (red "✗ " <> "Shell error: " <> Text.pack (show err))
+        Right () -> pure ()
 
 loadFile :: Context -> FilePath -> IO (Maybe Context)
 loadFile initialContext filePath = do
@@ -129,8 +141,8 @@ runStatements :: Context -> [Identifier] -> [Statement] -> IO (Maybe (Context, [
 runStatements currentContext accNames [] = pure (Just (currentContext, reverse accNames))
 runStatements currentContext accNames (statement : remaining) =
     case statement of
-        Definition name declaredType bodyTerm ->
-            case checkDefinition currentContext name declaredType bodyTerm of
+        Definition name maybeType bodyTerm ->
+            case checkDefinition currentContext name maybeType bodyTerm of
                 Left typeError -> do
                     TextIO.putStrLn
                         ( red "✗ "
@@ -140,7 +152,7 @@ runStatements currentContext accNames (statement : remaining) =
                             <> renderTypeError typeError
                         )
                     pure Nothing
-                Right updatedContext ->
+                Right (updatedContext, _) ->
                     runStatements updatedContext (name : accNames) remaining
         Evaluation expression ->
             case synthesize currentContext expression of
