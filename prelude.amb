@@ -1,0 +1,215 @@
+{- ==========================================================================
+   Ambiguos Standard Prelude
+   Using Typical Ambiguity (Floating Universes)
+   ========================================================================== -}
+
+
+def identity : {A : Type} -> A -> A
+  = \x -> x
+
+def constant : {A B : Type} -> A -> B -> A
+  = \x y -> x
+
+def flip : {A B C : Type} -> (A -> B -> C) -> B -> A -> C
+  = \f y x -> f x y
+
+def symmetry : {A : Type} -> {x y : A} -> Id A x y -> Id A y x
+  = \p -> J A x (\(z : A) -> \_ -> Id A z x) (refl A x) y p
+
+def transitivity : {A : Type} -> {x y z : A} -> Id A x y -> Id A y z -> Id A x z
+  = \p q -> J A y (\(w : A) -> \_ -> Id A x w) p z q
+
+def congruence : {A B : Type} -> (f : A -> B) -> {x y : A} -> Id A x y -> Id B (f x) (f y)
+  = \f p -> J A x (\(z : A) -> \_ -> Id B (f x) (f z)) (refl B (f x)) y p
+
+def substitute : {A : Type} -> (P : A -> Type) -> {x y : A} -> Id A x y -> P x -> P y
+  = \P p px -> J A x (\(z : A) -> \_ -> P z) px y p
+
+def Not : Type -> Type
+  = \A -> A -> Void
+
+def absurd : {A : Type} -> Void -> A
+  = \v -> abort A v
+
+def doubleNegation : {A : Type} -> A -> Not (Not A)
+  = \x na -> na x
+
+def contraposition : {P Q : Type} -> (P -> Q) -> Not Q -> Not P
+  = \implication notQ p -> notQ (implication p)
+
+def Unit : Type
+  = (R : Type) -> R -> R
+
+def unit : Unit
+  = \(R : Type) -> \(x : R) -> x
+
+def Pair : Type -> Type -> Type
+  = \A B -> (R : Type) -> (A -> B -> R) -> R
+
+def pair : {A B : Type} -> A -> B -> Pair A B
+  = \x y -> \(R : Type) -> \(f : A -> B -> R) -> f x y
+
+def first : {A B : Type} -> Pair A B -> A
+  = \p -> p A (\x y -> x)
+
+def second : {A B : Type} -> Pair A B -> B
+  = \p -> p B (\x y -> y)
+
+def swap : {A B : Type} -> Pair A B -> Pair B A
+  = \p -> pair (second p) (first p)
+
+def nonContradiction : {A : Type} -> Not (Pair A (Not A))
+  = \p -> (second p) (first p)
+
+def Sigma : (A : Type) -> (P : A -> Type) -> Type
+  = \A P -> (R : Type) -> ((x : A) -> P x -> R) -> R
+
+def dependentPair : {A : Type} -> {P : A -> Type} -> (witness : A) -> P witness -> Sigma A P
+  = \witness proof -> \(R : Type) -> \(consumer : (x : A) -> P x -> R) -> consumer witness proof
+
+def Either : Type -> Type -> Type
+  = \A B -> (R : Type) -> (A -> R) -> (B -> R) -> R
+
+def left : {A B : Type} -> A -> Either A B
+  = \x -> \(R : Type) -> \(l : A -> R) -> \(r : B -> R) -> l x
+
+def right : {A B : Type} -> B -> Either A B
+  = \y -> \(R : Type) -> \(l : A -> R) -> \(r : B -> R) -> r y
+
+def either : {A B C : Type} -> (A -> C) -> (B -> C) -> Either A B -> C
+  = \f g e -> e C f g
+
+def Maybe : Type -> Type
+  = \A -> (R : Type) -> R -> (A -> R) -> R
+
+def nothing : {A : Type} -> Maybe A
+  = \(R : Type) -> \(n : R) -> \(j : A -> R) -> n
+
+def just : {A : Type} -> A -> Maybe A
+  = \x -> \(R : Type) -> \(n : R) -> \(j : A -> R) -> j x
+
+def maybe : {A B : Type} -> B -> (A -> B) -> Maybe A -> B
+  = \defaultValue f m -> m B defaultValue f
+
+def fromMaybe : {A : Type} -> A -> Maybe A -> A
+  = \defaultValue m -> m A defaultValue (\x -> x)
+
+def Bool : Type
+  = (P : Type) -> P -> P -> P
+
+def true : Bool
+  = \(P : Type) -> \(t : P) -> \(f : P) -> t
+
+def false : Bool
+  = \(P : Type) -> \(t : P) -> \(f : P) -> f
+
+def not : Bool -> Bool
+  = \b -> \(P : Type) -> \(t : P) -> \(f : P) -> b P f t
+
+def booleanAnd : Bool -> Bool -> Bool
+  = \a b -> a Bool b false
+
+def booleanOr : Bool -> Bool -> Bool
+  = \a b -> a Bool true b
+
+def booleanXor : Bool -> Bool -> Bool
+  = \a b -> a Bool (not b) b
+
+def booleanEliminator : {A : Type} -> A -> A -> Bool -> A
+  = \t f b -> b A t f
+
+def boolToType : Bool -> Type
+  = \b -> b Type Type Void
+
+def trueNotEqualFalse : Not (Id Bool true false)
+  = \p -> J Bool true (\(b : Bool) -> \_ -> boolToType b) Type false p
+
+def predecessor : Nat -> Nat
+  = \n -> natRec (\_ -> Nat) 0 (\(k : Nat) -> \_ -> k) n
+
+def addition : Nat -> Nat -> Nat
+  = \x y -> natRec (\_ -> Nat) y (\_ -> \rec -> successor rec) x
+
+def multiplication : Nat -> Nat -> Nat
+  = \x y -> natRec (\_ -> Nat) 0 (\_ -> \rec -> addition y rec) x
+
+def power : Nat -> Nat -> Nat
+  = \base exponent -> natRec (\_ -> Nat) 1 (\_ -> \rec -> multiplication base rec) exponent
+
+def factorial : Nat -> Nat
+  = \n -> natRec (\_ -> Nat) 1 (\(k : Nat) -> \(rec : Nat) -> multiplication (successor k) rec) n
+
+def mersenne : Nat -> Nat
+  = \n -> predecessor (power 2 n)
+
+def additionZeroLeft : (y : Nat) -> Id Nat (addition 0 y) y
+  = \y -> refl Nat y
+
+def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
+  = \x -> natRec (\(n : Nat) -> Id Nat (addition n 0) n)
+                 (refl Nat 0)
+                 (\(k : Nat) -> \(ih : Id Nat (addition k 0) k) ->
+                     congruence successor ih)
+                 x
+
+def additionSuccessorRight : (x y : Nat) -> Id Nat (addition x (successor y)) (successor (addition x y))
+  = \x y -> natRec (\(n : Nat) -> Id Nat (addition n (successor y)) (successor (addition n y)))
+                       (refl Nat (successor y))
+                       (\(k : Nat) -> \(ih : Id Nat (addition k (successor y)) (successor (addition k y))) ->
+                           congruence successor ih)
+                       x
+
+def theoremTwoPlusThree : Id Nat (addition 2 3) 5
+  = refl Nat 5
+
+def theoremTwoTimesThree : Id Nat (multiplication 2 3) 6
+  = refl Nat 6
+
+def theoremTwoCubed : Id Nat (power 2 3) 8
+  = refl Nat 8
+
+def theoremFactorialThree : Id Nat (factorial 3) 6
+  = refl Nat 6
+
+def Factors : Nat -> Nat -> Nat -> Type
+  = \n a b -> Id Nat n (multiplication a b)
+
+def IsComposite : Nat -> Type
+  = \n -> Sigma Nat (\(a : Nat) -> Sigma Nat (\(b : Nat) -> Factors n a b))
+
+def mersenneFourFactors : Factors (mersenne 4) 3 5
+  = refl Nat 15
+
+def mersenneSixFactorsBaseTwo : Factors (mersenne 6) 3 21
+  = refl Nat 63
+
+def mersenneSixFactorsBaseThree : Factors (mersenne 6) 7 9
+  = refl Nat 63
+
+def mersenneEightFactors : Factors (mersenne 8) 3 85
+  = refl Nat 255
+
+def List : Type -> Type
+  = \A -> (R : Type) -> R -> (A -> R -> R) -> R
+
+def nil : {A : Type} -> List A
+  = \(R : Type) -> \(n : R) -> \(c : A -> R -> R) -> n
+
+def cons : {A : Type} -> A -> List A -> List A
+  = \x xs -> \(R : Type) -> \(n : R) -> \(c : A -> R -> R) -> c x (xs R n c)
+
+def foldRight : {A B : Type} -> (A -> B -> B) -> B -> List A -> B
+  = \f initial xs -> xs B initial f
+
+def length : {A : Type} -> List A -> Nat
+  = \xs -> xs Nat 0 (\_ -> \(accumulator : Nat) -> successor accumulator)
+
+def map : {A B : Type} -> (A -> B) -> List A -> List B
+  = \f xs -> \(R : Type) -> \(n : R) -> \(c : B -> R -> R) ->
+      xs R n (\(x : A) -> \(recursiveResult : R) -> c (f x) recursiveResult)
+
+def append : {A : Type} -> List A -> List A -> List A
+  = \xs ys -> xs (List A) ys (\(x : A) -> \(rec : List A) -> cons x rec)
+
+def addTwoEach : List Nat -> List Nat
+  = \xs -> foldRight (\x accumulator -> cons (addition x 2) accumulator) nil xs
