@@ -36,6 +36,8 @@ data Token
     | TokenRightParen
     | TokenLeftBracket
     | TokenRightBracket
+    | TokenLeftBrace
+    | TokenRightBrace
     | TokenComma
     | TokenIdentifier Identifier
     deriving (Eq, Ord, Show)
@@ -69,50 +71,57 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
   where
     scanLoop remaining
         | null remaining = Right []
+        -- Skip single-line comments
         | take 2 remaining == "--" =
             let afterComment = dropWhile (/= '\n') remaining
              in scanLoop (dropWhile isSpace afterComment)
+        -- Skip block comments
         | take 2 remaining == "{-" =
             case skipBlockComment 1 (drop 2 remaining) of
                 Left err -> Left err
                 Right afterBlock -> scanLoop (dropWhile isSpace afterBlock)
+        -- Match arrows using the compiled DFA
         | Just (_, rest) <- matchPrefixDFA dfaArrow remaining =
             (TokenArrow :) <$> scanLoop (dropWhile isSpace rest)
+        -- Match natural numbers using the compiled DFA
         | Just (numStr, rest) <- matchPrefixDFA dfaNatural remaining =
             let n = read numStr :: Integer
              in (TokenNatural n :) <$> scanLoop (dropWhile isSpace rest)
+        -- Match identifiers and keywords using the compiled DFA
         | Just (identStr, rest) <- matchPrefixDFA dfaIdentifier remaining =
             let token = classifyIdentifier (Text.pack identStr)
              in (token :) <$> scanLoop (dropWhile isSpace rest)
         | (headChar : rest) <- remaining =
             case headChar of
                 '\\' -> (TokenBackslash :) <$> scanLoop (dropWhile isSpace rest)
-                ':' -> (TokenColon :) <$> scanLoop (dropWhile isSpace rest)
-                '=' -> (TokenEquals :) <$> scanLoop (dropWhile isSpace rest)
-                '(' -> (TokenLeftParen :) <$> scanLoop (dropWhile isSpace rest)
-                ')' -> (TokenRightParen :) <$> scanLoop (dropWhile isSpace rest)
-                '[' -> (TokenLeftBracket :) <$> scanLoop (dropWhile isSpace rest)
-                ']' -> (TokenRightBracket :) <$> scanLoop (dropWhile isSpace rest)
-                ',' -> (TokenComma :) <$> scanLoop (dropWhile isSpace rest)
+                ':'  -> (TokenColon :) <$> scanLoop (dropWhile isSpace rest)
+                '='  -> (TokenEquals :) <$> scanLoop (dropWhile isSpace rest)
+                '('  -> (TokenLeftParen :) <$> scanLoop (dropWhile isSpace rest)
+                ')'  -> (TokenRightParen :) <$> scanLoop (dropWhile isSpace rest)
+                '['  -> (TokenLeftBracket :) <$> scanLoop (dropWhile isSpace rest)
+                ']'  -> (TokenRightBracket :) <$> scanLoop (dropWhile isSpace rest)
+                '{'  -> (TokenLeftBrace :) <$> scanLoop (dropWhile isSpace rest)
+                '}'  -> (TokenRightBrace :) <$> scanLoop (dropWhile isSpace rest)
+                ','  -> (TokenComma :) <$> scanLoop (dropWhile isSpace rest)
                 c
                     | isSpace c -> scanLoop (dropWhile isSpace rest)
                     | otherwise -> Left (UnexpectedCharacter c)
         | otherwise = Right []
 
     classifyIdentifier text = case text of
-        "Type" -> TokenKeywordType
-        "def" -> TokenKeywordDef
-        "Id" -> TokenKeywordId
-        "refl" -> TokenKeywordRefl
-        "J" -> TokenKeywordJ
-        "Void" -> TokenKeywordVoid
-        "abort" -> TokenKeywordAbort
-        "Nat" -> TokenKeywordNat
-        "zero" -> TokenKeywordZero
+        "Type"      -> TokenKeywordType
+        "def"       -> TokenKeywordDef
+        "Id"        -> TokenKeywordId
+        "refl"      -> TokenKeywordRefl
+        "J"         -> TokenKeywordJ
+        "Void"      -> TokenKeywordVoid
+        "abort"     -> TokenKeywordAbort
+        "Nat"       -> TokenKeywordNat
+        "zero"      -> TokenKeywordZero
         "successor" -> TokenKeywordSucc
-        "succ" -> TokenKeywordSucc
-        "natRec" -> TokenKeywordNatRec
-        _ -> TokenIdentifier (Identifier text)
+        "succ"      -> TokenKeywordSucc
+        "natRec"    -> TokenKeywordNatRec
+        _           -> TokenIdentifier (Identifier text)
 
     skipBlockComment :: Int -> String -> Either LexError String
     skipBlockComment 0 text = Right text

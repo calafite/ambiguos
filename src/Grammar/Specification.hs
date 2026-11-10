@@ -44,6 +44,8 @@ ambiguosCFG =
                 , TokenRightParen
                 , TokenLeftBracket
                 , TokenRightBracket
+                , TokenLeftBrace
+                , TokenRightBrace
                 , TokenComma
                 ]
         , cfgProductions =
@@ -74,6 +76,7 @@ ambiguosCFG =
             , Production AtomNT [TerminalSymbol TokenKeywordType]
             , Production AtomNT [TerminalSymbol TokenKeywordNat]
             , Production AtomNT [TerminalSymbol TokenLeftBracket, TerminalSymbol TokenRightBracket]
+            , Production AtomNT [TerminalSymbol TokenLeftBrace, TerminalSymbol TokenRightBrace]
             ]
         , cfgStartSymbol = ProgramNT
         }

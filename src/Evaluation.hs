@@ -4,16 +4,16 @@ module Evaluation (
     areDefinitionallyEqual,
 ) where
 
-import AST (Expression (..), Identifier)
+import AST (Expression (..), Identifier, Visibility (..))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Substitution (alphaEquivalent, substitute)
 
-unfoldApplication :: Expression -> (Expression, [Expression])
+unfoldApplication :: Expression -> (Expression, [(Visibility, Expression)])
 unfoldApplication expression = collect expression []
   where
-    collect (Application function argument) arguments =
-        collect function (argument : arguments)
+    collect (Application vis function argument) arguments =
+        collect function ((vis, argument) : arguments)
     collect headExpression arguments =
         (headExpression, arguments)
 
@@ -23,17 +23,20 @@ evaluateWeakHeadNormalForm environment expression =
         Variable identifier ->
             case Map.lookup identifier environment of
                 Just value -> evaluateWeakHeadNormalForm environment value
-                Nothing -> Variable identifier
+                Nothing    -> Variable identifier
+
         Annotation term _annotationType ->
             evaluateWeakHeadNormalForm environment term
-        Application function argument ->
+
+        Application vis function argument ->
             case evaluateWeakHeadNormalForm environment function of
-                Lambda parameter _ body ->
+                Lambda _ parameter _ body ->
                     evaluateWeakHeadNormalForm environment (substitute parameter argument body)
                 evaluatedFunction ->
-                    let combined = Application evaluatedFunction argument
+                    let combined = Application vis evaluatedFunction argument
                         (headExpression, arguments) = unfoldApplication combined
-                     in case (headExpression, arguments) of
+                        rawArgs = map snd arguments
+                     in case (headExpression, rawArgs) of
                             (J, _typeA : _x : _motiveP : baseCaseD : _y : proof : remainingArguments) ->
                                 let proofWhnf = evaluateWeakHeadNormalForm environment proof
                                     (proofHead, _) = unfoldApplication proofWhnf
@@ -41,8 +44,9 @@ evaluateWeakHeadNormalForm environment expression =
                                         then
                                             evaluateWeakHeadNormalForm
                                                 environment
-                                                (foldl Application baseCaseD remainingArguments)
+                                                (foldl (Application Explicit) baseCaseD remainingArguments)
                                         else combined
+
                             (NatRec, motiveP : baseCaseZ : stepS : targetN : remainingArguments) ->
                                 let nWhnf = evaluateWeakHeadNormalForm environment targetN
                                     (nHead, nArgs) = unfoldApplication nWhnf
@@ -50,61 +54,69 @@ evaluateWeakHeadNormalForm environment expression =
                                         Zero ->
                                             evaluateWeakHeadNormalForm
                                                 environment
-                                                (foldl Application baseCaseZ remainingArguments)
+                                                (foldl (Application Explicit) baseCaseZ remainingArguments)
                                         Succ ->
-                                            case nArgs of
+                                            case map snd nArgs of
                                                 [k] ->
-                                                    let recCall = foldl Application NatRec [motiveP, baseCaseZ, stepS, k]
-                                                        stepResult = foldl Application stepS [k, recCall]
+                                                    let recCall = foldl (Application Explicit) NatRec [motiveP, baseCaseZ, stepS, k]
+                                                        stepResult = foldl (Application Explicit) stepS [k, recCall]
                                                      in evaluateWeakHeadNormalForm
                                                             environment
-                                                            (foldl Application stepResult remainingArguments)
+                                                            (foldl (Application Explicit) stepResult remainingArguments)
                                                 _ -> combined
                                         _ -> combined
+
                             _ -> combined
-        Universe -> Universe
-        Identity -> Identity
+
+        Universe    -> Universe
+        Identity    -> Identity
         Reflexivity -> Reflexivity
-        J -> J
-        VoidType -> VoidType
-        Abort -> Abort
-        NatType -> NatType
-        Zero -> Zero
-        Succ -> Succ
-        NatRec -> NatRec
-        Hole h -> Hole h
-        MetaVar i -> MetaVar i
-        Lambda parameter maybeParameterType body ->
-            Lambda parameter maybeParameterType body
-        Pi parameter domain codomain ->
-            Pi parameter domain codomain
+        J           -> J
+        VoidType    -> VoidType
+        Abort       -> Abort
+        NatType     -> NatType
+        Zero        -> Zero
+        Succ        -> Succ
+        NatRec      -> NatRec
+        Hole h      -> Hole h
+        MetaVar i   -> MetaVar i
+
+        Lambda vis parameter maybeParameterType body ->
+            Lambda vis parameter maybeParameterType body
+
+        Pi vis parameter domain codomain ->
+            Pi vis parameter domain codomain
 
 normalize :: Map Identifier Expression -> Expression -> Expression
 normalize environment expression =
-    case evaluateWeakHeadNormalForm environment expression of
-        Variable identifier -> Variable identifier
-        Universe -> Universe
-        Identity -> Identity
-        Reflexivity -> Reflexivity
-        J -> J
-        VoidType -> VoidType
-        Abort -> Abort
-        NatType -> NatType
-        Zero -> Zero
-        Succ -> Succ
-        NatRec -> NatRec
-        Hole h -> Hole h
-        MetaVar i -> MetaVar i
-        Lambda parameter maybeParameterType body ->
-            let normalizedType = fmap (normalize environment) maybeParameterType
-             in Lambda parameter normalizedType (normalize environment body)
-        Application function argument ->
-            Application (normalize environment function) (normalize environment argument)
-        Pi parameter domain codomain ->
-            Pi parameter (normalize environment domain) (normalize environment codomain)
-        Annotation term _annotationType ->
-            normalize environment term
+  case evaluateWeakHeadNormalForm environment expression of
+    Variable identifier -> Variable identifier
+    Universe            -> Universe
+    Identity            -> Identity
+    Reflexivity         -> Reflexivity
+    J                   -> J
+    VoidType            -> VoidType
+    Abort               -> Abort
+    NatType             -> NatType
+    Zero                -> Zero
+    Succ                -> Succ
+    NatRec              -> NatRec
+    Hole h              -> Hole h
+    MetaVar i           -> MetaVar i
+
+    Lambda vis parameter maybeParameterType body ->
+      let normalizedType = fmap (normalize environment) maybeParameterType
+       in Lambda vis parameter normalizedType (normalize environment body)
+
+    Application vis function argument ->
+      Application vis (normalize environment function) (normalize environment argument)
+
+    Pi vis parameter domain codomain ->
+      Pi vis parameter (normalize environment domain) (normalize environment codomain)
+
+    Annotation term _annotationType ->
+      normalize environment term
 
 areDefinitionallyEqual :: Map Identifier Expression -> Expression -> Expression -> Bool
 areDefinitionallyEqual environment leftExpression rightExpression =
-    alphaEquivalent (normalize environment leftExpression) (normalize environment rightExpression)
+  alphaEquivalent (normalize environment leftExpression) (normalize environment rightExpression)

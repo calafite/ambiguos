@@ -8,7 +8,7 @@ module Parser (
     renderParseError,
 ) where
 
-import AST (Expression (..), Identifier (..), Statement (..))
+import AST (Expression (..), Identifier (..), Statement (..), Visibility (..))
 import Control.Applicative (Alternative (..), optional)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -38,25 +38,25 @@ instance Applicative Parser where
         pure (f a, afterA)
 
 instance Alternative Parser where
-    empty = Parser $ \_ -> Left UnexpectedEndOfInput
-    Parser p1 <|> Parser p2 = Parser $ \tokens ->
-        case p1 tokens of
-            Right result -> Right result
-            Left _ -> p2 tokens
+  empty = Parser $ \_ -> Left UnexpectedEndOfInput
+  Parser p1 <|> Parser p2 = Parser $ \tokens ->
+    case p1 tokens of
+      Right result -> Right result
+      Left _       -> p2 tokens
 
 instance Monad Parser where
-    Parser p >>= f = Parser $ \tokens -> do
-        (val, remaining) <- p tokens
-        runParser (f val) remaining
+  Parser p >>= f = Parser $ \tokens -> do
+    (val, remaining) <- p tokens
+    runParser (f val) remaining
 
 peekToken :: Parser (Maybe Token)
 peekToken = Parser $ \tokens -> case tokens of
-    [] -> Right (Nothing, [])
+    []      -> Right (Nothing, [])
     (t : _) -> Right (Just t, tokens)
 
 consumeToken :: Parser Token
 consumeToken = Parser $ \tokens -> case tokens of
-    [] -> Left UnexpectedEndOfInput
+    []       -> Left UnexpectedEndOfInput
     (t : ts) -> Right (t, ts)
 
 expectToken :: Token -> Text -> Parser ()
@@ -75,17 +75,16 @@ parseIdentifier = do
 
 desugarNatural :: Integer -> Expression
 desugarNatural n
-    | n <= 0 = Zero
-    | otherwise = Application Succ (desugarNatural (n - 1))
+    | n <= 0    = Zero
+    | otherwise = Application Explicit Succ (desugarNatural (n - 1))
 
 desugarList :: [Expression] -> Expression
-desugarList [] = Application (Variable (Identifier "nil")) (Hole Nothing)
+desugarList [] = Application Explicit (Variable (Identifier "nil")) (Hole Nothing)
 desugarList (x : xs) =
-    Application
-        ( Application
-            (Application (Variable (Identifier "cons")) (Hole Nothing))
-            x
-        )
+    Application Explicit
+        (Application Explicit
+            (Application Explicit (Variable (Identifier "cons")) (Hole Nothing))
+            x)
         (desugarList xs)
 
 parseListElements :: Parser [Expression]
@@ -111,49 +110,78 @@ parseAtomicExpression :: Parser Expression
 parseAtomicExpression = do
     nextToken <- peekToken
     case nextToken of
-        Just TokenKeywordType -> Universe <$ consumeToken
-        Just TokenKeywordId -> Identity <$ consumeToken
-        Just TokenKeywordRefl -> Reflexivity <$ consumeToken
-        Just TokenKeywordJ -> J <$ consumeToken
-        Just TokenKeywordVoid -> VoidType <$ consumeToken
-        Just TokenKeywordAbort -> Abort <$ consumeToken
-        Just TokenKeywordNat -> NatType <$ consumeToken
-        Just TokenKeywordZero -> Zero <$ consumeToken
-        Just TokenKeywordSucc -> Succ <$ consumeToken
+        Just TokenKeywordType   -> Universe <$ consumeToken
+        Just TokenKeywordId     -> Identity <$ consumeToken
+        Just TokenKeywordRefl   -> Reflexivity <$ consumeToken
+        Just TokenKeywordJ      -> J <$ consumeToken
+        Just TokenKeywordVoid   -> VoidType <$ consumeToken
+        Just TokenKeywordAbort  -> Abort <$ consumeToken
+        Just TokenKeywordNat    -> NatType <$ consumeToken
+        Just TokenKeywordZero   -> Zero <$ consumeToken
+        Just TokenKeywordSucc   -> Succ <$ consumeToken
         Just TokenKeywordNatRec -> NatRec <$ consumeToken
-        Just (TokenNatural n) -> desugarNatural n <$ consumeToken
-        -- Wildcard / Hole: _
+        Just (TokenNatural n)   -> desugarNatural n <$ consumeToken
+
         Just (TokenIdentifier (Identifier "_")) ->
             Hole Nothing <$ consumeToken
+
         Just (TokenIdentifier ident) ->
             Variable ident <$ consumeToken
-        -- Bracketed List Sugar: [1, 2, 3]
+
         Just TokenLeftBracket ->
             parseListLiteral
+
         Just TokenLeftParen -> do
             _ <- consumeToken
             expr <- expressionParser
             expectToken TokenRightParen "')'"
             pure expr
+
         Just other -> Parser $ \_ -> Left (UnexpectedToken other)
-        Nothing -> Parser $ \_ -> Left UnexpectedEndOfInput
+        Nothing    -> Parser $ \_ -> Left UnexpectedEndOfInput
+
+-- | Parses an application argument: either explicit `atom` or explicit override `{expr}`
+parseAppArgument :: Parser (Visibility, Expression)
+parseAppArgument = parseImplicitOverride <|> parseExplicitArg
+  where
+    parseImplicitOverride = do
+        expectToken TokenLeftBrace "'{'"
+        expr <- expressionParser
+        expectToken TokenRightBrace "'}'"
+        pure (Implicit, expr)
+    parseExplicitArg = do
+        expr <- parseAtomicExpression
+        pure (Explicit, expr)
 
 parseApplication :: Parser Expression
 parseApplication = do
     headExpr <- parseAtomicExpression
-    argExprs <- many parseAtomicExpression
-    pure (foldl Application headExpr argExprs)
+    argExprs <- many parseAppArgument
+    pure (foldl (\acc (vis, arg) -> Application vis acc arg) headExpr argExprs)
 
+-- | Parses dependent arrows: (x y : A) -> B or {A B : Type} -> C
 parseDependentArrow :: Parser Expression
-parseDependentArrow = do
-    expectToken TokenLeftParen "'('"
-    parameterNames <- some parseIdentifier
-    expectToken TokenColon "':'"
-    domainType <- expressionParser
-    expectToken TokenRightParen "')'"
-    expectToken TokenArrow "'->'"
-    codomainType <- expressionParser
-    pure (foldr (\name acc -> Pi name domainType acc) codomainType parameterNames)
+parseDependentArrow = parseExplicit <|> parseImplicit
+  where
+    parseExplicit = do
+        expectToken TokenLeftParen "'('"
+        parameterNames <- some parseIdentifier
+        expectToken TokenColon "':'"
+        domainType <- expressionParser
+        expectToken TokenRightParen "')'"
+        expectToken TokenArrow "'->'"
+        codomainType <- expressionParser
+        pure (foldr (\name acc -> Pi Explicit name domainType acc) codomainType parameterNames)
+
+    parseImplicit = do
+        expectToken TokenLeftBrace "'{'"
+        parameterNames <- some parseIdentifier
+        expectToken TokenColon "':'"
+        domainType <- expressionParser
+        expectToken TokenRightBrace "'}'"
+        expectToken TokenArrow "'->'"
+        codomainType <- expressionParser
+        pure (foldr (\name acc -> Pi Implicit name domainType acc) codomainType parameterNames)
 
 parseNonDependentArrow :: Parser Expression
 parseNonDependentArrow = do
@@ -162,7 +190,7 @@ parseNonDependentArrow = do
     if isArrow
         then do
             codomain <- expressionParser
-            pure (Pi (Identifier "_") domain codomain)
+            pure (Pi Explicit (Identifier "_") domain codomain)
         else pure domain
 
 parseArrowOrApplication :: Parser Expression
@@ -180,18 +208,26 @@ parseAnnotation = do
 
 data ParameterGroup
     = SimpleParameters [Identifier]
-    | TypedParameters [Identifier] Expression
+    | TypedParameters Visibility [Identifier] Expression
 
 parseParameterGroup :: Parser ParameterGroup
-parseParameterGroup = parseTyped <|> parseSimple
+parseParameterGroup = parseTypedParen <|> parseTypedBrace <|> parseSimple
   where
-    parseTyped = do
+    parseTypedParen = do
         expectToken TokenLeftParen "'('"
         names <- some parseIdentifier
         expectToken TokenColon "':'"
         paramType <- expressionParser
         expectToken TokenRightParen "')'"
-        pure (TypedParameters names paramType)
+        pure (TypedParameters Explicit names paramType)
+
+    parseTypedBrace = do
+        expectToken TokenLeftBrace "'{'"
+        names <- some parseIdentifier
+        expectToken TokenColon "':'"
+        paramType <- expressionParser
+        expectToken TokenRightBrace "'}'"
+        pure (TypedParameters Implicit names paramType)
 
     parseSimple = do
         names <- some parseIdentifier
@@ -206,9 +242,9 @@ parseLambda = do
     pure (foldr expandGroup body paramGroups)
   where
     expandGroup (SimpleParameters names) acc =
-        foldr (\name inner -> Lambda name Nothing inner) acc names
-    expandGroup (TypedParameters names pType) acc =
-        foldr (\name inner -> Lambda name (Just pType) inner) acc names
+        foldr (\name inner -> Lambda Explicit name Nothing inner) acc names
+    expandGroup (TypedParameters vis names pType) acc =
+        foldr (\name inner -> Lambda vis name (Just pType) inner) acc names
 
 expressionParser :: Parser Expression
 expressionParser = parseLambda <|> parseAnnotation
@@ -239,22 +275,22 @@ parseExpression :: Text -> Either ParseError Expression
 parseExpression input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
-        Right toks -> Right toks
+        Right toks  -> Right toks
     runCompleteParser expressionParser tokens
 
 parseStatement :: Text -> Either ParseError Statement
 parseStatement input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
-        Right toks -> Right toks
+        Right toks  -> Right toks
     runCompleteParser statementParser tokens
 
 parseProgram :: Text -> Either ParseError [Statement]
 parseProgram input = do
-    tokens <- case tokenize input of
-        Left lexErr -> Left (ErrorLexical lexErr)
-        Right toks -> Right toks
-    runCompleteParser (many statementParser) tokens
+  tokens <- case tokenize input of
+    Left lexErr -> Left (ErrorLexical lexErr)
+    Right toks  -> Right toks
+  runCompleteParser (many statementParser) tokens
 
 renderParseError :: ParseError -> Text
 renderParseError err = case err of

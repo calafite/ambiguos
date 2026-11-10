@@ -1,5 +1,6 @@
 module AST (
     Identifier (..),
+    Visibility (..),
     Expression (..),
     Statement (..),
 ) where
@@ -11,12 +12,17 @@ newtype Identifier = Identifier
     }
     deriving (Eq, Ord, Show)
 
+data Visibility
+    = Explicit
+    | Implicit
+    deriving (Eq, Ord, Show)
+
 data Expression
     = Variable Identifier
     | Universe
-    | Lambda Identifier (Maybe Expression) Expression
-    | Application Expression Expression
-    | Pi Identifier Expression Expression
+    | Lambda Visibility Identifier (Maybe Expression) Expression
+    | Application Visibility Expression Expression
+    | Pi Visibility Identifier Expression Expression
     | Annotation Expression Expression
     | Identity
     | Reflexivity
