@@ -63,7 +63,7 @@ evaluateWeakHeadNormalForm environment expression =
                                                 _ -> combined
                                         _ -> combined
                             _ -> combined
-        Universe -> Universe
+        Universe n -> Universe n
         Identity -> Identity
         Reflexivity -> Reflexivity
         J -> J
@@ -84,7 +84,7 @@ normalize :: Map Identifier Expression -> Expression -> Expression
 normalize environment expression =
     case evaluateWeakHeadNormalForm environment expression of
         Variable identifier -> Variable identifier
-        Universe -> Universe
+        Universe n -> Universe n
         Identity -> Identity
         Reflexivity -> Reflexivity
         J -> J

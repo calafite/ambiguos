@@ -19,7 +19,7 @@ data Visibility
 
 data Expression
     = Variable Identifier
-    | Universe
+    | Universe !Int
     | Lambda Visibility Identifier (Maybe Expression) Expression
     | Application Visibility Expression Expression
     | Pi Visibility Identifier Expression Expression
