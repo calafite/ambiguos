@@ -33,6 +33,9 @@ data TypeError
     | ExpectedFunctionType
         { actualType :: Expression
         }
+    | ExpectedUniverse
+        { actualType :: Expression
+        }
     | CannotSynthesizeType Expression
     | OccursCheckFailed Int Expression
     | UnsolvedMetavariable Int
@@ -122,6 +125,23 @@ occursIn i expr = case expr of
     Annotation t ty -> occursIn i t || occursIn i ty
     _ -> False
 
+bindMeta :: Int -> Expression -> Elab ()
+bindMeta i term
+    | occursIn i term = lift $ Left (OccursCheckFailed i term)
+    | otherwise       = modify (\s -> s { metaSubst = Map.insert i term (metaSubst s) })
+
+extractUniverseLevel :: Context -> Expression -> Elab Int
+extractUniverseLevel context expr = do
+    z <- zonk expr
+    let env = contextValues context
+        w = evaluateWeakHeadNormalForm env z
+    case w of
+        Universe n -> pure n
+        MetaVar i  -> do
+            bindMeta i (Universe (-1))
+            pure (-1)
+        other      -> lift $ Left (ExpectedUniverse other)
+
 unify :: Map Identifier Expression -> Expression -> Expression -> Elab ()
 unify env e1 e2 = do
     z1 <- zonk e1
@@ -130,6 +150,11 @@ unify env e1 e2 = do
         (MetaVar i, MetaVar j) | i == j -> pure ()
         (MetaVar i, term) -> bindMeta i term
         (term, MetaVar j) -> bindMeta j term
+
+        (Universe i, Universe j)
+            | i == -1 || j == -1 -> pure ()
+            | i <= j             -> pure ()
+            | otherwise          -> lift $ Left (TypeMismatch (Universe j) (Universe i))
 
         (Application v1 f1 a1, Application v2 f2 a2) | v1 == v2 ->
             tryElab
@@ -147,26 +172,30 @@ unify env e1 e2 = do
                             unify env (substitute p1 (Variable fresh) c1) (substitute p2 (Variable fresh) c2))
                 (unfoldAndRetry z1 z2)
 
-        (Universe, Universe) -> pure ()
-        (Identity, Identity) -> pure ()
-        (Reflexivity, Reflexivity) -> pure ()
-        (J, J) -> pure ()
-        (VoidType, VoidType) -> pure ()
-        (Abort, Abort) -> pure ()
-        (NatType, NatType) -> pure ()
-        (Zero, Zero) -> pure ()
-        (Succ, Succ) -> pure ()
-        (NatRec, NatRec) -> pure ()
+        (Identity, Identity)         -> pure ()
+        (Reflexivity, Reflexivity)   -> pure ()
+        (J, J)                       -> pure ()
+        (VoidType, VoidType)         -> pure ()
+        (Abort, Abort)               -> pure ()
+        (NatType, NatType)           -> pure ()
+        (Zero, Zero)                 -> pure ()
+        (Succ, Succ)                 -> pure ()
+        (NatRec, NatRec)             -> pure ()
         (Variable x, Variable y) | x == y -> pure ()
 
         _ -> unfoldAndRetry z1 z2
   where
+    unfoldAndRetry :: Expression -> Expression -> Elab ()
     unfoldAndRetry t1 t2 = do
         let w1 = evaluateWeakHeadNormalForm env t1
             w2 = evaluateWeakHeadNormalForm env t2
         case (w1, w2) of
             (MetaVar i, term) -> bindMeta i term
             (term, MetaVar j) -> bindMeta j term
+            (Universe i, Universe j)
+                | i == -1 || j == -1 -> pure ()
+                | i <= j             -> pure ()
+                | otherwise          -> lift $ Left (TypeMismatch (Universe j) (Universe i))
             _ ->
                 if w1 /= t1 || w2 /= t2
                     then unify env w1 w2
@@ -174,12 +203,6 @@ unify env e1 e2 = do
                         then pure ()
                         else lift $ Left (TypeMismatch t2 t1)
 
-    bindMeta :: Int -> Expression -> Elab ()
-    bindMeta i term
-        | occursIn i term = lift $ Left (OccursCheckFailed i term)
-        | otherwise = modify (\s -> s { metaSubst = Map.insert i term (metaSubst s) })
-
--- | Automatically instantiates leading Implicit Pi parameters: {A : Type} -> ... with MetaVars
 instantiateLeadingImplicits :: Context -> Expression -> Expression -> Elab (Expression, Expression)
 instantiateLeadingImplicits context expr exprType = do
     zonkedType <- zonk exprType
@@ -196,19 +219,19 @@ instantiateLeadingImplicits context expr exprType = do
 
 identityType, reflexivityType, jType, abortType, succType, natRecType :: Expression
 identityType =
-    Pi Explicit (Identifier "A") Universe
+    Pi Explicit (Identifier "A") (Universe (-1))
         (Pi Explicit (Identifier "_") (Variable (Identifier "A"))
-            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) Universe))
+            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Universe (-1))))
 
 reflexivityType =
-    Pi Explicit (Identifier "A") Universe
+    Pi Explicit (Identifier "A") (Universe (-1))
         (Pi Explicit (Identifier "x") (Variable (Identifier "A"))
             (Application Explicit
                 (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x")))
                 (Variable (Identifier "x"))))
 
 jType =
-    Pi Explicit (Identifier "A") Universe
+    Pi Explicit (Identifier "A") (Universe (-1))
         $ Pi Explicit (Identifier "x") (Variable (Identifier "A"))
         $ Pi Explicit (Identifier "P") motiveType
         $ Pi Explicit (Identifier "d") baseCaseType
@@ -219,7 +242,7 @@ jType =
         Pi Explicit (Identifier "y") (Variable (Identifier "A"))
             (Pi Explicit (Identifier "_")
                 (Application Explicit (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x"))) (Variable (Identifier "y")))
-                Universe)
+                (Universe (-1)))
     baseCaseType =
         Application Explicit (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "x")))
             (Application Explicit (Application Explicit Reflexivity (Variable (Identifier "A"))) (Variable (Identifier "x")))
@@ -229,7 +252,7 @@ jType =
         Application Explicit (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "y"))) (Variable (Identifier "p"))
 
 abortType =
-    Pi Explicit (Identifier "A") Universe
+    Pi Explicit (Identifier "A") (Universe (-1))
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
 
 succType =
@@ -241,7 +264,7 @@ natRecType =
         $ Pi Explicit (Identifier "s") sType
         $ Pi Explicit (Identifier "n") NatType codomainType
   where
-    pType = Pi Explicit (Identifier "_") NatType Universe
+    pType = Pi Explicit (Identifier "_") NatType (Universe (-1))
     zType = Application Explicit (Variable (Identifier "P")) Zero
     nVar = Variable (Identifier "n")
     pn = Application Explicit (Variable (Identifier "P")) nVar
@@ -255,13 +278,14 @@ synthesizeElab context expression = case expression of
         rawType <- lift (lookupContext identifier context)
         instantiateLeadingImplicits context (Variable identifier) rawType
 
-    Universe    -> pure (Universe, Universe)
+    Universe n  -> pure (Universe n, Universe (if n == -1 then -1 else n + 1))
+
     Identity    -> pure (Identity, identityType)
     Reflexivity -> pure (Reflexivity, reflexivityType)
     J           -> pure (J, jType)
-    VoidType    -> pure (VoidType, Universe)
+    VoidType    -> pure (VoidType, Universe (-1))
     Abort       -> pure (Abort, abortType)
-    NatType     -> pure (NatType, Universe)
+    NatType     -> pure (NatType, Universe (-1))
     Zero        -> pure (Zero, NatType)
     Succ        -> pure (Succ, succType)
     NatRec      -> pure (NatRec, natRecType)
@@ -280,15 +304,19 @@ synthesizeElab context expression = case expression of
         pure (m, tm)
 
     Annotation term annotationType -> do
-        _ <- checkElab context annotationType Universe
-        _ <- checkElab context term annotationType
-        pure (term, annotationType)
+        (elabAnnType, annTypeUniverse) <- synthesizeElab context annotationType
+        _ <- extractUniverseLevel context annTypeUniverse
+        _ <- checkElab context term elabAnnType
+        pure (term, elabAnnType)
 
     Pi vis parameter domain codomain -> do
-        _ <- checkElab context domain Universe
-        let extendedContext = extendContextType parameter domain context
-        _ <- checkElab extendedContext codomain Universe
-        pure (Pi vis parameter domain codomain, Universe)
+        (elabDomain, domainUniverse) <- synthesizeElab context domain
+        levelI <- extractUniverseLevel context domainUniverse
+        let extendedContext = extendContextType parameter elabDomain context
+        (elabCodomain, codomainUniverse) <- synthesizeElab extendedContext codomain
+        levelJ <- extractUniverseLevel extendedContext codomainUniverse
+        let maxLevel = if levelI == -1 || levelJ == -1 then -1 else max levelI levelJ
+        pure (Pi vis parameter elabDomain elabCodomain, Universe maxLevel)
 
     Application Explicit function argument -> do
         (fnExpr, functionType) <- synthesizeElab context function
@@ -324,10 +352,13 @@ synthesizeElab context expression = case expression of
                 lift $ Left (ExpectedFunctionType nonFunctionType)
 
     Lambda vis parameter (Just parameterType) body -> do
-        _ <- checkElab context parameterType Universe
-        let extendedContext = extendContextType parameter parameterType context
+        (elabParamType, paramUniverse) <- synthesizeElab context parameterType
+        _ <- extractUniverseLevel context paramUniverse
+        let extendedContext = extendContextType parameter elabParamType context
         (bodyExpr, bodyType) <- synthesizeElab extendedContext body
-        pure (Lambda vis parameter (Just parameterType) bodyExpr, Pi vis parameter parameterType bodyType)
+        (bodyTypeExpr, bodyUniverse) <- synthesizeElab extendedContext bodyType
+        _ <- extractUniverseLevel extendedContext bodyUniverse
+        pure (Lambda vis parameter (Just elabParamType) bodyExpr, Pi vis parameter elabParamType bodyTypeExpr)
 
     Lambda _ _ Nothing _ ->
         lift $ Left (CannotSynthesizeType expression)
@@ -341,12 +372,12 @@ checkElab context expression expectedType = do
         (Hole _, _) ->
             freshMetaVar
 
-        -- Explicit lambda checking against explicit Pi
         (Lambda Explicit parameter maybeDeclaredType body, Pi Explicit binder domain codomain) -> do
             case maybeDeclaredType of
                 Just declaredType -> do
-                    _ <- checkElab context declaredType Universe
-                    unify env declaredType domain
+                    (elabDeclType, declUniverse) <- synthesizeElab context declaredType
+                    _ <- extractUniverseLevel context declUniverse
+                    unify env elabDeclType domain
                 Nothing -> pure ()
             let targetParameter = parameter
                 renamedBody = body
@@ -355,12 +386,12 @@ checkElab context expression expectedType = do
             elaboratedBody <- checkElab extendedContext renamedBody substitutedCodomain
             pure (Lambda Explicit targetParameter (Just domain) elaboratedBody)
 
-        -- Implicit lambda checking against implicit Pi
         (Lambda Implicit parameter maybeDeclaredType body, Pi Implicit binder domain codomain) -> do
             case maybeDeclaredType of
                 Just declaredType -> do
-                    _ <- checkElab context declaredType Universe
-                    unify env declaredType domain
+                    (elabDeclType, declUniverse) <- synthesizeElab context declaredType
+                    _ <- extractUniverseLevel context declUniverse
+                    unify env elabDeclType domain
                 Nothing -> pure ()
             let targetParameter = parameter
                 renamedBody = body
@@ -369,7 +400,6 @@ checkElab context expression expectedType = do
             elaboratedBody <- checkElab extendedContext renamedBody substitutedCodomain
             pure (Lambda Implicit targetParameter (Just domain) elaboratedBody)
 
-        -- Automatic implicit lambda insertion: term checked against an Implicit Pi
         (otherExpr, Pi Implicit binder domain codomain) -> do
             let extendedContext = extendContextType binder domain context
             elaboratedBody <- checkElab extendedContext otherExpr codomain
@@ -408,8 +438,9 @@ checkDefinition context name maybeDeclaredType bodyTerm =
         (zonkedBody, finalType) <- case maybeDeclaredType of
             Just declaredType -> do
                 declWithMetas <- instantiateHoles declaredType
-                _ <- checkElab context declWithMetas Universe
-                zonkedDeclType <- zonk declWithMetas
+                (elabDeclType, typeUniverse) <- synthesizeElab context declWithMetas
+                _ <- extractUniverseLevel context typeUniverse
+                zonkedDeclType <- zonk elabDeclType
                 bodyWithMetas <- instantiateHoles bodyTerm
                 elabBody <- checkElab context bodyWithMetas zonkedDeclType
                 zonkedBodyTerm <- zonk elabBody
@@ -435,6 +466,9 @@ renderTypeError typeError = case typeError of
             <> prettyExpression actual
     ExpectedFunctionType actual ->
         "Expected a function (Pi) type, but encountered:\n  "
+            <> prettyExpression actual
+    ExpectedUniverse actual ->
+        "Expected a Type universe, but encountered:\n  "
             <> prettyExpression actual
     CannotSynthesizeType term ->
         "Cannot synthesize type for unannotated expression:\n  "

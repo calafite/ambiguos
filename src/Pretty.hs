@@ -34,8 +34,12 @@ peanoToInteger (Application _ Succ rest) = do
 peanoToInteger _ = Nothing
 
 peanoListToElements :: Expression -> Maybe [Expression]
-peanoListToElements (Application _ (Variable (Identifier "nil")) _) = Just []
-peanoListToElements (Application _ (Application _ (Application _ (Variable (Identifier "cons")) _) x) rest) = do
+peanoListToElements (Variable (Identifier "nil")) = Just []
+peanoListToElements (Application Implicit (Variable (Identifier "nil")) _) = Just []
+peanoListToElements (Application Explicit (Application Explicit (Application Implicit (Variable (Identifier "cons")) _) x) rest) = do
+    xs <- peanoListToElements rest
+    pure (x : xs)
+peanoListToElements (Application Explicit (Application Explicit (Variable (Identifier "cons")) x) rest) = do
     xs <- peanoListToElements rest
     pure (x : xs)
 peanoListToElements _ = Nothing
@@ -64,7 +68,9 @@ prettyWithPrecedence currentPrecedence expression =
             Nothing -> case expression of
                 Variable identifier ->
                     prettyIdentifier identifier
-                Universe -> "Type"
+                Universe (-1) -> "Type"
+                Universe 0    -> "Type 0"
+                Universe n    -> "Type " <> Text.pack (show n)
                 Identity -> "Id"
                 Reflexivity -> "refl"
                 J -> "J"
