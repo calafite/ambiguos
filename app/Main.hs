@@ -98,10 +98,10 @@ replLoop context = do
                         case synthesize context expression of
                             Left typeError ->
                                 TextIO.putStrLn (red "✗ " <> renderTypeError typeError)
-                            Right inferredType -> do
+                            Right (elaboratedExpr, inferredType) -> do
                                 let values = contextValues context
                                 TextIO.putStrLn ("  " <> dim ":" <> " " <> magenta (prettyExpression (normalize values inferredType)))
-                                TextIO.putStrLn ("  " <> dim "=" <> " " <> bold (green (prettyExpression (normalize values expression))))
+                                TextIO.putStrLn ("  " <> dim "=" <> " " <> bold (green (prettyExpression (normalize values elaboratedExpr))))
                         replLoop context
 
 runShellCommand :: String -> IO ()
@@ -159,10 +159,10 @@ runStatements currentContext accNames (statement : remaining) =
                 Left typeError -> do
                     TextIO.putStrLn (red "✗ " <> "Error in expression: " <> renderTypeError typeError)
                     pure Nothing
-                Right inferredType -> do
+                Right (elaboratedExpr, inferredType) -> do
                     let values = contextValues currentContext
                     TextIO.putStrLn ("  " <> dim ":" <> " " <> magenta (prettyExpression (normalize values inferredType)))
-                    TextIO.putStrLn ("  " <> dim "=" <> " " <> bold (green (prettyExpression (normalize values expression))))
+                    TextIO.putStrLn ("  " <> dim "=" <> " " <> bold (green (prettyExpression (normalize values elaboratedExpr))))
                     runStatements currentContext accNames remaining
 
 formatWrappedList :: Int -> [Identifier] -> Text

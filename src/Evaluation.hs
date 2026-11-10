@@ -22,10 +22,8 @@ evaluateWeakHeadNormalForm environment expression =
     case expression of
         Variable identifier ->
             case Map.lookup identifier environment of
-                Just value ->
-                    evaluateWeakHeadNormalForm environment value
-                Nothing ->
-                    Variable identifier
+                Just value -> evaluateWeakHeadNormalForm environment value
+                Nothing -> Variable identifier
         Annotation term _annotationType ->
             evaluateWeakHeadNormalForm environment term
         Application function argument ->
@@ -74,6 +72,8 @@ evaluateWeakHeadNormalForm environment expression =
         Zero -> Zero
         Succ -> Succ
         NatRec -> NatRec
+        Hole h -> Hole h
+        MetaVar i -> MetaVar i
         Lambda parameter maybeParameterType body ->
             Lambda parameter maybeParameterType body
         Pi parameter domain codomain ->
@@ -82,8 +82,7 @@ evaluateWeakHeadNormalForm environment expression =
 normalize :: Map Identifier Expression -> Expression -> Expression
 normalize environment expression =
     case evaluateWeakHeadNormalForm environment expression of
-        Variable identifier ->
-            Variable identifier
+        Variable identifier -> Variable identifier
         Universe -> Universe
         Identity -> Identity
         Reflexivity -> Reflexivity
@@ -94,6 +93,8 @@ normalize environment expression =
         Zero -> Zero
         Succ -> Succ
         NatRec -> NatRec
+        Hole h -> Hole h
+        MetaVar i -> MetaVar i
         Lambda parameter maybeParameterType body ->
             let normalizedType = fmap (normalize environment) maybeParameterType
              in Lambda parameter normalizedType (normalize environment body)

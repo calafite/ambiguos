@@ -78,6 +78,35 @@ desugarNatural n
     | n <= 0 = Zero
     | otherwise = Application Succ (desugarNatural (n - 1))
 
+desugarList :: [Expression] -> Expression
+desugarList [] = Application (Variable (Identifier "nil")) (Hole Nothing)
+desugarList (x : xs) =
+    Application
+        ( Application
+            (Application (Variable (Identifier "cons")) (Hole Nothing))
+            x
+        )
+        (desugarList xs)
+
+parseListElements :: Parser [Expression]
+parseListElements = do
+    firstElem <- expressionParser
+    restElems <- many (expectToken TokenComma "','" *> expressionParser)
+    pure (firstElem : restElems)
+
+parseListLiteral :: Parser Expression
+parseListLiteral = do
+    _ <- consumeToken
+    nextToken <- peekToken
+    case nextToken of
+        Just TokenRightBracket -> do
+            _ <- consumeToken
+            pure (desugarList [])
+        _ -> do
+            elems <- parseListElements
+            expectToken TokenRightBracket "']'"
+            pure (desugarList elems)
+
 parseAtomicExpression :: Parser Expression
 parseAtomicExpression = do
     nextToken <- peekToken
@@ -93,7 +122,14 @@ parseAtomicExpression = do
         Just TokenKeywordSucc -> Succ <$ consumeToken
         Just TokenKeywordNatRec -> NatRec <$ consumeToken
         Just (TokenNatural n) -> desugarNatural n <$ consumeToken
-        Just (TokenIdentifier ident) -> Variable ident <$ consumeToken
+        -- Wildcard / Hole: _
+        Just (TokenIdentifier (Identifier "_")) ->
+            Hole Nothing <$ consumeToken
+        Just (TokenIdentifier ident) ->
+            Variable ident <$ consumeToken
+        -- Bracketed List Sugar: [1, 2, 3]
+        Just TokenLeftBracket ->
+            parseListLiteral
         Just TokenLeftParen -> do
             _ <- consumeToken
             expr <- expressionParser

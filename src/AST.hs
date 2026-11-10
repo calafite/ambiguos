@@ -27,6 +27,8 @@ data Expression
     | Zero
     | Succ
     | NatRec
+    | Hole (Maybe Identifier)
+    | MetaVar Int
     deriving (Eq, Show)
 
 data Statement

@@ -14,8 +14,7 @@ import qualified Data.Text as Text
 
 freeVariables :: Expression -> Set Identifier
 freeVariables expression = case expression of
-    Variable identifier ->
-        Set.singleton identifier
+    Variable identifier -> Set.singleton identifier
     Universe -> Set.empty
     Identity -> Set.empty
     Reflexivity -> Set.empty
@@ -26,6 +25,8 @@ freeVariables expression = case expression of
     Zero -> Set.empty
     Succ -> Set.empty
     NatRec -> Set.empty
+    Hole _ -> Set.empty
+    MetaVar _ -> Set.empty
     Lambda parameter maybeParameterType body ->
         let typeFreeVariables = case maybeParameterType of
                 Just parameterType -> freeVariables parameterType
@@ -70,6 +71,8 @@ substitute targetVariable replacementExpression sourceExpression =
         Zero -> Zero
         Succ -> Succ
         NatRec -> NatRec
+        Hole h -> Hole h
+        MetaVar i -> MetaVar i
         Application function argument ->
             Application
                 (substitute targetVariable replacementExpression function)
@@ -137,6 +140,8 @@ alphaEquivalent leftExpression rightExpression =
         (Zero, Zero) -> True
         (Succ, Succ) -> True
         (NatRec, NatRec) -> True
+        (Hole _, Hole _) -> True
+        (MetaVar i, MetaVar j) -> i == j
         (Application f1 a1, Application f2 a2) ->
             alphaEquivalent f1 f2 && alphaEquivalent a1 a2
         (Annotation t1 ty1, Annotation t2 ty2) ->
@@ -157,10 +162,8 @@ alphaEquivalent leftExpression rightExpression =
                                     renamedBody2 = substitute param2 (Variable fresh) body2
                                  in alphaEquivalent renamedBody1 renamedBody2
         (Pi param1 dom1 codom1, Pi param2 dom2 codom2)
-            | not (alphaEquivalent dom1 dom2) ->
-                False
-            | param1 == param2 ->
-                alphaEquivalent codom1 codom2
+            | not (alphaEquivalent dom1 dom2) -> False
+            | param1 == param2 -> alphaEquivalent codom1 codom2
             | otherwise ->
                 let fresh = freshIdentifier param1 (Set.union (freeVariables codom1) (freeVariables codom2))
                     renamedCodom1 = substitute param1 (Variable fresh) codom1

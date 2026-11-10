@@ -34,6 +34,9 @@ data Token
     | TokenEquals
     | TokenLeftParen
     | TokenRightParen
+    | TokenLeftBracket
+    | TokenRightBracket
+    | TokenComma
     | TokenIdentifier Identifier
     deriving (Eq, Ord, Show)
 
@@ -88,6 +91,9 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
                 '=' -> (TokenEquals :) <$> scanLoop (dropWhile isSpace rest)
                 '(' -> (TokenLeftParen :) <$> scanLoop (dropWhile isSpace rest)
                 ')' -> (TokenRightParen :) <$> scanLoop (dropWhile isSpace rest)
+                '[' -> (TokenLeftBracket :) <$> scanLoop (dropWhile isSpace rest)
+                ']' -> (TokenRightBracket :) <$> scanLoop (dropWhile isSpace rest)
+                ',' -> (TokenComma :) <$> scanLoop (dropWhile isSpace rest)
                 c
                     | isSpace c -> scanLoop (dropWhile isSpace rest)
                     | otherwise -> Left (UnexpectedCharacter c)

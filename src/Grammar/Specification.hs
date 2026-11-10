@@ -42,6 +42,9 @@ ambiguosCFG =
                 , TokenEquals
                 , TokenLeftParen
                 , TokenRightParen
+                , TokenLeftBracket
+                , TokenRightBracket
+                , TokenComma
                 ]
         , cfgProductions =
             [ Production ProgramNT [NonTerminalSymbol StatementNT, NonTerminalSymbol ProgramNT]
@@ -52,8 +55,6 @@ ambiguosCFG =
                 DefinitionNT
                 [ TerminalSymbol TokenKeywordDef
                 , NonTerminalSymbol AtomNT
-                , TerminalSymbol TokenColon
-                , NonTerminalSymbol ExpressionNT
                 , TerminalSymbol TokenEquals
                 , NonTerminalSymbol ExpressionNT
                 ]
@@ -67,60 +68,12 @@ ambiguosCFG =
                 , TerminalSymbol TokenArrow
                 , NonTerminalSymbol ExpressionNT
                 ]
-            , Production
-                LambdaNT
-                [ TerminalSymbol TokenBackslash
-                , TerminalSymbol TokenLeftParen
-                , NonTerminalSymbol AtomNT
-                , TerminalSymbol TokenColon
-                , NonTerminalSymbol ExpressionNT
-                , TerminalSymbol TokenRightParen
-                , TerminalSymbol TokenArrow
-                , NonTerminalSymbol ExpressionNT
-                ]
             , Production AnnotationNT [NonTerminalSymbol ArrowNT]
-            , Production
-                AnnotationNT
-                [ NonTerminalSymbol ArrowNT
-                , TerminalSymbol TokenColon
-                , NonTerminalSymbol ExpressionNT
-                ]
-            , Production
-                ArrowNT
-                [ TerminalSymbol TokenLeftParen
-                , NonTerminalSymbol AtomNT
-                , TerminalSymbol TokenColon
-                , NonTerminalSymbol ExpressionNT
-                , TerminalSymbol TokenRightParen
-                , TerminalSymbol TokenArrow
-                , NonTerminalSymbol ExpressionNT
-                ]
             , Production ArrowNT [NonTerminalSymbol ApplicationNT]
-            , Production
-                ArrowNT
-                [ NonTerminalSymbol ApplicationNT
-                , TerminalSymbol TokenArrow
-                , NonTerminalSymbol ExpressionNT
-                ]
-            , Production ApplicationNT [NonTerminalSymbol AtomNT, NonTerminalSymbol ApplicationNT]
             , Production ApplicationNT [NonTerminalSymbol AtomNT]
             , Production AtomNT [TerminalSymbol TokenKeywordType]
-            , Production AtomNT [TerminalSymbol TokenKeywordId]
-            , Production AtomNT [TerminalSymbol TokenKeywordRefl]
-            , Production AtomNT [TerminalSymbol TokenKeywordJ]
-            , Production AtomNT [TerminalSymbol TokenKeywordVoid]
-            , Production AtomNT [TerminalSymbol TokenKeywordAbort]
             , Production AtomNT [TerminalSymbol TokenKeywordNat]
-            , Production AtomNT [TerminalSymbol TokenKeywordZero]
-            , Production AtomNT [TerminalSymbol TokenKeywordSucc]
-            , Production AtomNT [TerminalSymbol TokenKeywordNatRec]
-            , Production AtomNT [TerminalSymbol (TokenNatural 0)]
-            , Production
-                AtomNT
-                [ TerminalSymbol TokenLeftParen
-                , NonTerminalSymbol ExpressionNT
-                , TerminalSymbol TokenRightParen
-                ]
+            , Production AtomNT [TerminalSymbol TokenLeftBracket, TerminalSymbol TokenRightBracket]
             ]
         , cfgStartSymbol = ProgramNT
         }
