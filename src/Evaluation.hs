@@ -36,7 +36,6 @@ evaluateWeakHeadNormalForm environment expression =
                     let combined = Application evaluatedFunction argument
                         (headExpression, arguments) = unfoldApplication combined
                      in case (headExpression, arguments) of
-                            -- iota-reduction for J
                             (J, _typeA : _x : _motiveP : baseCaseD : _y : proof : remainingArguments) ->
                                 let proofWhnf = evaluateWeakHeadNormalForm environment proof
                                     (proofHead, _) = unfoldApplication proofWhnf
@@ -46,7 +45,6 @@ evaluateWeakHeadNormalForm environment expression =
                                                 environment
                                                 (foldl Application baseCaseD remainingArguments)
                                         else combined
-                            -- iota-reduction for natRec: natRec P z s zero -> z; natRec P z s (succ n) -> s n (natRec P z s n)
                             (NatRec, motiveP : baseCaseZ : stepS : targetN : remainingArguments) ->
                                 let nWhnf = evaluateWeakHeadNormalForm environment targetN
                                     (nHead, nArgs) = unfoldApplication nWhnf

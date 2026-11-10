@@ -246,11 +246,17 @@ check context expression expectedType =
                             , actualType = normalize (contextValues context) synthesizedType
                             }
 
-checkDefinition :: Context -> Identifier -> Expression -> Expression -> Either TypeError Context
-checkDefinition context name declaredType bodyTerm = do
-    check context declaredType Universe
-    check context bodyTerm declaredType
-    pure (extendContextDefinition name declaredType bodyTerm context)
+checkDefinition :: Context -> Identifier -> Maybe Expression -> Expression -> Either TypeError (Context, Expression)
+checkDefinition context name maybeDeclaredType bodyTerm = case maybeDeclaredType of
+    Just declaredType -> do
+        check context declaredType Universe
+        check context bodyTerm declaredType
+        let updatedContext = extendContextDefinition name declaredType bodyTerm context
+        pure (updatedContext, declaredType)
+    Nothing -> do
+        synthesizedType <- synthesize context bodyTerm
+        let updatedContext = extendContextDefinition name synthesizedType bodyTerm context
+        pure (updatedContext, synthesizedType)
 
 renderTypeError :: TypeError -> Text
 renderTypeError typeError = case typeError of

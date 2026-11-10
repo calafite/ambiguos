@@ -30,6 +30,6 @@ data Expression
     deriving (Eq, Show)
 
 data Statement
-    = Definition Identifier Expression Expression
+    = Definition Identifier (Maybe Expression) Expression
     | Evaluation Expression
     deriving (Eq, Show)

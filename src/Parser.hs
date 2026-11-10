@@ -9,7 +9,7 @@ module Parser (
 ) where
 
 import AST (Expression (..), Identifier (..), Statement (..))
-import Control.Applicative (Alternative (..))
+import Control.Applicative (Alternative (..), optional)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Lexer (LexError, Token (..), renderLexError, tokenize)
@@ -111,13 +111,13 @@ parseApplication = do
 parseDependentArrow :: Parser Expression
 parseDependentArrow = do
     expectToken TokenLeftParen "'('"
-    parameterName <- parseIdentifier
+    parameterNames <- some parseIdentifier
     expectToken TokenColon "':'"
     domainType <- expressionParser
     expectToken TokenRightParen "')'"
     expectToken TokenArrow "'->'"
     codomainType <- expressionParser
-    pure (Pi parameterName domainType codomainType)
+    pure (foldr (\name acc -> Pi name domainType acc) codomainType parameterNames)
 
 parseNonDependentArrow :: Parser Expression
 parseNonDependentArrow = do
@@ -142,28 +142,37 @@ parseAnnotation = do
             pure (Annotation termExpr annType)
         else pure termExpr
 
-parseLambdaParameter :: Parser (Identifier, Maybe Expression)
-parseLambdaParameter = parseAnnotatedParameter <|> parseSimpleParameter
+data ParameterGroup
+    = SimpleParameters [Identifier]
+    | TypedParameters [Identifier] Expression
+
+parseParameterGroup :: Parser ParameterGroup
+parseParameterGroup = parseTyped <|> parseSimple
   where
-    parseAnnotatedParameter = do
+    parseTyped = do
         expectToken TokenLeftParen "'('"
-        name <- parseIdentifier
+        names <- some parseIdentifier
         expectToken TokenColon "':'"
         paramType <- expressionParser
         expectToken TokenRightParen "')'"
-        pure (name, Just paramType)
+        pure (TypedParameters names paramType)
 
-    parseSimpleParameter = do
-        name <- parseIdentifier
-        pure (name, Nothing)
+    parseSimple = do
+        names <- some parseIdentifier
+        pure (SimpleParameters names)
 
 parseLambda :: Parser Expression
 parseLambda = do
     expectToken TokenBackslash "'\\'"
-    (parameterName, maybeParamType) <- parseLambdaParameter
+    paramGroups <- some parseParameterGroup
     expectToken TokenArrow "'->'"
     body <- expressionParser
-    pure (Lambda parameterName maybeParamType body)
+    pure (foldr expandGroup body paramGroups)
+  where
+    expandGroup (SimpleParameters names) acc =
+        foldr (\name inner -> Lambda name Nothing inner) acc names
+    expandGroup (TypedParameters names pType) acc =
+        foldr (\name inner -> Lambda name (Just pType) inner) acc names
 
 expressionParser :: Parser Expression
 expressionParser = parseLambda <|> parseAnnotation
@@ -172,11 +181,10 @@ parseDefinition :: Parser Statement
 parseDefinition = do
     expectToken TokenKeywordDef "'def'"
     name <- parseIdentifier
-    expectToken TokenColon "':'"
-    declaredType <- expressionParser
+    maybeType <- optional (expectToken TokenColon "':'" *> expressionParser)
     expectToken TokenEquals "'='"
     bodyTerm <- expressionParser
-    pure (Definition name declaredType bodyTerm)
+    pure (Definition name maybeType bodyTerm)
 
 parseEvaluation :: Parser Statement
 parseEvaluation = Evaluation <$> expressionParser
