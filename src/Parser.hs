@@ -38,25 +38,25 @@ instance Applicative Parser where
         pure (f a, afterA)
 
 instance Alternative Parser where
-  empty = Parser $ \_ -> Left UnexpectedEndOfInput
-  Parser p1 <|> Parser p2 = Parser $ \tokens ->
-    case p1 tokens of
-      Right result -> Right result
-      Left _       -> p2 tokens
+    empty = Parser $ \_ -> Left UnexpectedEndOfInput
+    Parser p1 <|> Parser p2 = Parser $ \tokens ->
+        case p1 tokens of
+            Right result -> Right result
+            Left _ -> p2 tokens
 
 instance Monad Parser where
-  Parser p >>= f = Parser $ \tokens -> do
-    (val, remaining) <- p tokens
-    runParser (f val) remaining
+    Parser p >>= f = Parser $ \tokens -> do
+        (val, remaining) <- p tokens
+        runParser (f val) remaining
 
 peekToken :: Parser (Maybe Token)
 peekToken = Parser $ \tokens -> case tokens of
-    []      -> Right (Nothing, [])
+    [] -> Right (Nothing, [])
     (t : _) -> Right (Just t, tokens)
 
 consumeToken :: Parser Token
 consumeToken = Parser $ \tokens -> case tokens of
-    []       -> Left UnexpectedEndOfInput
+    [] -> Left UnexpectedEndOfInput
     (t : ts) -> Right (t, ts)
 
 expectToken :: Token -> Text -> Parser ()
@@ -75,16 +75,19 @@ parseIdentifier = do
 
 desugarNatural :: Integer -> Expression
 desugarNatural n
-    | n <= 0    = Zero
+    | n <= 0 = Zero
     | otherwise = Application Explicit Succ (desugarNatural (n - 1))
 
 desugarList :: [Expression] -> Expression
 desugarList [] = Application Explicit (Variable (Identifier "nil")) (Hole Nothing)
 desugarList (x : xs) =
-    Application Explicit
-        (Application Explicit
+    Application
+        Explicit
+        ( Application
+            Explicit
             (Application Explicit (Variable (Identifier "cons")) (Hole Nothing))
-            x)
+            x
+        )
         (desugarList xs)
 
 parseListElements :: Parser [Expression]
@@ -110,35 +113,30 @@ parseAtomicExpression :: Parser Expression
 parseAtomicExpression = do
     nextToken <- peekToken
     case nextToken of
-        Just TokenKeywordType   -> Universe <$ consumeToken
-        Just TokenKeywordId     -> Identity <$ consumeToken
-        Just TokenKeywordRefl   -> Reflexivity <$ consumeToken
-        Just TokenKeywordJ      -> J <$ consumeToken
-        Just TokenKeywordVoid   -> VoidType <$ consumeToken
-        Just TokenKeywordAbort  -> Abort <$ consumeToken
-        Just TokenKeywordNat    -> NatType <$ consumeToken
-        Just TokenKeywordZero   -> Zero <$ consumeToken
-        Just TokenKeywordSucc   -> Succ <$ consumeToken
+        Just TokenKeywordType -> Universe <$ consumeToken
+        Just TokenKeywordId -> Identity <$ consumeToken
+        Just TokenKeywordRefl -> Reflexivity <$ consumeToken
+        Just TokenKeywordJ -> J <$ consumeToken
+        Just TokenKeywordVoid -> VoidType <$ consumeToken
+        Just TokenKeywordAbort -> Abort <$ consumeToken
+        Just TokenKeywordNat -> NatType <$ consumeToken
+        Just TokenKeywordZero -> Zero <$ consumeToken
+        Just TokenKeywordSucc -> Succ <$ consumeToken
         Just TokenKeywordNatRec -> NatRec <$ consumeToken
-        Just (TokenNatural n)   -> desugarNatural n <$ consumeToken
-
+        Just (TokenNatural n) -> desugarNatural n <$ consumeToken
         Just (TokenIdentifier (Identifier "_")) ->
             Hole Nothing <$ consumeToken
-
         Just (TokenIdentifier ident) ->
             Variable ident <$ consumeToken
-
         Just TokenLeftBracket ->
             parseListLiteral
-
         Just TokenLeftParen -> do
             _ <- consumeToken
             expr <- expressionParser
             expectToken TokenRightParen "')'"
             pure expr
-
         Just other -> Parser $ \_ -> Left (UnexpectedToken other)
-        Nothing    -> Parser $ \_ -> Left UnexpectedEndOfInput
+        Nothing -> Parser $ \_ -> Left UnexpectedEndOfInput
 
 -- | Parses an application argument: either explicit `atom` or explicit override `{expr}`
 parseAppArgument :: Parser (Visibility, Expression)
@@ -275,22 +273,22 @@ parseExpression :: Text -> Either ParseError Expression
 parseExpression input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
-        Right toks  -> Right toks
+        Right toks -> Right toks
     runCompleteParser expressionParser tokens
 
 parseStatement :: Text -> Either ParseError Statement
 parseStatement input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
-        Right toks  -> Right toks
+        Right toks -> Right toks
     runCompleteParser statementParser tokens
 
 parseProgram :: Text -> Either ParseError [Statement]
 parseProgram input = do
-  tokens <- case tokenize input of
-    Left lexErr -> Left (ErrorLexical lexErr)
-    Right toks  -> Right toks
-  runCompleteParser (many statementParser) tokens
+    tokens <- case tokenize input of
+        Left lexErr -> Left (ErrorLexical lexErr)
+        Right toks -> Right toks
+    runCompleteParser (many statementParser) tokens
 
 renderParseError :: ParseError -> Text
 renderParseError err = case err of

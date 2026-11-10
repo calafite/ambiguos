@@ -196,18 +196,19 @@ instantiateLeadingImplicits context expr exprType = do
 
 identityType, reflexivityType, jType, abortType, succType, natRecType :: Expression
 identityType =
-    Pi Implicit (Identifier "A") Universe
-        (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Variable (Identifier "A")))
+    Pi Explicit (Identifier "A") Universe
+        (Pi Explicit (Identifier "_") (Variable (Identifier "A"))
+            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) Universe))
 
 reflexivityType =
-    Pi Implicit (Identifier "A") Universe
+    Pi Explicit (Identifier "A") Universe
         (Pi Explicit (Identifier "x") (Variable (Identifier "A"))
             (Application Explicit
                 (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x")))
                 (Variable (Identifier "x"))))
 
 jType =
-    Pi Implicit (Identifier "A") Universe
+    Pi Explicit (Identifier "A") Universe
         $ Pi Explicit (Identifier "x") (Variable (Identifier "A"))
         $ Pi Explicit (Identifier "P") motiveType
         $ Pi Explicit (Identifier "d") baseCaseType
@@ -221,14 +222,14 @@ jType =
                 Universe)
     baseCaseType =
         Application Explicit (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "x")))
-            (Application Explicit (Application Implicit Reflexivity (Variable (Identifier "A"))) (Variable (Identifier "x")))
+            (Application Explicit (Application Explicit Reflexivity (Variable (Identifier "A"))) (Variable (Identifier "x")))
     proofType =
         Application Explicit (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x"))) (Variable (Identifier "y"))
     codomainType =
         Application Explicit (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "y"))) (Variable (Identifier "p"))
 
 abortType =
-    Pi Implicit (Identifier "A") Universe
+    Pi Explicit (Identifier "A") Universe
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
 
 succType =
@@ -256,10 +257,10 @@ synthesizeElab context expression = case expression of
 
     Universe    -> pure (Universe, Universe)
     Identity    -> pure (Identity, identityType)
-    Reflexivity -> instantiateLeadingImplicits context Reflexivity reflexivityType
-    J           -> instantiateLeadingImplicits context J jType
+    Reflexivity -> pure (Reflexivity, reflexivityType)
+    J           -> pure (J, jType)
     VoidType    -> pure (VoidType, Universe)
-    Abort       -> instantiateLeadingImplicits context Abort abortType
+    Abort       -> pure (Abort, abortType)
     NatType     -> pure (NatType, Universe)
     Zero        -> pure (Zero, NatType)
     Succ        -> pure (Succ, succType)
@@ -279,34 +280,33 @@ synthesizeElab context expression = case expression of
         pure (m, tm)
 
     Annotation term annotationType -> do
-        checkElab context annotationType Universe
-        checkElab context term annotationType
+        _ <- checkElab context annotationType Universe
+        _ <- checkElab context term annotationType
         pure (term, annotationType)
 
     Pi vis parameter domain codomain -> do
-        checkElab context domain Universe
+        _ <- checkElab context domain Universe
         let extendedContext = extendContextType parameter domain context
-        checkElab extendedContext codomain Universe
+        _ <- checkElab extendedContext codomain Universe
         pure (Pi vis parameter domain codomain, Universe)
 
     Application Explicit function argument -> do
         (fnExpr, functionType) <- synthesizeElab context function
-        -- Auto-instantiate any implicit arguments on the function first
         (instantiatedFn, fnType) <- instantiateLeadingImplicits context fnExpr functionType
         zonkedType <- zonk fnType
         let env = contextValues context
         case evaluateWeakHeadNormalForm env zonkedType of
             Pi Explicit parameter domain codomain -> do
-                checkElab context argument domain
-                zonkedArg <- zonk argument
+                elabArg <- checkElab context argument domain
+                zonkedArg <- zonk elabArg
                 pure (Application Explicit instantiatedFn zonkedArg, substitute parameter zonkedArg codomain)
             MetaVar i -> do
                 paramDomain <- freshMetaVar
                 codomainMeta <- freshMetaVar
                 let assumedPi = Pi Explicit (Identifier "_") paramDomain codomainMeta
                 modify (\s -> s { metaSubst = Map.insert i assumedPi (metaSubst s) })
-                checkElab context argument paramDomain
-                zonkedArg <- zonk argument
+                elabArg <- checkElab context argument paramDomain
+                zonkedArg <- zonk elabArg
                 pure (Application Explicit instantiatedFn zonkedArg, substitute (Identifier "_") zonkedArg codomainMeta)
             nonFunctionType ->
                 lift $ Left (ExpectedFunctionType nonFunctionType)
@@ -317,14 +317,14 @@ synthesizeElab context expression = case expression of
         let env = contextValues context
         case evaluateWeakHeadNormalForm env zonkedType of
             Pi Implicit parameter domain codomain -> do
-                checkElab context argument domain
-                zonkedArg <- zonk argument
+                elabArg <- checkElab context argument domain
+                zonkedArg <- zonk elabArg
                 pure (Application Implicit fnExpr zonkedArg, substitute parameter zonkedArg codomain)
             nonFunctionType ->
                 lift $ Left (ExpectedFunctionType nonFunctionType)
 
     Lambda vis parameter (Just parameterType) body -> do
-        checkElab context parameterType Universe
+        _ <- checkElab context parameterType Universe
         let extendedContext = extendContextType parameter parameterType context
         (bodyExpr, bodyType) <- synthesizeElab extendedContext body
         pure (Lambda vis parameter (Just parameterType) bodyExpr, Pi vis parameter parameterType bodyType)
@@ -332,67 +332,56 @@ synthesizeElab context expression = case expression of
     Lambda _ _ Nothing _ ->
         lift $ Left (CannotSynthesizeType expression)
 
-checkElab :: Context -> Expression -> Expression -> Elab ()
+checkElab :: Context -> Expression -> Expression -> Elab Expression
 checkElab context expression expectedType = do
     zonkedExpected <- zonk expectedType
     let env = contextValues context
         whnfExpected = evaluateWeakHeadNormalForm env zonkedExpected
     case (expression, whnfExpected) of
-        (Hole _, _) -> pure ()
+        (Hole _, _) ->
+            freshMetaVar
 
         -- Explicit lambda checking against explicit Pi
         (Lambda Explicit parameter maybeDeclaredType body, Pi Explicit binder domain codomain) -> do
             case maybeDeclaredType of
                 Just declaredType -> do
-                    checkElab context declaredType Universe
+                    _ <- checkElab context declaredType Universe
                     unify env declaredType domain
                 Nothing -> pure ()
-            let targetParameter
-                    | parameter == binder = parameter
-                    | Set.member parameter (freeVariables codomain) =
-                        freshIdentifier parameter (Set.unions [freeVariables body, freeVariables codomain])
-                    | otherwise = parameter
-                renamedBody
-                    | targetParameter == parameter = body
-                    | otherwise = substitute parameter (Variable targetParameter) body
-                substitutedCodomain =
-                    substitute binder (Variable targetParameter) codomain
-                extendedContext =
-                    extendContextType targetParameter domain context
-            checkElab extendedContext renamedBody substitutedCodomain
+            let targetParameter = parameter
+                renamedBody = body
+                substitutedCodomain = substitute binder (Variable targetParameter) codomain
+                extendedContext = extendContextType targetParameter domain context
+            elaboratedBody <- checkElab extendedContext renamedBody substitutedCodomain
+            pure (Lambda Explicit targetParameter (Just domain) elaboratedBody)
 
         -- Implicit lambda checking against implicit Pi
         (Lambda Implicit parameter maybeDeclaredType body, Pi Implicit binder domain codomain) -> do
             case maybeDeclaredType of
                 Just declaredType -> do
-                    checkElab context declaredType Universe
+                    _ <- checkElab context declaredType Universe
                     unify env declaredType domain
                 Nothing -> pure ()
-            let targetParameter
-                    | parameter == binder = parameter
-                    | Set.member parameter (freeVariables codomain) =
-                        freshIdentifier parameter (Set.unions [freeVariables body, freeVariables codomain])
-                    | otherwise = parameter
-                renamedBody
-                    | targetParameter == parameter = body
-                    | otherwise = substitute parameter (Variable targetParameter) body
-                substitutedCodomain =
-                    substitute binder (Variable targetParameter) codomain
-                extendedContext =
-                    extendContextType targetParameter domain context
-            checkElab extendedContext renamedBody substitutedCodomain
+            let targetParameter = parameter
+                renamedBody = body
+                substitutedCodomain = substitute binder (Variable targetParameter) codomain
+                extendedContext = extendContextType targetParameter domain context
+            elaboratedBody <- checkElab extendedContext renamedBody substitutedCodomain
+            pure (Lambda Implicit targetParameter (Just domain) elaboratedBody)
 
         -- Automatic implicit lambda insertion: term checked against an Implicit Pi
         (otherExpr, Pi Implicit binder domain codomain) -> do
             let extendedContext = extendContextType binder domain context
-            checkElab extendedContext otherExpr codomain
+            elaboratedBody <- checkElab extendedContext otherExpr codomain
+            pure (Lambda Implicit binder (Just domain) elaboratedBody)
 
         (Lambda _ _ _ _, notPiType) ->
             lift $ Left (ExpectedFunctionType notPiType)
 
         (otherExpression, _) -> do
-            (_, synthesizedType) <- synthesizeElab context otherExpression
+            (elabExpr, synthesizedType) <- synthesizeElab context otherExpression
             unify env synthesizedType zonkedExpected
+            pure elabExpr
 
 synthesize :: Context -> Expression -> Either TypeError (Expression, Expression)
 synthesize context rawExpr =
@@ -409,8 +398,8 @@ check context rawExpr expectedType =
     evalStateT (do
         exprWithMetas <- instantiateHoles rawExpr
         expTypeWithMetas <- instantiateHoles expectedType
-        checkElab context exprWithMetas expTypeWithMetas
-        zonk exprWithMetas
+        elabExpr <- checkElab context exprWithMetas expTypeWithMetas
+        zonk elabExpr
     ) (ElabState 0 Map.empty)
 
 checkDefinition :: Context -> Identifier -> Maybe Expression -> Expression -> Either TypeError (Context, Expression)
@@ -419,11 +408,11 @@ checkDefinition context name maybeDeclaredType bodyTerm =
         (zonkedBody, finalType) <- case maybeDeclaredType of
             Just declaredType -> do
                 declWithMetas <- instantiateHoles declaredType
-                checkElab context declWithMetas Universe
+                _ <- checkElab context declWithMetas Universe
                 zonkedDeclType <- zonk declWithMetas
                 bodyWithMetas <- instantiateHoles bodyTerm
-                checkElab context bodyWithMetas zonkedDeclType
-                zonkedBodyTerm <- zonk bodyWithMetas
+                elabBody <- checkElab context bodyWithMetas zonkedDeclType
+                zonkedBodyTerm <- zonk elabBody
                 pure (zonkedBodyTerm, zonkedDeclType)
             Nothing -> do
                 bodyWithMetas <- instantiateHoles bodyTerm

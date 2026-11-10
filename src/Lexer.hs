@@ -94,34 +94,34 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
         | (headChar : rest) <- remaining =
             case headChar of
                 '\\' -> (TokenBackslash :) <$> scanLoop (dropWhile isSpace rest)
-                ':'  -> (TokenColon :) <$> scanLoop (dropWhile isSpace rest)
-                '='  -> (TokenEquals :) <$> scanLoop (dropWhile isSpace rest)
-                '('  -> (TokenLeftParen :) <$> scanLoop (dropWhile isSpace rest)
-                ')'  -> (TokenRightParen :) <$> scanLoop (dropWhile isSpace rest)
-                '['  -> (TokenLeftBracket :) <$> scanLoop (dropWhile isSpace rest)
-                ']'  -> (TokenRightBracket :) <$> scanLoop (dropWhile isSpace rest)
-                '{'  -> (TokenLeftBrace :) <$> scanLoop (dropWhile isSpace rest)
-                '}'  -> (TokenRightBrace :) <$> scanLoop (dropWhile isSpace rest)
-                ','  -> (TokenComma :) <$> scanLoop (dropWhile isSpace rest)
+                ':' -> (TokenColon :) <$> scanLoop (dropWhile isSpace rest)
+                '=' -> (TokenEquals :) <$> scanLoop (dropWhile isSpace rest)
+                '(' -> (TokenLeftParen :) <$> scanLoop (dropWhile isSpace rest)
+                ')' -> (TokenRightParen :) <$> scanLoop (dropWhile isSpace rest)
+                '[' -> (TokenLeftBracket :) <$> scanLoop (dropWhile isSpace rest)
+                ']' -> (TokenRightBracket :) <$> scanLoop (dropWhile isSpace rest)
+                '{' -> (TokenLeftBrace :) <$> scanLoop (dropWhile isSpace rest)
+                '}' -> (TokenRightBrace :) <$> scanLoop (dropWhile isSpace rest)
+                ',' -> (TokenComma :) <$> scanLoop (dropWhile isSpace rest)
                 c
                     | isSpace c -> scanLoop (dropWhile isSpace rest)
                     | otherwise -> Left (UnexpectedCharacter c)
         | otherwise = Right []
 
     classifyIdentifier text = case text of
-        "Type"      -> TokenKeywordType
-        "def"       -> TokenKeywordDef
-        "Id"        -> TokenKeywordId
-        "refl"      -> TokenKeywordRefl
-        "J"         -> TokenKeywordJ
-        "Void"      -> TokenKeywordVoid
-        "abort"     -> TokenKeywordAbort
-        "Nat"       -> TokenKeywordNat
-        "zero"      -> TokenKeywordZero
+        "Type" -> TokenKeywordType
+        "def" -> TokenKeywordDef
+        "Id" -> TokenKeywordId
+        "refl" -> TokenKeywordRefl
+        "J" -> TokenKeywordJ
+        "Void" -> TokenKeywordVoid
+        "abort" -> TokenKeywordAbort
+        "Nat" -> TokenKeywordNat
+        "zero" -> TokenKeywordZero
         "successor" -> TokenKeywordSucc
-        "succ"      -> TokenKeywordSucc
-        "natRec"    -> TokenKeywordNatRec
-        _           -> TokenIdentifier (Identifier text)
+        "succ" -> TokenKeywordSucc
+        "natRec" -> TokenKeywordNatRec
+        _ -> TokenIdentifier (Identifier text)
 
     skipBlockComment :: Int -> String -> Either LexError String
     skipBlockComment 0 text = Right text

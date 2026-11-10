@@ -23,11 +23,9 @@ evaluateWeakHeadNormalForm environment expression =
         Variable identifier ->
             case Map.lookup identifier environment of
                 Just value -> evaluateWeakHeadNormalForm environment value
-                Nothing    -> Variable identifier
-
+                Nothing -> Variable identifier
         Annotation term _annotationType ->
             evaluateWeakHeadNormalForm environment term
-
         Application vis function argument ->
             case evaluateWeakHeadNormalForm environment function of
                 Lambda _ parameter _ body ->
@@ -46,7 +44,6 @@ evaluateWeakHeadNormalForm environment expression =
                                                 environment
                                                 (foldl (Application Explicit) baseCaseD remainingArguments)
                                         else combined
-
                             (NatRec, motiveP : baseCaseZ : stepS : targetN : remainingArguments) ->
                                 let nWhnf = evaluateWeakHeadNormalForm environment targetN
                                     (nHead, nArgs) = unfoldApplication nWhnf
@@ -65,58 +62,50 @@ evaluateWeakHeadNormalForm environment expression =
                                                             (foldl (Application Explicit) stepResult remainingArguments)
                                                 _ -> combined
                                         _ -> combined
-
                             _ -> combined
-
-        Universe    -> Universe
-        Identity    -> Identity
+        Universe -> Universe
+        Identity -> Identity
         Reflexivity -> Reflexivity
-        J           -> J
-        VoidType    -> VoidType
-        Abort       -> Abort
-        NatType     -> NatType
-        Zero        -> Zero
-        Succ        -> Succ
-        NatRec      -> NatRec
-        Hole h      -> Hole h
-        MetaVar i   -> MetaVar i
-
+        J -> J
+        VoidType -> VoidType
+        Abort -> Abort
+        NatType -> NatType
+        Zero -> Zero
+        Succ -> Succ
+        NatRec -> NatRec
+        Hole h -> Hole h
+        MetaVar i -> MetaVar i
         Lambda vis parameter maybeParameterType body ->
             Lambda vis parameter maybeParameterType body
-
         Pi vis parameter domain codomain ->
             Pi vis parameter domain codomain
 
 normalize :: Map Identifier Expression -> Expression -> Expression
 normalize environment expression =
-  case evaluateWeakHeadNormalForm environment expression of
-    Variable identifier -> Variable identifier
-    Universe            -> Universe
-    Identity            -> Identity
-    Reflexivity         -> Reflexivity
-    J                   -> J
-    VoidType            -> VoidType
-    Abort               -> Abort
-    NatType             -> NatType
-    Zero                -> Zero
-    Succ                -> Succ
-    NatRec              -> NatRec
-    Hole h              -> Hole h
-    MetaVar i           -> MetaVar i
-
-    Lambda vis parameter maybeParameterType body ->
-      let normalizedType = fmap (normalize environment) maybeParameterType
-       in Lambda vis parameter normalizedType (normalize environment body)
-
-    Application vis function argument ->
-      Application vis (normalize environment function) (normalize environment argument)
-
-    Pi vis parameter domain codomain ->
-      Pi vis parameter (normalize environment domain) (normalize environment codomain)
-
-    Annotation term _annotationType ->
-      normalize environment term
+    case evaluateWeakHeadNormalForm environment expression of
+        Variable identifier -> Variable identifier
+        Universe -> Universe
+        Identity -> Identity
+        Reflexivity -> Reflexivity
+        J -> J
+        VoidType -> VoidType
+        Abort -> Abort
+        NatType -> NatType
+        Zero -> Zero
+        Succ -> Succ
+        NatRec -> NatRec
+        Hole h -> Hole h
+        MetaVar i -> MetaVar i
+        Lambda vis parameter maybeParameterType body ->
+            let normalizedType = fmap (normalize environment) maybeParameterType
+             in Lambda vis parameter normalizedType (normalize environment body)
+        Application vis function argument ->
+            Application vis (normalize environment function) (normalize environment argument)
+        Pi vis parameter domain codomain ->
+            Pi vis parameter (normalize environment domain) (normalize environment codomain)
+        Annotation term _annotationType ->
+            normalize environment term
 
 areDefinitionallyEqual :: Map Identifier Expression -> Expression -> Expression -> Bool
 areDefinitionallyEqual environment leftExpression rightExpression =
-  alphaEquivalent (normalize environment leftExpression) (normalize environment rightExpression)
+    alphaEquivalent (normalize environment leftExpression) (normalize environment rightExpression)
