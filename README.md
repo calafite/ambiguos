@@ -16,19 +16,28 @@ cabal run ambiguos -- prelude.amb
 Running without arguments starts an empty REPL session:
 
 ```sh
-cabal run ambiguos
+cabal run ambiguos -- prelude.amb
 ```
 
 ```text
-Ambiguos v0.1.0 — Formal Verification System
-Calculus of Constructions with Martin-Löf Identity
-Commands: def <name> = <term> | :load <file> | :!<command> | quit
+● Verifying prelude.amb...
+✓ Verified prelude.amb (67 definitions)
+  identity, constant, flip, symmetry, transitivity, congruence
+  substitute, Not, absurd, doubleNegation, contraposition, Unit, unit
+  Pair, pair, first, second, swap, nonContradiction, Sigma
+  dependentPair, Either, left, right, either, Maybe, nothing, just
+  maybe, fromMaybe, Bool, true, false, not, booleanAnd, booleanOr
+  booleanXor, booleanEliminator, boolToType, trueNotEqualFalse
+  predecessor, addition, multiplication, power, factorial, mersenne
+  additionZeroLeft, additionZeroRight, additionSuccessorRight
+  theoremTwoPlusThree, theoremTwoTimesThree, theoremTwoCubed
+  theoremFactorialThree, Factors, IsComposite, mersenneFourFactors
+  mersenneSixFactorsBaseTwo, mersenneSixFactorsBaseThree
+  mersenneEightFactors, List, nil, cons, foldRight, length, map, append
+  addTwoEach
 
-λ › def id : {A : Type} -> A -> A = \x -> x
-✓ Defined id : {A : Type} -> A -> A
-λ › id 42
-  : Nat
-  = 42
+Ambiguos interactive REPL ready.
+Type expressions or 'quit' to exit.
 ```
 
 ---
