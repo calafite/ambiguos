@@ -27,17 +27,17 @@ import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
 
 data Goal = Goal
-    { goalId       :: !Int
-    , goalName     :: !(Maybe Identifier)
+    { goalId :: !Int
+    , goalName :: !(Maybe Identifier)
     , goalExpected :: !Expression
-    , goalLocals   :: ![(Identifier, Expression)]
+    , goalLocals :: ![(Identifier, Expression)]
     }
     deriving (Eq, Show)
 
 data MetaInfo = MetaInfo
-    { metaInfoName     :: !(Maybe Identifier)
+    { metaInfoName :: !(Maybe Identifier)
     , metaInfoExpected :: !Expression
-    , metaInfoContext  :: !Context
+    , metaInfoContext :: !Context
     }
     deriving (Eq, Show)
 
@@ -45,7 +45,7 @@ data TypeError
     = UnboundVariable Identifier
     | TypeMismatch
         { expectedType :: Expression
-        , actualType   :: Expression
+        , actualType :: Expression
         }
     | ExpectedFunctionType
         { actualType :: Expression
@@ -60,7 +60,7 @@ data TypeError
     deriving (Eq, Show)
 
 data Context = Context
-    { contextTypes  :: Map Identifier Expression
+    { contextTypes :: Map Identifier Expression
     , contextValues :: Map Identifier Expression
     , contextLocals :: [Identifier]
     }
@@ -69,7 +69,7 @@ data Context = Context
 emptyContext :: Context
 emptyContext =
     Context
-        { contextTypes  = Map.empty
+        { contextTypes = Map.empty
         , contextValues = Map.empty
         , contextLocals = []
         }
@@ -77,14 +77,14 @@ emptyContext =
 extendContextType :: Identifier -> Expression -> Context -> Context
 extendContextType identifier expressionType context =
     context
-        { contextTypes  = Map.insert identifier expressionType (contextTypes context)
+        { contextTypes = Map.insert identifier expressionType (contextTypes context)
         , contextLocals = identifier : contextLocals context
         }
 
 extendContextDefinition :: Identifier -> Expression -> Expression -> Context -> Context
 extendContextDefinition identifier expressionType expressionValue context =
     context
-        { contextTypes  = Map.insert identifier expressionType (contextTypes context)
+        { contextTypes = Map.insert identifier expressionType (contextTypes context)
         , contextValues = Map.insert identifier expressionValue (contextValues context)
         }
 
@@ -92,11 +92,11 @@ lookupContext :: Identifier -> Context -> Either TypeError Expression
 lookupContext identifier context =
     case Map.lookup identifier (contextTypes context) of
         Just expressionType -> pure expressionType
-        Nothing             -> Left (UnboundVariable identifier)
+        Nothing -> Left (UnboundVariable identifier)
 
 data ElabState = ElabState
-    { nextMetaId   :: !Int
-    , metaSubst    :: !(Map Int Expression)
+    { nextMetaId :: !Int
+    , metaSubst :: !(Map Int Expression)
     , metaRegistry :: !(Map Int MetaInfo)
     }
 
@@ -105,7 +105,7 @@ type Elab a = StateT ElabState (Either TypeError) a
 catchElab :: Elab a -> (TypeError -> Elab a) -> Elab a
 catchElab (StateT action) handler = StateT $ \s ->
     case action s of
-        Left err        -> runStateT (handler err) s
+        Left err -> runStateT (handler err) s
         Right (res, s') -> Right (res, s')
 
 tryElab :: Elab a -> Elab a -> Elab a
@@ -141,12 +141,13 @@ collectUnsolvedGoals = do
             env = contextValues ctx
             normExp = evaluateWeakHeadNormalForm env zonkedExp
         locals <- traverse (zonkLocal ctx) (contextLocals ctx)
-        pure Goal
-            { goalId       = mId
-            , goalName     = metaInfoName info
-            , goalExpected = normExp
-            , goalLocals   = locals
-            }
+        pure
+            Goal
+                { goalId = mId
+                , goalName = metaInfoName info
+                , goalExpected = normExp
+                , goalLocals = locals
+                }
 
     zonkLocal ctx ident = do
         let rawType = Map.findWithDefault (Universe (-1)) ident (contextTypes ctx)
@@ -161,7 +162,7 @@ zonk expr = do
         MetaVar i ->
             case Map.lookup i substMap of
                 Just resolved -> zonk resolved
-                Nothing       -> pure (MetaVar i)
+                Nothing -> pure (MetaVar i)
         Application vis f a -> Application vis <$> zonk f <*> zonk a
         Lambda vis p ty body -> Lambda vis p <$> traverse zonk ty <*> zonk body
         Pi vis p d c -> Pi vis p <$> zonk d <*> zonk c
@@ -183,21 +184,22 @@ unfoldApp :: Expression -> (Expression, [(Visibility, Expression)])
 unfoldApp expression = collect expression []
   where
     collect (Application vis fn arg) args = collect fn ((vis, arg) : args)
-    collect headExpr args                 = (headExpr, args)
+    collect headExpr args = (headExpr, args)
 
 checkPatternSpine :: [(Visibility, Expression)] -> Maybe [(Visibility, Identifier)]
 checkPatternSpine = traverse extractVar
   where
     extractVar (vis, Variable ident) = Just (vis, ident)
-    extractVar _                     = Nothing
+    extractVar _ = Nothing
 
 isLinear :: [(Visibility, Identifier)] -> Bool
 isLinear vars =
     let idents = map snd vars
      in Set.size (Set.fromList idents) == length idents
 
--- | Solves a metavariable application according to Miller pattern unification
--- with strict occurs and scope checking.
+{- | Solves a metavariable application according to Miller pattern unification
+with strict occurs and scope checking.
+-}
 solvePattern :: Context -> Int -> [(Visibility, Identifier)] -> Expression -> Elab ()
 solvePattern ctx mId spine rhs = do
     zonkedRhs <- zonk rhs
@@ -207,10 +209,10 @@ solvePattern ctx mId spine rhs = do
             reg <- gets metaRegistry
             let allowedVars = case Map.lookup mId reg of
                     Just info -> Map.keysSet (contextTypes (metaInfoContext info))
-                    Nothing   -> Map.keysSet (contextTypes ctx)
-                spineVarSet  = Set.fromList (map snd spine)
-                validVars    = Set.union allowedVars spineVarSet
-                rhsFreeVars  = freeVariables zonkedRhs
+                    Nothing -> Map.keysSet (contextTypes ctx)
+                spineVarSet = Set.fromList (map snd spine)
+                validVars = Set.union allowedVars spineVarSet
+                rhsFreeVars = freeVariables zonkedRhs
                 escapingVars = Set.difference rhsFreeVars validVars
             case Set.lookupMin escapingVars of
                 Just escaped ->
@@ -343,17 +345,35 @@ instantiateLeadingImplicits context expr exprType = do
 
 identityType, reflexivityType, jType, abortType, succType, natRecType :: Expression
 identityType =
-    Pi Explicit (Identifier "A") (Universe (-1))
-        (Pi Explicit (Identifier "_") (Variable (Identifier "A"))
-            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Universe (-1))))
+    Pi
+        Explicit
+        (Identifier "A")
+        (Universe (-1))
+        ( Pi
+            Explicit
+            (Identifier "_")
+            (Variable (Identifier "A"))
+            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Universe (-1)))
+        )
 reflexivityType =
-    Pi Explicit (Identifier "A") (Universe (-1))
-        (Pi Explicit (Identifier "x") (Variable (Identifier "A"))
-            (Application Explicit
-                (Application Explicit
+    Pi
+        Explicit
+        (Identifier "A")
+        (Universe (-1))
+        ( Pi
+            Explicit
+            (Identifier "x")
+            (Variable (Identifier "A"))
+            ( Application
+                Explicit
+                ( Application
+                    Explicit
                     (Application Explicit Identity (Variable (Identifier "A")))
-                    (Variable (Identifier "x")))
-                (Variable (Identifier "x"))))
+                    (Variable (Identifier "x"))
+                )
+                (Variable (Identifier "x"))
+            )
+        )
 jType =
     Pi Explicit (Identifier "A") (Universe (-1))
         $ Pi Explicit (Identifier "x") (Variable (Identifier "A"))
@@ -363,12 +383,19 @@ jType =
         $ Pi Explicit (Identifier "p") proofType codomainType
   where
     motiveType =
-        Pi Explicit (Identifier "y") (Variable (Identifier "A"))
-            (Pi Explicit (Identifier "_")
+        Pi
+            Explicit
+            (Identifier "y")
+            (Variable (Identifier "A"))
+            ( Pi
+                Explicit
+                (Identifier "_")
                 (Application Explicit (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x"))) (Variable (Identifier "y")))
-                (Universe (-1)))
+                (Universe (-1))
+            )
     baseCaseType =
-        Application Explicit
+        Application
+            Explicit
             (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "x")))
             (Application Explicit (Application Explicit Reflexivity (Variable (Identifier "A"))) (Variable (Identifier "x")))
     proofType =
@@ -376,7 +403,10 @@ jType =
     codomainType =
         Application Explicit (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "y"))) (Variable (Identifier "p"))
 abortType =
-    Pi Explicit (Identifier "A") (Universe (-1))
+    Pi
+        Explicit
+        (Identifier "A")
+        (Universe (-1))
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
 succType =
     Pi Explicit (Identifier "_") NatType NatType
@@ -622,7 +652,7 @@ renderGoals goals = Text.concat (map formatGoal goals)
     formatGoal g =
         let nameTag = case goalName g of
                 Just ident -> "?" <> prettyIdentifier ident
-                Nothing    -> "?" <> Text.pack (show (goalId g))
+                Nothing -> "?" <> Text.pack (show (goalId g))
             header = "  \ESC[1;36m[" <> nameTag <> "]\ESC[0m\n"
             target = "    \ESC[1mExpected:\ESC[0m " <> prettyExpression (goalExpected g) <> "\n"
             locals =

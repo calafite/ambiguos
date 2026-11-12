@@ -1,0 +1,6 @@
+def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
+  = \x ->
+      let motive = \(n : Nat) -> Id Nat (addition n 0) n in
+      let base   = refl Nat 0 in
+      let step   = \(k : Nat) -> \(ih : Id Nat (addition k 0) k) -> congruence successor ih in
+      natRec motive base step x
