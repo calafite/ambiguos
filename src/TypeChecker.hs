@@ -27,17 +27,17 @@ import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
 
 data Goal = Goal
-    { goalId :: !Int
-    , goalName :: !(Maybe Identifier)
+    { goalId       :: !Int
+    , goalName     :: !(Maybe Identifier)
     , goalExpected :: !Expression
-    , goalLocals :: ![(Identifier, Expression)]
+    , goalLocals   :: ![(Identifier, Expression)]
     }
     deriving (Eq, Show)
 
 data MetaInfo = MetaInfo
-    { metaInfoName :: !(Maybe Identifier)
+    { metaInfoName     :: !(Maybe Identifier)
     , metaInfoExpected :: !Expression
-    , metaInfoContext :: !Context
+    , metaInfoContext  :: !Context
     }
     deriving (Eq, Show)
 
@@ -45,7 +45,7 @@ data TypeError
     = UnboundVariable Identifier
     | TypeMismatch
         { expectedType :: Expression
-        , actualType :: Expression
+        , actualType   :: Expression
         }
     | ExpectedFunctionType
         { actualType :: Expression
@@ -55,11 +55,12 @@ data TypeError
         }
     | CannotSynthesizeType Expression
     | OccursCheckFailed Int Expression
+    | ScopeEscapeFailed Int Identifier Expression
     | UnsolvedMetavariable Int
     deriving (Eq, Show)
 
 data Context = Context
-    { contextTypes :: Map Identifier Expression
+    { contextTypes  :: Map Identifier Expression
     , contextValues :: Map Identifier Expression
     , contextLocals :: [Identifier]
     }
@@ -68,7 +69,7 @@ data Context = Context
 emptyContext :: Context
 emptyContext =
     Context
-        { contextTypes = Map.empty
+        { contextTypes  = Map.empty
         , contextValues = Map.empty
         , contextLocals = []
         }
@@ -76,14 +77,14 @@ emptyContext =
 extendContextType :: Identifier -> Expression -> Context -> Context
 extendContextType identifier expressionType context =
     context
-        { contextTypes = Map.insert identifier expressionType (contextTypes context)
+        { contextTypes  = Map.insert identifier expressionType (contextTypes context)
         , contextLocals = identifier : contextLocals context
         }
 
 extendContextDefinition :: Identifier -> Expression -> Expression -> Context -> Context
 extendContextDefinition identifier expressionType expressionValue context =
     context
-        { contextTypes = Map.insert identifier expressionType (contextTypes context)
+        { contextTypes  = Map.insert identifier expressionType (contextTypes context)
         , contextValues = Map.insert identifier expressionValue (contextValues context)
         }
 
@@ -91,11 +92,11 @@ lookupContext :: Identifier -> Context -> Either TypeError Expression
 lookupContext identifier context =
     case Map.lookup identifier (contextTypes context) of
         Just expressionType -> pure expressionType
-        Nothing -> Left (UnboundVariable identifier)
+        Nothing             -> Left (UnboundVariable identifier)
 
 data ElabState = ElabState
-    { nextMetaId :: !Int
-    , metaSubst :: !(Map Int Expression)
+    { nextMetaId   :: !Int
+    , metaSubst    :: !(Map Int Expression)
     , metaRegistry :: !(Map Int MetaInfo)
     }
 
@@ -104,7 +105,7 @@ type Elab a = StateT ElabState (Either TypeError) a
 catchElab :: Elab a -> (TypeError -> Elab a) -> Elab a
 catchElab (StateT action) handler = StateT $ \s ->
     case action s of
-        Left err -> runStateT (handler err) s
+        Left err        -> runStateT (handler err) s
         Right (res, s') -> Right (res, s')
 
 tryElab :: Elab a -> Elab a -> Elab a
@@ -116,8 +117,11 @@ freshMetaId = do
     modify (\s -> s{nextMetaId = idx + 1})
     pure idx
 
-freshMetaVar :: Elab Expression
-freshMetaVar = MetaVar <$> freshMetaId
+freshMeta :: Context -> Expression -> Elab Expression
+freshMeta ctx expType = do
+    mId <- freshMetaId
+    recordMeta mId Nothing ctx expType
+    pure (MetaVar mId)
 
 recordMeta :: Int -> Maybe Identifier -> Context -> Expression -> Elab ()
 recordMeta mId mName context expType = do
@@ -137,13 +141,12 @@ collectUnsolvedGoals = do
             env = contextValues ctx
             normExp = evaluateWeakHeadNormalForm env zonkedExp
         locals <- traverse (zonkLocal ctx) (contextLocals ctx)
-        pure
-            Goal
-                { goalId = mId
-                , goalName = metaInfoName info
-                , goalExpected = normExp
-                , goalLocals = locals
-                }
+        pure Goal
+            { goalId       = mId
+            , goalName     = metaInfoName info
+            , goalExpected = normExp
+            , goalLocals   = locals
+            }
 
     zonkLocal ctx ident = do
         let rawType = Map.findWithDefault (Universe (-1)) ident (contextTypes ctx)
@@ -158,10 +161,11 @@ zonk expr = do
         MetaVar i ->
             case Map.lookup i substMap of
                 Just resolved -> zonk resolved
-                Nothing -> pure (MetaVar i)
+                Nothing       -> pure (MetaVar i)
         Application vis f a -> Application vis <$> zonk f <*> zonk a
         Lambda vis p ty body -> Lambda vis p <$> traverse zonk ty <*> zonk body
         Pi vis p d c -> Pi vis p <$> zonk d <*> zonk c
+        Let p ty d b -> Let p <$> traverse zonk ty <*> zonk d <*> zonk b
         Annotation t ty -> Annotation <$> zonk t <*> zonk ty
         other -> pure other
 
@@ -171,13 +175,49 @@ occursIn i expr = case expr of
     Application _ f a -> occursIn i f || occursIn i a
     Lambda _ _ ty body -> maybe False (occursIn i) ty || occursIn i body
     Pi _ _ d c -> occursIn i d || occursIn i c
+    Let _ ty d b -> maybe False (occursIn i) ty || occursIn i d || occursIn i b
     Annotation t ty -> occursIn i t || occursIn i ty
     _ -> False
 
-bindMeta :: Int -> Expression -> Elab ()
-bindMeta i term
-    | occursIn i term = lift $ Left (OccursCheckFailed i term)
-    | otherwise = modify (\s -> s{metaSubst = Map.insert i term (metaSubst s)})
+unfoldApp :: Expression -> (Expression, [(Visibility, Expression)])
+unfoldApp expression = collect expression []
+  where
+    collect (Application vis fn arg) args = collect fn ((vis, arg) : args)
+    collect headExpr args                 = (headExpr, args)
+
+checkPatternSpine :: [(Visibility, Expression)] -> Maybe [(Visibility, Identifier)]
+checkPatternSpine = traverse extractVar
+  where
+    extractVar (vis, Variable ident) = Just (vis, ident)
+    extractVar _                     = Nothing
+
+isLinear :: [(Visibility, Identifier)] -> Bool
+isLinear vars =
+    let idents = map snd vars
+     in Set.size (Set.fromList idents) == length idents
+
+-- | Solves a metavariable application according to Miller pattern unification
+-- with strict occurs and scope checking.
+solvePattern :: Context -> Int -> [(Visibility, Identifier)] -> Expression -> Elab ()
+solvePattern ctx mId spine rhs = do
+    zonkedRhs <- zonk rhs
+    if occursIn mId zonkedRhs
+        then lift $ Left (OccursCheckFailed mId zonkedRhs)
+        else do
+            reg <- gets metaRegistry
+            let allowedVars = case Map.lookup mId reg of
+                    Just info -> Map.keysSet (contextTypes (metaInfoContext info))
+                    Nothing   -> Map.keysSet (contextTypes ctx)
+                spineVarSet  = Set.fromList (map snd spine)
+                validVars    = Set.union allowedVars spineVarSet
+                rhsFreeVars  = freeVariables zonkedRhs
+                escapingVars = Set.difference rhsFreeVars validVars
+            case Set.lookupMin escapingVars of
+                Just escaped ->
+                    lift $ Left (ScopeEscapeFailed mId escaped zonkedRhs)
+                Nothing -> do
+                    let solution = foldr (\(vis, param) body -> Lambda vis param Nothing body) zonkedRhs spine
+                    modify (\s -> s{metaSubst = Map.insert mId solution (metaSubst s)})
 
 extractUniverseLevel :: Context -> Expression -> Elab Int
 extractUniverseLevel context expr = do
@@ -187,72 +227,105 @@ extractUniverseLevel context expr = do
     case w of
         Universe n -> pure n
         MetaVar i -> do
-            bindMeta i (Universe (-1))
+            solvePattern context i [] (Universe (-1))
             pure (-1)
         other -> lift $ Left (ExpectedUniverse other)
 
-unify :: Map Identifier Expression -> Expression -> Expression -> Elab ()
-unify env e1 e2 = do
+unify :: Context -> Expression -> Expression -> Elab ()
+unify ctx e1 e2 = do
     z1 <- zonk e1
     z2 <- zonk e2
-    case (z1, z2) of
-        (MetaVar i, MetaVar j) | i == j -> pure ()
-        (MetaVar i, term) -> bindMeta i term
-        (term, MetaVar j) -> bindMeta j term
-        (Universe i, Universe j)
+    let (h1, sp1) = unfoldApp z1
+        (h2, sp2) = unfoldApp z2
+    case (h1, sp1, h2, sp2) of
+        (MetaVar i, [], MetaVar j, [])
+            | i == j -> pure ()
+            | otherwise -> do
+                reg <- gets metaRegistry
+                case (Map.lookup i reg, Map.lookup j reg) of
+                    (Just infoI, Just infoJ) ->
+                        let varsI = Map.keysSet (contextTypes (metaInfoContext infoI))
+                            varsJ = Map.keysSet (contextTypes (metaInfoContext infoJ))
+                         in if Set.isSubsetOf varsI varsJ
+                                then solvePattern ctx j [] (MetaVar i)
+                                else solvePattern ctx i [] (MetaVar j)
+                    _ -> solvePattern ctx i [] (MetaVar j)
+        (MetaVar i, _, MetaVar j, _)
+            | i == j && sp1 == sp2 -> pure ()
+        (MetaVar i, _, _, _)
+            | Just spineVars <- checkPatternSpine sp1
+            , isLinear spineVars ->
+                tryElab (solvePattern ctx i spineVars z2) (unfoldAndRetry z1 z2)
+        (_, _, MetaVar j, _)
+            | Just spineVars <- checkPatternSpine sp2
+            , isLinear spineVars ->
+                tryElab (solvePattern ctx j spineVars z1) (unfoldAndRetry z1 z2)
+        (Universe i, [], Universe j, [])
             | i == -1 || j == -1 -> pure ()
             | i <= j -> pure ()
             | otherwise -> lift $ Left (TypeMismatch (Universe j) (Universe i))
-        (Application v1 f1 a1, Application v2 f2 a2)
-            | v1 == v2 ->
-                tryElab
-                    ( do
-                        unify env f1 f2
-                        unify env a1 a2
-                    )
-                    (unfoldAndRetry z1 z2)
-        (Pi v1 p1 d1 c1, Pi v2 p2 d2 c2)
-            | v1 == v2 ->
-                tryElab
-                    ( do
-                        unify env d1 d2
-                        if p1 == p2
-                            then unify env c1 c2
-                            else do
-                                let fresh = freshIdentifier p1 (Set.union (freeVariables c1) (freeVariables c2))
-                                unify env (substitute p1 (Variable fresh) c1) (substitute p2 (Variable fresh) c2)
-                    )
-                    (unfoldAndRetry z1 z2)
-        (Identity, Identity) -> pure ()
-        (Reflexivity, Reflexivity) -> pure ()
-        (J, J) -> pure ()
-        (VoidType, VoidType) -> pure ()
-        (Abort, Abort) -> pure ()
-        (NatType, NatType) -> pure ()
-        (Zero, Zero) -> pure ()
-        (Succ, Succ) -> pure ()
-        (NatRec, NatRec) -> pure ()
-        (Variable x, Variable y) | x == y -> pure ()
-        _ -> unfoldAndRetry z1 z2
+        _ -> case (z1, z2) of
+            (Application v1 f1 a1, Application v2 f2 a2)
+                | v1 == v2 ->
+                    tryElab
+                        ( do
+                            unify ctx f1 f2
+                            unify ctx a1 a2
+                        )
+                        (unfoldAndRetry z1 z2)
+            (Pi v1 p1 d1 c1, Pi v2 p2 d2 c2)
+                | v1 == v2 ->
+                    tryElab
+                        ( do
+                            unify ctx d1 d2
+                            if p1 == p2
+                                then unify (extendContextType p1 d1 ctx) c1 c2
+                                else do
+                                    let fresh = freshIdentifier p1 (Set.union (freeVariables c1) (freeVariables c2))
+                                        extCtx = extendContextType fresh d1 ctx
+                                    unify extCtx (substitute p1 (Variable fresh) c1) (substitute p2 (Variable fresh) c2)
+                        )
+                        (unfoldAndRetry z1 z2)
+            (Identity, Identity) -> pure ()
+            (Reflexivity, Reflexivity) -> pure ()
+            (J, J) -> pure ()
+            (VoidType, VoidType) -> pure ()
+            (Abort, Abort) -> pure ()
+            (NatType, NatType) -> pure ()
+            (Zero, Zero) -> pure ()
+            (Succ, Succ) -> pure ()
+            (NatRec, NatRec) -> pure ()
+            (Variable x, Variable y) | x == y -> pure ()
+            _ -> unfoldAndRetry z1 z2
   where
     unfoldAndRetry :: Expression -> Expression -> Elab ()
     unfoldAndRetry t1 t2 = do
-        let w1 = evaluateWeakHeadNormalForm env t1
+        let env = contextValues ctx
+            w1 = evaluateWeakHeadNormalForm env t1
             w2 = evaluateWeakHeadNormalForm env t2
-        case (w1, w2) of
-            (MetaVar i, term) -> bindMeta i term
-            (term, MetaVar j) -> bindMeta j term
-            (Universe i, Universe j)
-                | i == -1 || j == -1 -> pure ()
-                | i <= j -> pure ()
-                | otherwise -> lift $ Left (TypeMismatch (Universe j) (Universe i))
-            _ ->
+            (wh1, wsp1) = unfoldApp w1
+            (wh2, wsp2) = unfoldApp w2
+            fallbackDefEq =
                 if w1 /= t1 || w2 /= t2
-                    then unify env w1 w2
+                    then unify ctx w1 w2
                     else
                         if areDefinitionallyEqual env w1 w2
                             then pure ()
                             else lift $ Left (TypeMismatch t2 t1)
+        case (wh1, wsp1, wh2, wsp2) of
+            (MetaVar i, _, _, _)
+                | Just spineVars <- checkPatternSpine wsp1
+                , isLinear spineVars ->
+                    tryElab (solvePattern ctx i spineVars w2) fallbackDefEq
+            (_, _, MetaVar j, _)
+                | Just spineVars <- checkPatternSpine wsp2
+                , isLinear spineVars ->
+                    tryElab (solvePattern ctx j spineVars w1) fallbackDefEq
+            (Universe i, [], Universe j, [])
+                | i == -1 || j == -1 -> pure ()
+                | i <= j -> pure ()
+                | otherwise -> lift $ Left (TypeMismatch (Universe j) (Universe i))
+            _ -> fallbackDefEq
 
 instantiateLeadingImplicits :: Context -> Expression -> Expression -> Elab (Expression, Expression)
 instantiateLeadingImplicits context expr exprType = do
@@ -261,7 +334,7 @@ instantiateLeadingImplicits context expr exprType = do
         whnfType = evaluateWeakHeadNormalForm env zonkedType
     case whnfType of
         Pi Implicit param domain codomain -> do
-            meta <- freshMetaVar
+            meta <- freshMeta context domain
             let newExpr = Application Implicit expr meta
                 newType = substitute param meta codomain
             instantiateLeadingImplicits context newExpr newType
@@ -270,35 +343,17 @@ instantiateLeadingImplicits context expr exprType = do
 
 identityType, reflexivityType, jType, abortType, succType, natRecType :: Expression
 identityType =
-    Pi
-        Explicit
-        (Identifier "A")
-        (Universe (-1))
-        ( Pi
-            Explicit
-            (Identifier "_")
-            (Variable (Identifier "A"))
-            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Universe (-1)))
-        )
+    Pi Explicit (Identifier "A") (Universe (-1))
+        (Pi Explicit (Identifier "_") (Variable (Identifier "A"))
+            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Universe (-1))))
 reflexivityType =
-    Pi
-        Explicit
-        (Identifier "A")
-        (Universe (-1))
-        ( Pi
-            Explicit
-            (Identifier "x")
-            (Variable (Identifier "A"))
-            ( Application
-                Explicit
-                ( Application
-                    Explicit
+    Pi Explicit (Identifier "A") (Universe (-1))
+        (Pi Explicit (Identifier "x") (Variable (Identifier "A"))
+            (Application Explicit
+                (Application Explicit
                     (Application Explicit Identity (Variable (Identifier "A")))
-                    (Variable (Identifier "x"))
-                )
-                (Variable (Identifier "x"))
-            )
-        )
+                    (Variable (Identifier "x")))
+                (Variable (Identifier "x"))))
 jType =
     Pi Explicit (Identifier "A") (Universe (-1))
         $ Pi Explicit (Identifier "x") (Variable (Identifier "A"))
@@ -308,19 +363,12 @@ jType =
         $ Pi Explicit (Identifier "p") proofType codomainType
   where
     motiveType =
-        Pi
-            Explicit
-            (Identifier "y")
-            (Variable (Identifier "A"))
-            ( Pi
-                Explicit
-                (Identifier "_")
+        Pi Explicit (Identifier "y") (Variable (Identifier "A"))
+            (Pi Explicit (Identifier "_")
                 (Application Explicit (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x"))) (Variable (Identifier "y")))
-                (Universe (-1))
-            )
+                (Universe (-1)))
     baseCaseType =
-        Application
-            Explicit
+        Application Explicit
             (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "x")))
             (Application Explicit (Application Explicit Reflexivity (Variable (Identifier "A"))) (Variable (Identifier "x")))
     proofType =
@@ -328,10 +376,7 @@ jType =
     codomainType =
         Application Explicit (Application Explicit (Variable (Identifier "P")) (Variable (Identifier "y"))) (Variable (Identifier "p"))
 abortType =
-    Pi
-        Explicit
-        (Identifier "A")
-        (Universe (-1))
+    Pi Explicit (Identifier "A") (Universe (-1))
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
 succType =
     Pi Explicit (Identifier "_") NatType NatType
@@ -369,11 +414,10 @@ synthesizeElab context expression = case expression of
         case Map.lookup i substMap of
             Just term -> synthesizeElab context term
             Nothing -> do
-                tMeta <- freshMetaVar
+                tMeta <- freshMeta context (Universe (-1))
                 pure (MetaVar i, tMeta)
     Hole mName -> do
-        tMetaId <- freshMetaId
-        let tMeta = MetaVar tMetaId
+        tMeta <- freshMeta context (Universe (-1))
         mId <- freshMetaId
         recordMeta mId mName context tMeta
         pure (MetaVar mId, tMeta)
@@ -382,6 +426,27 @@ synthesizeElab context expression = case expression of
         _ <- extractUniverseLevel context annTypeUniverse
         _ <- checkElab context term elabAnnType
         pure (term, elabAnnType)
+    Let param maybeDeclaredType defExpr body -> do
+        (elabDef, defType) <- case maybeDeclaredType of
+            Just declaredType -> do
+                (elabDeclType, typeUniverse) <- synthesizeElab context declaredType
+                _ <- extractUniverseLevel context typeUniverse
+                zonkedDeclType <- zonk elabDeclType
+                elabVal <- checkElab context defExpr zonkedDeclType
+                pure (elabVal, zonkedDeclType)
+            Nothing -> do
+                (elabVal, rawType) <- synthesizeElab context defExpr
+                zonkedType <- zonk rawType
+                pure (elabVal, zonkedType)
+        zonkedDef <- zonk elabDef
+        zonkedDefType <- zonk defType
+        let extContext = extendContextDefinition param zonkedDefType zonkedDef context
+            extContextWithLocal = extContext{contextLocals = param : contextLocals context}
+        (elabBody, bodyType) <- synthesizeElab extContextWithLocal body
+        zonkedBody <- zonk elabBody
+        zonkedBodyType <- zonk bodyType
+        let finalType = substitute param zonkedDef zonkedBodyType
+        pure (Let param (Just zonkedDefType) zonkedDef zonkedBody, finalType)
     Pi vis parameter domain codomain -> do
         (elabDomain, domainUniverse) <- synthesizeElab context domain
         levelI <- extractUniverseLevel context domainUniverse
@@ -401,10 +466,10 @@ synthesizeElab context expression = case expression of
                 zonkedArg <- zonk elabArg
                 pure (Application Explicit instantiatedFn zonkedArg, substitute parameter zonkedArg codomain)
             MetaVar i -> do
-                paramDomain <- freshMetaVar
-                codomainMeta <- freshMetaVar
+                paramDomain <- freshMeta context (Universe (-1))
+                codomainMeta <- freshMeta context (Universe (-1))
                 let assumedPi = Pi Explicit (Identifier "_") paramDomain codomainMeta
-                modify (\s -> s{metaSubst = Map.insert i assumedPi (metaSubst s)})
+                solvePattern context i [] assumedPi
                 elabArg <- checkElab context argument paramDomain
                 zonkedArg <- zonk elabArg
                 pure (Application Explicit instantiatedFn zonkedArg, substitute (Identifier "_") zonkedArg codomainMeta)
@@ -442,12 +507,31 @@ checkElab context expression expectedType = do
             mId <- freshMetaId
             recordMeta mId mName context zonkedExpected
             pure (MetaVar mId)
+        (Let param maybeDeclaredType defExpr body, _) -> do
+            (elabDef, defType) <- case maybeDeclaredType of
+                Just declaredType -> do
+                    (elabDeclType, typeUniverse) <- synthesizeElab context declaredType
+                    _ <- extractUniverseLevel context typeUniverse
+                    zonkedDeclType <- zonk elabDeclType
+                    elabVal <- checkElab context defExpr zonkedDeclType
+                    pure (elabVal, zonkedDeclType)
+                Nothing -> do
+                    (elabVal, rawType) <- synthesizeElab context defExpr
+                    zonkedType <- zonk rawType
+                    pure (elabVal, zonkedType)
+            zonkedDef <- zonk elabDef
+            zonkedDefType <- zonk defType
+            let extContext = extendContextDefinition param zonkedDefType zonkedDef context
+                extContextWithLocal = extContext{contextLocals = param : contextLocals context}
+            elabBody <- checkElab extContextWithLocal body whnfExpected
+            zonkedBody <- zonk elabBody
+            pure (Let param (Just zonkedDefType) zonkedDef zonkedBody)
         (Lambda Explicit parameter maybeDeclaredType body, Pi Explicit binder domain codomain) -> do
             case maybeDeclaredType of
                 Just declaredType -> do
                     (elabDeclType, declUniverse) <- synthesizeElab context declaredType
                     _ <- extractUniverseLevel context declUniverse
-                    unify env elabDeclType domain
+                    unify context elabDeclType domain
                 Nothing -> pure ()
             let targetParameter = parameter
                 substitutedCodomain = substitute binder (Variable targetParameter) codomain
@@ -459,7 +543,7 @@ checkElab context expression expectedType = do
                 Just declaredType -> do
                     (elabDeclType, declUniverse) <- synthesizeElab context declaredType
                     _ <- extractUniverseLevel context declUniverse
-                    unify env elabDeclType domain
+                    unify context elabDeclType domain
                 Nothing -> pure ()
             let targetParameter = parameter
                 substitutedCodomain = substitute binder (Variable targetParameter) codomain
@@ -474,7 +558,7 @@ checkElab context expression expectedType = do
             lift $ Left (ExpectedFunctionType notPiType)
         (otherExpression, _) -> do
             (elabExpr, synthesizedType) <- synthesizeElab context otherExpression
-            unify env synthesizedType zonkedExpected
+            unify context synthesizedType zonkedExpected
             pure elabExpr
 
 synthesize :: Context -> Expression -> Either TypeError (Expression, Expression, [Goal])
@@ -518,12 +602,14 @@ checkDefinition context name maybeDeclaredType bodyTerm =
                     zonkedDeclType <- zonk elabDeclType
                     elabBody <- checkElab context bodyTerm zonkedDeclType
                     zonkedBodyTerm <- zonk elabBody
-                    pure (zonkedBodyTerm, zonkedDeclType)
+                    zonkedFinalType <- zonk zonkedDeclType
+                    pure (zonkedBodyTerm, zonkedFinalType)
                 Nothing -> do
                     (elabBody, rawType) <- synthesizeElab context bodyTerm
                     zonkedType <- zonk rawType
                     zonkedBodyTerm <- zonk elabBody
-                    pure (zonkedBodyTerm, zonkedType)
+                    zonkedFinalType <- zonk zonkedType
+                    pure (zonkedBodyTerm, zonkedFinalType)
             goals <- collectUnsolvedGoals
             let updatedContext = extendContextDefinition name finalType zonkedBody context
             pure (updatedContext, finalType, goals)
@@ -536,7 +622,7 @@ renderGoals goals = Text.concat (map formatGoal goals)
     formatGoal g =
         let nameTag = case goalName g of
                 Just ident -> "?" <> prettyIdentifier ident
-                Nothing -> "?" <> Text.pack (show (goalId g))
+                Nothing    -> "?" <> Text.pack (show (goalId g))
             header = "  \ESC[1;36m[" <> nameTag <> "]\ESC[0m\n"
             target = "    \ESC[1mExpected:\ESC[0m " <> prettyExpression (goalExpected g) <> "\n"
             locals =
@@ -571,5 +657,13 @@ renderTypeError typeError = case typeError of
             <> "\nProvide an explicit type annotation: (term : Type)"
     OccursCheckFailed i term ->
         "Occurs check failed: ?" <> Text.pack (show i) <> " occurs in " <> prettyExpression term
+    ScopeEscapeFailed i (Identifier var) term ->
+        "Scope escape error: Variable '"
+            <> var
+            <> "' cannot appear in the solution for ?"
+            <> Text.pack (show i)
+            <> " := "
+            <> prettyExpression term
+            <> " because it was bound outside the metavariable's scope."
     UnsolvedMetavariable i ->
         "Unsolved metavariable: ?" <> Text.pack (show i)

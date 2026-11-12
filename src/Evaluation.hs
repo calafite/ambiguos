@@ -97,6 +97,9 @@ evaluate env expression = case expression of
         VUniverse n
     Annotation term _ ->
         evaluate env term
+    Let param _ defExpr body ->
+        let defVal = evaluate env defExpr
+         in evaluate (Map.insert param defVal env) body
     Lambda vis param mType body ->
         VLambda vis param (fmap (evaluate env) mType) (Closure param body env)
     Pi vis param dom codom ->

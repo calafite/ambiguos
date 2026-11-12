@@ -23,6 +23,7 @@ data Expression
     | Lambda Visibility Identifier (Maybe Expression) Expression
     | Application Visibility Expression Expression
     | Pi Visibility Identifier Expression Expression
+    | Let Identifier (Maybe Expression) Expression Expression
     | Annotation Expression Expression
     | Identity
     | Reflexivity

@@ -27,6 +27,11 @@ freeVariables expression = case expression of
     NatRec -> Set.empty
     Hole _ -> Set.empty
     MetaVar _ -> Set.empty
+    Let param maybeParamType defExpr body ->
+        let typeFreeVars = maybe Set.empty freeVariables maybeParamType
+            defFreeVars = freeVariables defExpr
+            bodyFreeVars = Set.delete param (freeVariables body)
+         in Set.unions [typeFreeVars, defFreeVars, bodyFreeVars]
     Lambda _ parameter maybeParameterType body ->
         let typeFreeVariables = case maybeParameterType of
                 Just parameterType -> freeVariables parameterType
@@ -73,6 +78,28 @@ substitute targetVariable replacementExpression sourceExpression =
         NatRec -> NatRec
         Hole h -> Hole h
         MetaVar i -> MetaVar i
+        Let param maybeParamType defExpr body ->
+            let substType = fmap (substitute targetVariable replacementExpression) maybeParamType
+                substDef = substitute targetVariable replacementExpression defExpr
+                typeFreeVars = maybe Set.empty freeVariables maybeParamType
+             in if param == targetVariable
+                    then Let param substType substDef body
+                    else
+                        if Set.member param replacementFreeVariables
+                            then
+                                let freshParam =
+                                        freshIdentifier
+                                            param
+                                            ( Set.unions
+                                                [ replacementFreeVariables
+                                                , freeVariables body
+                                                , typeFreeVars
+                                                , Set.singleton targetVariable
+                                                ]
+                                            )
+                                    renamedBody = substitute param (Variable freshParam) body
+                                 in Let freshParam substType substDef (substitute targetVariable replacementExpression renamedBody)
+                            else Let param substType substDef (substitute targetVariable replacementExpression body)
         Application vis function argument ->
             Application
                 vis
@@ -143,6 +170,19 @@ alphaEquivalent leftExpression rightExpression =
         (NatRec, NatRec) -> True
         (Hole _, Hole _) -> True
         (MetaVar i, MetaVar j) -> i == j
+        (Let p1 ty1 d1 b1, Let p2 ty2 d2 b2) ->
+            let typesMatch = case (ty1, ty2) of
+                    (Nothing, Nothing) -> True
+                    (Just t1, Just t2) -> alphaEquivalent t1 t2
+                    _ -> False
+             in typesMatch && alphaEquivalent d1 d2 &&
+                if p1 == p2
+                    then alphaEquivalent b1 b2
+                    else
+                        let fresh = freshIdentifier p1 (Set.union (freeVariables b1) (freeVariables b2))
+                            renamed1 = substitute p1 (Variable fresh) b1
+                            renamed2 = substitute p2 (Variable fresh) b2
+                         in alphaEquivalent renamed1 renamed2
         (Application v1 f1 a1, Application v2 f2 a2) ->
             v1 == v2 && alphaEquivalent f1 f2 && alphaEquivalent a1 a2
         (Annotation t1 ty1, Annotation t2 ty2) ->

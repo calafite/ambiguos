@@ -71,7 +71,7 @@ parseIdentifier = do
     t <- consumeToken
     case t of
         TokenIdentifier ident -> pure ident
-        Token`Hole Nothing` -> pure (Identifier "_")
+        TokenHole Nothing -> pure (Identifier "_")
         TokenHole (Just (Identifier name)) -> pure (Identifier ("_" <> name))
         other -> Parser $ \_ -> Left (ExpectedToken "identifier" other)
 
@@ -244,8 +244,19 @@ parseLambda = do
     expandGroup (TypedParameters vis names pType) acc =
         foldr (\name inner -> Lambda vis name (Just pType) inner) acc names
 
+parseLet :: Parser Expression
+parseLet = do
+    expectToken TokenKeywordLet "'let'"
+    name <- parseIdentifier
+    maybeType <- optional (expectToken TokenColon "':'" *> expressionParser)
+    expectToken TokenEquals "'='"
+    valExpr <- expressionParser
+    expectToken TokenKeywordIn "'in'"
+    bodyExpr <- expressionParser
+    pure (Let name maybeType valExpr bodyExpr)
+
 expressionParser :: Parser Expression
-expressionParser = parseLambda <|> parseAnnotation
+expressionParser = parseLambda <|> parseLet <|> parseAnnotation
 
 parseDefinition :: Parser Statement
 parseDefinition = do

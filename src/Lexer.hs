@@ -18,6 +18,8 @@ import qualified Data.Text as Text
 data Token
     = TokenKeywordType
     | TokenKeywordDef
+    | TokenKeywordLet
+    | TokenKeywordIn
     | TokenKeywordId
     | TokenKeywordRefl
     | TokenKeywordJ
@@ -112,6 +114,8 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
     classifyIdentifier text = case text of
         "Type" -> TokenKeywordType
         "def" -> TokenKeywordDef
+        "let" -> TokenKeywordLet
+        "in" -> TokenKeywordIn
         "Id" -> TokenKeywordId
         "refl" -> TokenKeywordRefl
         "J" -> TokenKeywordJ

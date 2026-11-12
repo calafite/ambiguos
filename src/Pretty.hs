@@ -131,3 +131,14 @@ prettyWithPrecedence currentPrecedence expression =
                         codomainText = prettyWithPrecedence ArrowPrecedence codomain
                         rendered = "{" <> prettyIdentifier parameter <> " : " <> domainText <> "} -> " <> codomainText
                      in parenthesizeIf (currentPrecedence > ArrowPrecedence) rendered
+                Let param Nothing defExpr body ->
+                    let defText = prettyWithPrecedence TopLevelPrecedence defExpr
+                        bodyText = prettyWithPrecedence TopLevelPrecedence body
+                        rendered = "let " <> prettyIdentifier param <> " = " <> defText <> " in " <> bodyText
+                     in parenthesizeIf (currentPrecedence > LambdaPrecedence) rendered
+                Let param (Just paramType) defExpr body ->
+                    let typeText = prettyWithPrecedence TopLevelPrecedence paramType
+                        defText = prettyWithPrecedence TopLevelPrecedence defExpr
+                        bodyText = prettyWithPrecedence TopLevelPrecedence body
+                        rendered = "let " <> prettyIdentifier param <> " : " <> typeText <> " = " <> defText <> " in " <> bodyText
+                     in parenthesizeIf (currentPrecedence > LambdaPrecedence) rendered
