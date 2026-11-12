@@ -71,6 +71,8 @@ parseIdentifier = do
     t <- consumeToken
     case t of
         TokenIdentifier ident -> pure ident
+        Token`Hole Nothing` -> pure (Identifier "_")
+        TokenHole (Just (Identifier name)) -> pure (Identifier ("_" <> name))
         other -> Parser $ \_ -> Left (ExpectedToken "identifier" other)
 
 desugarNatural :: Integer -> Expression
@@ -127,7 +129,7 @@ parseAtomicExpression = do
         Just TokenKeywordSucc -> Succ <$ consumeToken
         Just TokenKeywordNatRec -> NatRec <$ consumeToken
         Just (TokenNatural n) -> desugarNatural n <$ consumeToken
-        Just (TokenIdentifier (Identifier "_")) -> Hole Nothing <$ consumeToken
+        Just (TokenHole mIdent) -> Hole mIdent <$ consumeToken
         Just (TokenIdentifier ident) -> Variable ident <$ consumeToken
         Just TokenLeftBracket -> parseListLiteral
         Just TokenLeftParen -> do

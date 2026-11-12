@@ -17,17 +17,19 @@ import TypeChecker (
     Context (..),
     checkDefinition,
     emptyContext,
+    renderGoals,
     renderTypeError,
     synthesize,
  )
 
-bold, dim, green, cyan, magenta, red :: Text -> Text
+bold, dim, green, cyan, magenta, red, yellow :: Text -> Text
 bold t = "\ESC[1m" <> t <> "\ESC[0m"
 dim t = "\ESC[2m" <> t <> "\ESC[0m"
 green t = "\ESC[32m" <> t <> "\ESC[0m"
 cyan t = "\ESC[36m" <> t <> "\ESC[0m"
 magenta t = "\ESC[35m" <> t <> "\ESC[0m"
 red t = "\ESC[31m" <> t <> "\ESC[0m"
+yellow t = "\ESC[33m" <> t <> "\ESC[0m"
 
 main :: IO ()
 main = do
@@ -83,25 +85,42 @@ replLoop context = do
                             Left typeError -> do
                                 TextIO.putStrLn (red "✗ " <> renderTypeError typeError)
                                 replLoop context
-                            Right (updatedContext, finalType) -> do
-                                TextIO.putStrLn
-                                    ( green "✓"
-                                        <> " Defined "
-                                        <> bold (prettyIdentifier name)
-                                        <> " "
-                                        <> dim ":"
-                                        <> " "
-                                        <> magenta (prettyExpression finalType)
-                                    )
+                            Right (updatedContext, finalType, goals) -> do
+                                if null goals
+                                    then
+                                        TextIO.putStrLn
+                                            ( green "✓"
+                                                <> " Defined "
+                                                <> bold (prettyIdentifier name)
+                                                <> " "
+                                                <> dim ":"
+                                                <> " "
+                                                <> magenta (prettyExpression finalType)
+                                            )
+                                    else do
+                                        TextIO.putStrLn
+                                            ( yellow "⚠"
+                                                <> " Defined "
+                                                <> bold (prettyIdentifier name)
+                                                <> " with "
+                                                <> bold (Text.pack (show (length goals)))
+                                                <> " goal(s):"
+                                            )
+                                        TextIO.putStr (renderGoals goals)
                                 replLoop updatedContext
                     Right (Evaluation expression) -> do
                         case synthesize context expression of
                             Left typeError ->
                                 TextIO.putStrLn (red "✗ " <> renderTypeError typeError)
-                            Right (elaboratedExpr, inferredType) -> do
+                            Right (elaboratedExpr, inferredType, goals) -> do
                                 let values = contextValues context
                                 TextIO.putStrLn ("  " <> dim ":" <> " " <> magenta (prettyExpression (normalize values inferredType)))
                                 TextIO.putStrLn ("  " <> dim "=" <> " " <> bold (green (prettyExpression (normalize values elaboratedExpr))))
+                                if null goals
+                                    then pure ()
+                                    else do
+                                        TextIO.putStrLn (yellow "⚠" <> " Unsolved goal(s):")
+                                        TextIO.putStr (renderGoals goals)
                         replLoop context
 
 runShellCommand :: String -> IO ()
@@ -152,17 +171,32 @@ runStatements currentContext accNames (statement : remaining) =
                             <> renderTypeError typeError
                         )
                     pure Nothing
-                Right (updatedContext, _) ->
-                    runStatements updatedContext (name : accNames) remaining
+                Right (updatedContext, _, goals) ->
+                    if null goals
+                        then runStatements updatedContext (name : accNames) remaining
+                        else do
+                            TextIO.putStrLn
+                                ( red "✗ "
+                                    <> "Definition '"
+                                    <> bold (prettyIdentifier name)
+                                    <> "' contains unsolved goal(s):\n"
+                                    <> renderGoals goals
+                                )
+                            pure Nothing
         Evaluation expression ->
             case synthesize currentContext expression of
                 Left typeError -> do
                     TextIO.putStrLn (red "✗ " <> "Error in expression: " <> renderTypeError typeError)
                     pure Nothing
-                Right (elaboratedExpr, inferredType) -> do
+                Right (elaboratedExpr, inferredType, goals) -> do
                     let values = contextValues currentContext
                     TextIO.putStrLn ("  " <> dim ":" <> " " <> magenta (prettyExpression (normalize values inferredType)))
                     TextIO.putStrLn ("  " <> dim "=" <> " " <> bold (green (prettyExpression (normalize values elaboratedExpr))))
+                    if null goals
+                        then pure ()
+                        else do
+                            TextIO.putStrLn (yellow "⚠" <> " Unsolved goal(s):")
+                            TextIO.putStr (renderGoals goals)
                     runStatements currentContext accNames remaining
 
 formatWrappedList :: Int -> [Identifier] -> Text

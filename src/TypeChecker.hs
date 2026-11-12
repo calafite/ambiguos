@@ -2,6 +2,7 @@
 
 module TypeChecker (
     TypeError (..),
+    Goal (..),
     Context (..),
     emptyContext,
     extendContextType,
@@ -10,6 +11,7 @@ module TypeChecker (
     check,
     checkDefinition,
     renderTypeError,
+    renderGoals,
 ) where
 
 import AST (Expression (..), Identifier (..), Visibility (..))
@@ -20,9 +22,24 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Evaluation (areDefinitionallyEqual, evaluateWeakHeadNormalForm, normalize)
-import Pretty (prettyExpression)
+import Evaluation (areDefinitionallyEqual, evaluateWeakHeadNormalForm)
+import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
+
+data Goal = Goal
+    { goalId :: !Int
+    , goalName :: !(Maybe Identifier)
+    , goalExpected :: !Expression
+    , goalLocals :: ![(Identifier, Expression)]
+    }
+    deriving (Eq, Show)
+
+data MetaInfo = MetaInfo
+    { metaInfoName :: !(Maybe Identifier)
+    , metaInfoExpected :: !Expression
+    , metaInfoContext :: !Context
+    }
+    deriving (Eq, Show)
 
 data TypeError
     = UnboundVariable Identifier
@@ -44,6 +61,7 @@ data TypeError
 data Context = Context
     { contextTypes :: Map Identifier Expression
     , contextValues :: Map Identifier Expression
+    , contextLocals :: [Identifier]
     }
     deriving (Eq, Show)
 
@@ -52,11 +70,15 @@ emptyContext =
     Context
         { contextTypes = Map.empty
         , contextValues = Map.empty
+        , contextLocals = []
         }
 
 extendContextType :: Identifier -> Expression -> Context -> Context
 extendContextType identifier expressionType context =
-    context{contextTypes = Map.insert identifier expressionType (contextTypes context)}
+    context
+        { contextTypes = Map.insert identifier expressionType (contextTypes context)
+        , contextLocals = identifier : contextLocals context
+        }
 
 extendContextDefinition :: Identifier -> Expression -> Expression -> Context -> Context
 extendContextDefinition identifier expressionType expressionValue context =
@@ -74,6 +96,7 @@ lookupContext identifier context =
 data ElabState = ElabState
     { nextMetaId :: !Int
     , metaSubst :: !(Map Int Expression)
+    , metaRegistry :: !(Map Int MetaInfo)
     }
 
 type Elab a = StateT ElabState (Either TypeError) a
@@ -87,20 +110,46 @@ catchElab (StateT action) handler = StateT $ \s ->
 tryElab :: Elab a -> Elab a -> Elab a
 tryElab primary fallback = catchElab primary (\_ -> fallback)
 
-freshMetaVar :: Elab Expression
-freshMetaVar = do
+freshMetaId :: Elab Int
+freshMetaId = do
     idx <- gets nextMetaId
     modify (\s -> s{nextMetaId = idx + 1})
-    pure (MetaVar idx)
+    pure idx
 
-instantiateHoles :: Expression -> Elab Expression
-instantiateHoles expr = case expr of
-    Hole _ -> freshMetaVar
-    Application vis f a -> Application vis <$> instantiateHoles f <*> instantiateHoles a
-    Lambda vis p ty body -> Lambda vis p <$> traverse instantiateHoles ty <*> instantiateHoles body
-    Pi vis p d c -> Pi vis p <$> instantiateHoles d <*> instantiateHoles c
-    Annotation t ty -> Annotation <$> instantiateHoles t <*> instantiateHoles ty
-    other -> pure other
+freshMetaVar :: Elab Expression
+freshMetaVar = MetaVar <$> freshMetaId
+
+recordMeta :: Int -> Maybe Identifier -> Context -> Expression -> Elab ()
+recordMeta mId mName context expType = do
+    let info = MetaInfo mName expType context
+    modify (\s -> s{metaRegistry = Map.insert mId info (metaRegistry s)})
+
+collectUnsolvedGoals :: Elab [Goal]
+collectUnsolvedGoals = do
+    registry <- gets metaRegistry
+    substMap <- gets metaSubst
+    let unsolved = Map.filterWithKey (\mId _ -> Map.notMember mId substMap) registry
+    traverse toGoal (Map.toList unsolved)
+  where
+    toGoal (mId, info) = do
+        zonkedExp <- zonk (metaInfoExpected info)
+        let ctx = metaInfoContext info
+            env = contextValues ctx
+            normExp = evaluateWeakHeadNormalForm env zonkedExp
+        locals <- traverse (zonkLocal ctx) (contextLocals ctx)
+        pure
+            Goal
+                { goalId = mId
+                , goalName = metaInfoName info
+                , goalExpected = normExp
+                , goalLocals = locals
+                }
+
+    zonkLocal ctx ident = do
+        let rawType = Map.findWithDefault (Universe (-1)) ident (contextTypes ctx)
+        zonkedType <- zonk rawType
+        let normType = evaluateWeakHeadNormalForm (contextValues ctx) zonkedType
+        pure (ident, normType)
 
 zonk :: Expression -> Elab Expression
 zonk expr = do
@@ -242,7 +291,11 @@ reflexivityType =
             (Variable (Identifier "A"))
             ( Application
                 Explicit
-                (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x")))
+                ( Application
+                    Explicit
+                    (Application Explicit Identity (Variable (Identifier "A")))
+                    (Variable (Identifier "x"))
+                )
                 (Variable (Identifier "x"))
             )
         )
@@ -318,10 +371,12 @@ synthesizeElab context expression = case expression of
             Nothing -> do
                 tMeta <- freshMetaVar
                 pure (MetaVar i, tMeta)
-    Hole _ -> do
-        m <- freshMetaVar
-        tm <- freshMetaVar
-        pure (m, tm)
+    Hole mName -> do
+        tMetaId <- freshMetaId
+        let tMeta = MetaVar tMetaId
+        mId <- freshMetaId
+        recordMeta mId mName context tMeta
+        pure (MetaVar mId, tMeta)
     Annotation term annotationType -> do
         (elabAnnType, annTypeUniverse) <- synthesizeElab context annotationType
         _ <- extractUniverseLevel context annTypeUniverse
@@ -383,8 +438,10 @@ checkElab context expression expectedType = do
     let env = contextValues context
         whnfExpected = evaluateWeakHeadNormalForm env zonkedExpected
     case (expression, whnfExpected) of
-        (Hole _, _) ->
-            freshMetaVar
+        (Hole mName, _) -> do
+            mId <- freshMetaId
+            recordMeta mId mName context zonkedExpected
+            pure (MetaVar mId)
         (Lambda Explicit parameter maybeDeclaredType body, Pi Explicit binder domain codomain) -> do
             case maybeDeclaredType of
                 Just declaredType -> do
@@ -393,10 +450,9 @@ checkElab context expression expectedType = do
                     unify env elabDeclType domain
                 Nothing -> pure ()
             let targetParameter = parameter
-                renamedBody = body
                 substitutedCodomain = substitute binder (Variable targetParameter) codomain
                 extendedContext = extendContextType targetParameter domain context
-            elaboratedBody <- checkElab extendedContext renamedBody substitutedCodomain
+            elaboratedBody <- checkElab extendedContext body substitutedCodomain
             pure (Lambda Explicit targetParameter (Just domain) elaboratedBody)
         (Lambda Implicit parameter maybeDeclaredType body, Pi Implicit binder domain codomain) -> do
             case maybeDeclaredType of
@@ -406,10 +462,9 @@ checkElab context expression expectedType = do
                     unify env elabDeclType domain
                 Nothing -> pure ()
             let targetParameter = parameter
-                renamedBody = body
                 substitutedCodomain = substitute binder (Variable targetParameter) codomain
                 extendedContext = extendContextType targetParameter domain context
-            elaboratedBody <- checkElab extendedContext renamedBody substitutedCodomain
+            elaboratedBody <- checkElab extendedContext body substitutedCodomain
             pure (Lambda Implicit targetParameter (Just domain) elaboratedBody)
         (otherExpr, Pi Implicit binder domain codomain) -> do
             let extendedContext = extendContextType binder domain context
@@ -422,53 +477,78 @@ checkElab context expression expectedType = do
             unify env synthesizedType zonkedExpected
             pure elabExpr
 
-synthesize :: Context -> Expression -> Either TypeError (Expression, Expression)
+synthesize :: Context -> Expression -> Either TypeError (Expression, Expression, [Goal])
 synthesize context rawExpr =
     evalStateT
         ( do
-            exprWithMetas <- instantiateHoles rawExpr
-            (elabExpr, rawType) <- synthesizeElab context exprWithMetas
+            (elabExpr, rawType) <- synthesizeElab context rawExpr
             zonkedType <- zonk rawType
             zonkedExpr <- zonk elabExpr
-            pure (zonkedExpr, zonkedType)
+            goals <- collectUnsolvedGoals
+            pure (zonkedExpr, zonkedType, goals)
         )
-        (ElabState 0 Map.empty)
+        (ElabState 0 Map.empty Map.empty)
 
-check :: Context -> Expression -> Expression -> Either TypeError Expression
+check :: Context -> Expression -> Expression -> Either TypeError (Expression, [Goal])
 check context rawExpr expectedType =
     evalStateT
         ( do
-            exprWithMetas <- instantiateHoles rawExpr
-            expTypeWithMetas <- instantiateHoles expectedType
-            elabExpr <- checkElab context exprWithMetas expTypeWithMetas
-            zonk elabExpr
+            (elabExpected, _) <- synthesizeElab context expectedType
+            zonkedExpected <- zonk elabExpected
+            elabExpr <- checkElab context rawExpr zonkedExpected
+            zonkedExpr <- zonk elabExpr
+            goals <- collectUnsolvedGoals
+            pure (zonkedExpr, goals)
         )
-        (ElabState 0 Map.empty)
+        (ElabState 0 Map.empty Map.empty)
 
-checkDefinition :: Context -> Identifier -> Maybe Expression -> Expression -> Either TypeError (Context, Expression)
+checkDefinition ::
+    Context ->
+    Identifier ->
+    Maybe Expression ->
+    Expression ->
+    Either TypeError (Context, Expression, [Goal])
 checkDefinition context name maybeDeclaredType bodyTerm =
     evalStateT
         ( do
             (zonkedBody, finalType) <- case maybeDeclaredType of
                 Just declaredType -> do
-                    declWithMetas <- instantiateHoles declaredType
-                    (elabDeclType, typeUniverse) <- synthesizeElab context declWithMetas
+                    (elabDeclType, typeUniverse) <- synthesizeElab context declaredType
                     _ <- extractUniverseLevel context typeUniverse
                     zonkedDeclType <- zonk elabDeclType
-                    bodyWithMetas <- instantiateHoles bodyTerm
-                    elabBody <- checkElab context bodyWithMetas zonkedDeclType
+                    elabBody <- checkElab context bodyTerm zonkedDeclType
                     zonkedBodyTerm <- zonk elabBody
                     pure (zonkedBodyTerm, zonkedDeclType)
                 Nothing -> do
-                    bodyWithMetas <- instantiateHoles bodyTerm
-                    (elabBody, rawType) <- synthesizeElab context bodyWithMetas
+                    (elabBody, rawType) <- synthesizeElab context bodyTerm
                     zonkedType <- zonk rawType
                     zonkedBodyTerm <- zonk elabBody
                     pure (zonkedBodyTerm, zonkedType)
+            goals <- collectUnsolvedGoals
             let updatedContext = extendContextDefinition name finalType zonkedBody context
-            pure (updatedContext, finalType)
+            pure (updatedContext, finalType, goals)
         )
-        (ElabState 0 Map.empty)
+        (ElabState 0 Map.empty Map.empty)
+
+renderGoals :: [Goal] -> Text
+renderGoals goals = Text.concat (map formatGoal goals)
+  where
+    formatGoal g =
+        let nameTag = case goalName g of
+                Just ident -> "?" <> prettyIdentifier ident
+                Nothing -> "?" <> Text.pack (show (goalId g))
+            header = "  \ESC[1;36m[" <> nameTag <> "]\ESC[0m\n"
+            target = "    \ESC[1mExpected:\ESC[0m " <> prettyExpression (goalExpected g) <> "\n"
+            locals =
+                if null (goalLocals g)
+                    then ""
+                    else
+                        "    \ESC[1mContext:\ESC[0m\n"
+                            <> Text.concat
+                                [ "      " <> prettyIdentifier v <> " : " <> prettyExpression t <> "\n"
+                                | (v, t) <- reverse (goalLocals g)
+                                ]
+         in header <> target <> locals
 
 renderTypeError :: TypeError -> Text
 renderTypeError typeError = case typeError of

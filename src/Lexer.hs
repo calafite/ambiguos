@@ -11,7 +11,7 @@ import AST (Identifier (..))
 import Automata.DFA (compileNFAToDFA, matchPrefixDFA)
 import Automata.NFA (compileRegexToNFA)
 import Automata.Types (DFA, Regex (..), literalString, matchAny)
-import Data.Char (isSpace)
+import Data.Char (isAlphaNum, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
 
@@ -39,6 +39,7 @@ data Token
     | TokenLeftBrace
     | TokenRightBrace
     | TokenComma
+    | TokenHole (Maybe Identifier)
     | TokenIdentifier Identifier
     deriving (Eq, Ord, Show)
 
@@ -71,23 +72,23 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
   where
     scanLoop remaining
         | null remaining = Right []
-        -- Skip single-line comments
         | take 2 remaining == "--" =
             let afterComment = dropWhile (/= '\n') remaining
              in scanLoop (dropWhile isSpace afterComment)
-        -- Skip block comments
         | take 2 remaining == "{-" =
             case skipBlockComment 1 (drop 2 remaining) of
                 Left err -> Left err
                 Right afterBlock -> scanLoop (dropWhile isSpace afterBlock)
-        -- Match arrows using the compiled DFA
         | Just (_, rest) <- matchPrefixDFA dfaArrow remaining =
             (TokenArrow :) <$> scanLoop (dropWhile isSpace rest)
-        -- Match natural numbers using the compiled DFA
         | Just (numStr, rest) <- matchPrefixDFA dfaNatural remaining =
             let n = read numStr :: Integer
              in (TokenNatural n :) <$> scanLoop (dropWhile isSpace rest)
-        -- Match identifiers and keywords using the compiled DFA
+        | (headChar : rest) <- remaining
+        , headChar == '?' =
+            let (identChars, restAfter) = span (\c -> isAlphaNum c || c == '_') rest
+                mIdent = if null identChars then Nothing else Just (Identifier (Text.pack identChars))
+             in (TokenHole mIdent :) <$> scanLoop (dropWhile isSpace restAfter)
         | Just (identStr, rest) <- matchPrefixDFA dfaIdentifier remaining =
             let token = classifyIdentifier (Text.pack identStr)
              in (token :) <$> scanLoop (dropWhile isSpace rest)
@@ -121,7 +122,12 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
         "successor" -> TokenKeywordSucc
         "succ" -> TokenKeywordSucc
         "natRec" -> TokenKeywordNatRec
-        _ -> TokenIdentifier (Identifier text)
+        "_" -> TokenHole Nothing
+        _
+            | Text.isPrefixOf "_" text ->
+                TokenHole (Just (Identifier (Text.drop 1 text)))
+            | otherwise ->
+                TokenIdentifier (Identifier text)
 
     skipBlockComment :: Int -> String -> Either LexError String
     skipBlockComment 0 text = Right text

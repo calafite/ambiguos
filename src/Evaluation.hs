@@ -15,8 +15,8 @@ module Evaluation (
 ) where
 
 import AST (Expression (..), Identifier (..), Visibility (..))
-import Data.Map.Strict (Map)
 import qualified Data.Map.Lazy as MapLazy
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -28,8 +28,8 @@ type Environment = Map Identifier Value
 -- | A closure pairs an un-evaluated expression body with its lexical environment.
 data Closure = Closure
     { closureParam :: !Identifier
-    , closureBody  :: !Expression
-    , closureEnv   :: !Environment
+    , closureBody :: !Expression
+    , closureEnv :: !Environment
     }
     deriving (Eq, Show)
 
@@ -70,8 +70,9 @@ data Neutral
 emptyEnvironment :: Environment
 emptyEnvironment = Map.empty
 
--- | Lazily initialize the top-level environment to permit mutually recursive or
--- forward-referenced definitions without evaluation order deadlocks.
+{- | Lazily initialize the top-level environment to permit mutually recursive or
+forward-referenced definitions without evaluation order deadlocks.
+-}
 initEnvironment :: Map Identifier Expression -> Environment
 initEnvironment defs = env
   where
@@ -81,7 +82,7 @@ lookupVar :: Identifier -> Environment -> Value
 lookupVar ident env =
     case Map.lookup ident env of
         Just val -> val
-        Nothing  -> VNeutral (NVar ident)
+        Nothing -> VNeutral (NVar ident)
 
 instantiateClosure :: Closure -> Value -> Value
 instantiateClosure (Closure param body env) arg =
@@ -136,27 +137,27 @@ vApp vis fn arg = case fn of
         let newArgs = args ++ [arg]
          in case newArgs of
                 [p, z, s, n] -> evalNatRec p z s n
-                _            -> VPrimNatRec newArgs
+                _ -> VPrimNatRec newArgs
     VPrimJ args ->
         let newArgs = args ++ [arg]
          in case newArgs of
                 [a, x, p, d, y, prf] -> evalJ a x p d y prf
-                _                    -> VPrimJ newArgs
+                _ -> VPrimJ newArgs
     VPrimIdentity args ->
         let newArgs = args ++ [arg]
          in case newArgs of
                 [a, x, y] -> VId a x y
-                _         -> VPrimIdentity newArgs
+                _ -> VPrimIdentity newArgs
     VPrimReflexivity args ->
         let newArgs = args ++ [arg]
          in case newArgs of
                 [a, x] -> VRefl a x
-                _      -> VPrimReflexivity newArgs
+                _ -> VPrimReflexivity newArgs
     VPrimAbort args ->
         let newArgs = args ++ [arg]
          in case newArgs of
                 [a, v] -> evalAbort a v
-                _      -> VPrimAbort newArgs
+                _ -> VPrimAbort newArgs
     VNeutral neu ->
         VNeutral (NApp neu vis arg)
     stuckVal ->
@@ -189,7 +190,7 @@ evalJ typeA x motiveP baseCaseD y proof = case proof of
 evalAbort :: Value -> Value -> Value
 evalAbort typeA v = case v of
     VNeutral neu -> VNeutral (NAbort typeA neu)
-    other        -> VNeutral (NAbort typeA (NStuck other))
+    other -> VNeutral (NAbort typeA (NStuck other))
 
 -- | Readback / Quoting: transforms semantic values back into normal-form expressions.
 quote :: Set Identifier -> Value -> Expression
@@ -205,13 +206,17 @@ quote usedVars val = case val of
     VVoidType ->
         VoidType
     VId a x y ->
-        foldl (Application Explicit) Identity
+        foldl
+            (Application Explicit)
+            Identity
             [ quote usedVars a
             , quote usedVars x
             , quote usedVars y
             ]
     VRefl a x ->
-        foldl (Application Explicit) Reflexivity
+        foldl
+            (Application Explicit)
+            Reflexivity
             [ quote usedVars a
             , quote usedVars x
             ]
@@ -235,19 +240,19 @@ quote usedVars val = case val of
         quoteNeutral usedVars neu
     VLambda vis param mType clos ->
         let freshParam = freshIdentifier param usedVars
-            argVal     = VNeutral (NVar freshParam)
-            bodyVal    = instantiateClosure clos argVal
-            newUsed    = Set.insert freshParam usedVars
-            mTypeExpr  = fmap (quote usedVars) mType
-            bodyExpr   = quote newUsed bodyVal
+            argVal = VNeutral (NVar freshParam)
+            bodyVal = instantiateClosure clos argVal
+            newUsed = Set.insert freshParam usedVars
+            mTypeExpr = fmap (quote usedVars) mType
+            bodyExpr = quote newUsed bodyVal
          in Lambda vis freshParam mTypeExpr bodyExpr
     VPi vis param dom clos ->
-        let domExpr    = quote usedVars dom
+        let domExpr = quote usedVars dom
             freshParam = freshIdentifier param usedVars
-            argVal     = VNeutral (NVar freshParam)
-            codomVal   = instantiateClosure clos argVal
-            newUsed    = Set.insert freshParam usedVars
-            codomExpr  = quote newUsed codomVal
+            argVal = VNeutral (NVar freshParam)
+            codomVal = instantiateClosure clos argVal
+            newUsed = Set.insert freshParam usedVars
+            codomExpr = quote newUsed codomVal
          in if param == Identifier "_" || Set.notMember freshParam (freeVariables codomExpr)
                 then Pi vis (Identifier "_") domExpr codomExpr
                 else Pi vis freshParam domExpr codomExpr
@@ -263,7 +268,9 @@ quoteNeutral usedVars neu = case neu of
     NApp fn vis arg ->
         Application vis (quoteNeutral usedVars fn) (quote usedVars arg)
     NJ a x p d y prf ->
-        foldl (Application Explicit) J
+        foldl
+            (Application Explicit)
+            J
             [ quote usedVars a
             , quote usedVars x
             , quote usedVars p
@@ -272,14 +279,18 @@ quoteNeutral usedVars neu = case neu of
             , quoteNeutral usedVars prf
             ]
     NNatRec p z s nNeu ->
-        foldl (Application Explicit) NatRec
+        foldl
+            (Application Explicit)
+            NatRec
             [ quote usedVars p
             , quote usedVars z
             , quote usedVars s
             , quoteNeutral usedVars nNeu
             ]
     NAbort a vNeu ->
-        foldl (Application Explicit) Abort
+        foldl
+            (Application Explicit)
+            Abort
             [ quote usedVars a
             , quoteNeutral usedVars vNeu
             ]
@@ -289,28 +300,29 @@ quoteNeutral usedVars neu = case neu of
 -- | Evaluates an expression to weak head normal form.
 evaluateWeakHeadNormalForm :: Map Identifier Expression -> Expression -> Expression
 evaluateWeakHeadNormalForm defs expr =
-    let env      = initEnvironment defs
-        val      = evaluate env expr
+    let env = initEnvironment defs
+        val = evaluate env expr
         usedVars = Map.keysSet defs `Set.union` freeVariables expr
      in quote usedVars val
 
 -- | Fully normalizes an expression (evaluates under binders).
 normalize :: Map Identifier Expression -> Expression -> Expression
 normalize defs expr =
-    let env      = initEnvironment defs
-        val      = evaluate env expr
+    let env = initEnvironment defs
+        val = evaluate env expr
         usedVars = Map.keysSet defs `Set.union` freeVariables expr
      in quote usedVars val
 
 -- | Definitional equality check with semantic eta-conversion.
 areDefinitionallyEqual :: Map Identifier Expression -> Expression -> Expression -> Bool
 areDefinitionallyEqual defs e1 e2 =
-    let env      = initEnvironment defs
-        v1       = evaluate env e1
-        v2       = evaluate env e2
-        usedVars = Map.keysSet defs
-            `Set.union` freeVariables e1
-            `Set.union` freeVariables e2
+    let env = initEnvironment defs
+        v1 = evaluate env e1
+        v2 = evaluate env e2
+        usedVars =
+            Map.keysSet defs
+                `Set.union` freeVariables e1
+                `Set.union` freeVariables e2
      in equalVal usedVars v1 v2
 
 equalVal :: Set Identifier -> Value -> Value -> Bool
@@ -350,27 +362,27 @@ equalVal usedVars v1 v2 = case (v1, v2) of
     (VLambda vis1 param1 _ clos1, VLambda vis2 _ _ clos2)
         | vis1 == vis2 ->
             let freshParam = freshIdentifier param1 usedVars
-                argVal     = VNeutral (NVar freshParam)
-                newUsed    = Set.insert freshParam usedVars
+                argVal = VNeutral (NVar freshParam)
+                newUsed = Set.insert freshParam usedVars
              in equalVal newUsed (instantiateClosure clos1 argVal) (instantiateClosure clos2 argVal)
     -- Extensional eta-equality for functions
     (VLambda vis1 param1 _ clos1, other) ->
         let freshParam = freshIdentifier param1 usedVars
-            argVal     = VNeutral (NVar freshParam)
-            newUsed    = Set.insert freshParam usedVars
+            argVal = VNeutral (NVar freshParam)
+            newUsed = Set.insert freshParam usedVars
          in equalVal newUsed (instantiateClosure clos1 argVal) (vApp vis1 other argVal)
     (other, VLambda vis2 param2 _ clos2) ->
         let freshParam = freshIdentifier param2 usedVars
-            argVal     = VNeutral (NVar freshParam)
-            newUsed    = Set.insert freshParam usedVars
+            argVal = VNeutral (NVar freshParam)
+            newUsed = Set.insert freshParam usedVars
          in equalVal newUsed (vApp vis2 other argVal) (instantiateClosure clos2 argVal)
     (VPi vis1 param1 dom1 clos1, VPi vis2 _ dom2 clos2)
         | vis1 == vis2 ->
-            equalVal usedVars dom1 dom2 &&
-            let freshParam = freshIdentifier param1 usedVars
-                argVal     = VNeutral (NVar freshParam)
-                newUsed    = Set.insert freshParam usedVars
-             in equalVal newUsed (instantiateClosure clos1 argVal) (instantiateClosure clos2 argVal)
+            equalVal usedVars dom1 dom2
+                && let freshParam = freshIdentifier param1 usedVars
+                       argVal = VNeutral (NVar freshParam)
+                       newUsed = Set.insert freshParam usedVars
+                    in equalVal newUsed (instantiateClosure clos1 argVal) (instantiateClosure clos2 argVal)
     _ -> False
   where
     equalValList u xs ys =
