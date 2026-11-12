@@ -7,7 +7,7 @@ module Substitution (
     alphaEquivalent,
 ) where
 
-import AST (Expression (..), Identifier (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Visibility (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -27,6 +27,11 @@ freeVariables expression = case expression of
     NatRec -> Set.empty
     Hole _ -> Set.empty
     MetaVar _ -> Set.empty
+    Case target branches ->
+        let targetVars = freeVariables target
+            branchVars (CaseBranch _ vars body) =
+                foldr Set.delete (freeVariables body) vars
+         in Set.unions (targetVars : map branchVars branches)
     Let param maybeParamType defExpr body ->
         let typeFreeVars = maybe Set.empty freeVariables maybeParamType
             defFreeVars = freeVariables defExpr
@@ -78,6 +83,23 @@ substitute targetVariable replacementExpression sourceExpression =
         NatRec -> NatRec
         Hole h -> Hole h
         MetaVar i -> MetaVar i
+        Case target branches ->
+            Case (substitute targetVariable replacementExpression target) (map substBranch branches)
+          where
+            substBranch (CaseBranch con vars body)
+                | elem targetVariable vars = CaseBranch con vars body
+                | any (`Set.member` replacementFreeVariables) vars =
+                    let (newVars, renamedBody) = renameVars vars body (Set.unions [replacementFreeVariables, freeVariables body, Set.singleton targetVariable])
+                     in CaseBranch con newVars (substitute targetVariable replacementExpression renamedBody)
+                | otherwise =
+                    CaseBranch con vars (substitute targetVariable replacementExpression body)
+
+            renameVars [] b _ = ([], b)
+            renameVars (v : vs) b used =
+                let fresh = freshIdentifier v used
+                    b' = substitute v (Variable fresh) b
+                    (vs', b'') = renameVars vs b' (Set.insert fresh used)
+                 in (fresh : vs', b'')
         Let param maybeParamType defExpr body ->
             let substType = fmap (substitute targetVariable replacementExpression) maybeParamType
                 substDef = substitute targetVariable replacementExpression defExpr
@@ -170,6 +192,15 @@ alphaEquivalent leftExpression rightExpression =
         (NatRec, NatRec) -> True
         (Hole _, Hole _) -> True
         (MetaVar i, MetaVar j) -> i == j
+        (Case t1 bs1, Case t2 bs2) ->
+            alphaEquivalent t1 t2 && length bs1 == length bs2 && and (zipWith branchEq bs1 bs2)
+          where
+            branchEq (CaseBranch c1 v1 b1) (CaseBranch c2 v2 b2) =
+                c1 == c2 && length v1 == length v2 &&
+                let used = Set.unions [freeVariables b1, freeVariables b2]
+                    freshNames = snd (foldr (\v (u, acc) -> let f = freshIdentifier v u in (Set.insert f u, f : acc)) (used, []) v1)
+                    substAll vs freshes body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs freshes)
+                 in alphaEquivalent (substAll v1 freshNames b1) (substAll v2 freshNames b2)
         (Let p1 ty1 d1 b1, Let p2 ty2 d2 b2) ->
             let typesMatch = case (ty1, ty2) of
                     (Nothing, Nothing) -> True

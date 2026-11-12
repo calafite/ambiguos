@@ -5,7 +5,7 @@ module Pretty (
     prettyIdentifier,
 ) where
 
-import AST (Expression (..), Identifier (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Visibility (..))
 import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -141,4 +141,12 @@ prettyWithPrecedence currentPrecedence expression =
                         defText = prettyWithPrecedence TopLevelPrecedence defExpr
                         bodyText = prettyWithPrecedence TopLevelPrecedence body
                         rendered = "let " <> prettyIdentifier param <> " : " <> typeText <> " = " <> defText <> " in " <> bodyText
+                     in parenthesizeIf (currentPrecedence > LambdaPrecedence) rendered
+                Case target branches ->
+                    let targetText = prettyWithPrecedence TopLevelPrecedence target
+                        formatBranch (CaseBranch con vars body) =
+                            let headStr = Text.unwords (prettyIdentifier con : map prettyIdentifier vars)
+                             in headStr <> " -> " <> prettyWithPrecedence TopLevelPrecedence body
+                        branchesText = Text.intercalate " ; " (map formatBranch branches)
+                        rendered = "case " <> targetText <> " of { " <> branchesText <> " }"
                      in parenthesizeIf (currentPrecedence > LambdaPrecedence) rendered

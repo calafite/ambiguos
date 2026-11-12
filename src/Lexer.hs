@@ -18,6 +18,10 @@ import qualified Data.Text as Text
 data Token
     = TokenKeywordType
     | TokenKeywordDef
+    | TokenKeywordData
+    | TokenKeywordWhere
+    | TokenKeywordCase
+    | TokenKeywordOf
     | TokenKeywordLet
     | TokenKeywordIn
     | TokenKeywordId
@@ -34,6 +38,8 @@ data Token
     | TokenArrow
     | TokenColon
     | TokenEquals
+    | TokenPipe
+    | TokenSemicolon
     | TokenLeftParen
     | TokenRightParen
     | TokenLeftBracket
@@ -99,6 +105,8 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
                 '\\' -> (TokenBackslash :) <$> scanLoop (dropWhile isSpace rest)
                 ':' -> (TokenColon :) <$> scanLoop (dropWhile isSpace rest)
                 '=' -> (TokenEquals :) <$> scanLoop (dropWhile isSpace rest)
+                '|' -> (TokenPipe :) <$> scanLoop (dropWhile isSpace rest)
+                ';' -> (TokenSemicolon :) <$> scanLoop (dropWhile isSpace rest)
                 '(' -> (TokenLeftParen :) <$> scanLoop (dropWhile isSpace rest)
                 ')' -> (TokenRightParen :) <$> scanLoop (dropWhile isSpace rest)
                 '[' -> (TokenLeftBracket :) <$> scanLoop (dropWhile isSpace rest)
@@ -114,6 +122,10 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
     classifyIdentifier text = case text of
         "Type" -> TokenKeywordType
         "def" -> TokenKeywordDef
+        "data" -> TokenKeywordData
+        "where" -> TokenKeywordWhere
+        "case" -> TokenKeywordCase
+        "of" -> TokenKeywordOf
         "let" -> TokenKeywordLet
         "in" -> TokenKeywordIn
         "Id" -> TokenKeywordId

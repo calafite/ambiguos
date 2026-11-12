@@ -1,6 +1,7 @@
 module AST (
     Identifier (..),
     Visibility (..),
+    CaseBranch (..),
     Expression (..),
     Statement (..),
 ) where
@@ -17,6 +18,13 @@ data Visibility
     | Implicit
     deriving (Eq, Ord, Show)
 
+data CaseBranch = CaseBranch
+    { branchConstructor :: !Identifier
+    , branchBindings    :: ![Identifier]
+    , branchBody        :: !Expression
+    }
+    deriving (Eq, Show)
+
 data Expression
     = Variable Identifier
     | Universe !Int
@@ -24,6 +32,7 @@ data Expression
     | Application Visibility Expression Expression
     | Pi Visibility Identifier Expression Expression
     | Let Identifier (Maybe Expression) Expression Expression
+    | Case Expression [CaseBranch]
     | Annotation Expression Expression
     | Identity
     | Reflexivity
@@ -41,4 +50,5 @@ data Expression
 data Statement
     = Definition Identifier (Maybe Expression) Expression
     | Evaluation Expression
+    | DataDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [(Identifier, Expression)]
     deriving (Eq, Show)

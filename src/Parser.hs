@@ -8,7 +8,7 @@ module Parser (
     renderParseError,
 ) where
 
-import AST (Expression (..), Identifier (..), Statement (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), Visibility (..))
 import Control.Applicative (Alternative (..), optional)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -255,8 +255,77 @@ parseLet = do
     bodyExpr <- expressionParser
     pure (Let name maybeType valExpr bodyExpr)
 
+parseCaseBranch :: Parser CaseBranch
+parseCaseBranch = do
+    con <- parseIdentifier
+    bindings <- many parseIdentifier
+    expectToken TokenArrow "'->'"
+    body <- expressionParser
+    pure (CaseBranch con bindings body)
+
+parseCase :: Parser Expression
+parseCase = do
+    expectToken TokenKeywordCase "'case'"
+    target <- expressionParser
+    expectToken TokenKeywordOf "'of'"
+    branches <- parseBraced <|> parsePiped
+    pure (Case target branches)
+  where
+    parseBraced = do
+        expectToken TokenLeftBrace "'{'"
+        bs <- many (parseCaseBranch <* optional (expectToken TokenSemicolon "';'"))
+        expectToken TokenRightBrace "'}'"
+        pure bs
+    parsePiped = do
+        _ <- optional (expectToken TokenPipe "'|'")
+        b1 <- parseCaseBranch
+        bs <- many (expectToken TokenPipe "'|'" *> parseCaseBranch)
+        pure (b1 : bs)
+
 expressionParser :: Parser Expression
-expressionParser = parseLambda <|> parseLet <|> parseAnnotation
+expressionParser = parseLambda <|> parseLet <|> parseCase <|> parseAnnotation
+
+parseDataParameter :: Parser [(Visibility, Identifier, Expression)]
+parseDataParameter = parseExplicit <|> parseImplicit
+  where
+    parseExplicit = do
+        expectToken TokenLeftParen "'('"
+        names <- some parseIdentifier
+        expectToken TokenColon "':'"
+        ty <- expressionParser
+        expectToken TokenRightParen "')'"
+        pure [(Explicit, n, ty) | n <- names]
+    parseImplicit = do
+        expectToken TokenLeftBrace "'{'"
+        names <- some parseIdentifier
+        expectToken TokenColon "':'"
+        ty <- expressionParser
+        expectToken TokenRightBrace "'}'"
+        pure [(Implicit, n, ty) | n <- names]
+
+parseConstructorDecl :: Parser (Identifier, Expression)
+parseConstructorDecl = do
+    cName <- parseIdentifier
+    expectToken TokenColon "':'"
+    cType <- expressionParser
+    pure (cName, cType)
+
+parseDataDeclaration :: Parser Statement
+parseDataDeclaration = do
+    expectToken TokenKeywordData "'data'"
+    name <- parseIdentifier
+    paramGroups <- many parseDataParameter
+    expectToken TokenColon "':'"
+    univ <- expressionParser
+    expectToken TokenKeywordWhere "'where'"
+    constrs <- parseBraced <|> many parseConstructorDecl
+    pure (DataDeclaration name (concat paramGroups) univ constrs)
+  where
+    parseBraced = do
+        expectToken TokenLeftBrace "'{'"
+        cs <- many (parseConstructorDecl <* optional (expectToken TokenSemicolon "';'"))
+        expectToken TokenRightBrace "'}'"
+        pure cs
 
 parseDefinition :: Parser Statement
 parseDefinition = do
@@ -271,7 +340,7 @@ parseEvaluation :: Parser Statement
 parseEvaluation = Evaluation <$> expressionParser
 
 statementParser :: Parser Statement
-statementParser = parseDefinition <|> parseEvaluation
+statementParser = parseDataDeclaration <|> parseDefinition <|> parseEvaluation
 
 runCompleteParser :: Parser a -> [Token] -> Either ParseError a
 runCompleteParser parser tokens =

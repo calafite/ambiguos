@@ -15,6 +15,7 @@ import System.IO (hFlush, stdout)
 import qualified System.Process as Process
 import TypeChecker (
     Context (..),
+    checkDataDeclaration,
     checkDefinition,
     emptyContext,
     renderGoals,
@@ -55,7 +56,7 @@ printWelcomeBanner :: IO ()
 printWelcomeBanner = do
     TextIO.putStrLn ("\n" <> bold (magenta "Ambiguos") <> " " <> dim "v0.1.0" <> " — " <> dim "Formal Verification System")
     TextIO.putStrLn (dim "Calculus of Constructions with Martin-Löf Identity")
-    TextIO.putStrLn (dim "Commands: def <name> = <term> | :load <file> | :!<command> | quit\n")
+    TextIO.putStrLn (dim "Commands: def <name> = <term> | data <name> ... | :load <file> | :!<command> | quit\n")
 
 replLoop :: Context -> IO ()
 replLoop context = do
@@ -80,6 +81,15 @@ replLoop context = do
                     Left parseError -> do
                         TextIO.putStrLn (red "✗ " <> renderParseError parseError)
                         replLoop context
+                    Right (DataDeclaration name params univ constrs) ->
+                        case checkDataDeclaration context name params univ constrs of
+                            Left typeError -> do
+                                TextIO.putStrLn (red "✗ " <> renderTypeError typeError)
+                                replLoop context
+                            Right updatedContext -> do
+                                let conNames = Text.intercalate ", " (map (prettyIdentifier . fst) constrs)
+                                TextIO.putStrLn (green "✓" <> " Defined data " <> bold (prettyIdentifier name) <> " with: " <> cyan conNames)
+                                replLoop updatedContext
                     Right (Definition name maybeType bodyTerm) ->
                         case checkDefinition context name maybeType bodyTerm of
                             Left typeError -> do
@@ -160,6 +170,19 @@ runStatements :: Context -> [Identifier] -> [Statement] -> IO (Maybe (Context, [
 runStatements currentContext accNames [] = pure (Just (currentContext, reverse accNames))
 runStatements currentContext accNames (statement : remaining) =
     case statement of
+        DataDeclaration name params univ constrs ->
+            case checkDataDeclaration currentContext name params univ constrs of
+                Left typeError -> do
+                    TextIO.putStrLn
+                        ( red "✗ "
+                            <> "Error in data '"
+                            <> bold (prettyIdentifier name)
+                            <> "':\n  "
+                            <> renderTypeError typeError
+                        )
+                    pure Nothing
+                Right updatedContext ->
+                    runStatements updatedContext (name : accNames) remaining
         Definition name maybeType bodyTerm ->
             case checkDefinition currentContext name maybeType bodyTerm of
                 Left typeError -> do

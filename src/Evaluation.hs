@@ -14,7 +14,7 @@ module Evaluation (
     areDefinitionallyEqual,
 ) where
 
-import AST (Expression (..), Identifier (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Visibility (..))
 import qualified Data.Map.Lazy as MapLazy
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -38,6 +38,7 @@ data Value
     = VUniverse !Int
     | VPi !Visibility !Identifier !Value !Closure
     | VLambda !Visibility !Identifier !(Maybe Value) !Closure
+    | VCon !Identifier ![(Visibility, Value)]
     | VId !Value !Value !Value
     | VRefl !Value !Value
     | VNatType
@@ -61,6 +62,7 @@ data Neutral
     | NMetaVar !Int
     | NHole !(Maybe Identifier)
     | NApp !Neutral !Visibility !Value
+    | NCase !Neutral ![CaseBranch] !Environment
     | NJ !Value !Value !Value !Value !Value !Neutral
     | NNatRec !Value !Value !Value !Neutral
     | NAbort !Value !Neutral
@@ -106,6 +108,8 @@ evaluate env expression = case expression of
         VPi vis param (evaluate env dom) (Closure param codom env)
     Application vis fn arg ->
         vApp vis (evaluate env fn) (evaluate env arg)
+    Case target branches ->
+        evalCase env (evaluate env target) branches
     Identity ->
         VPrimIdentity []
     Reflexivity ->
@@ -129,11 +133,43 @@ evaluate env expression = case expression of
     MetaVar i ->
         VNeutral (NMetaVar i)
 
+evalCase :: Environment -> Value -> [CaseBranch] -> Value
+evalCase env targetVal branches = case targetVal of
+    VCon con args ->
+        let explicitArgs = [v | (Explicit, v) <- args]
+         in case matchBranch con explicitArgs branches of
+                Just v -> v
+                Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
+    VZero ->
+        case matchBranch (Identifier "zero") [] branches of
+            Just v -> v
+            Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
+    VSucc k ->
+        case matchBranch (Identifier "successor") [k] branches of
+            Just v -> v
+            Nothing ->
+                case matchBranch (Identifier "succ") [k] branches of
+                    Just v -> v
+                    Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
+    VNeutral neu ->
+        VNeutral (NCase neu branches env)
+    other ->
+        VNeutral (NCase (NStuck other) branches env)
+  where
+    matchBranch con args [] = Nothing
+    matchBranch con args (b : bs)
+        | branchConstructor b == con =
+            let newEnv = foldr (\(var, val) e -> Map.insert var val e) env (zip (branchBindings b) args)
+             in Just (evaluate newEnv (branchBody b))
+        | otherwise = matchBranch con args bs
+
 -- | Semantic function application.
 vApp :: Visibility -> Value -> Value -> Value
 vApp vis fn arg = case fn of
     VLambda _ _ _ clos ->
         instantiateClosure clos arg
+    VCon con args ->
+        VCon con (args ++ [(vis, arg)])
     VPrimSucc ->
         VSucc arg
     VPrimNatRec args ->
@@ -206,6 +242,8 @@ quote usedVars val = case val of
         Zero
     VSucc v ->
         Application Explicit Succ (quote usedVars v)
+    VCon con args ->
+        foldl (\acc (vis, a) -> Application vis acc (quote usedVars a)) (Variable con) args
     VVoidType ->
         VoidType
     VId a x y ->
@@ -270,6 +308,12 @@ quoteNeutral usedVars neu = case neu of
         Hole h
     NApp fn vis arg ->
         Application vis (quoteNeutral usedVars fn) (quote usedVars arg)
+    NCase target branches env ->
+        let quoteBranch (CaseBranch con vars body) =
+                let (freshes, newEnv, newUsed) = foldr (\v (fs, e, u) -> let f = freshIdentifier v u in (f : fs, Map.insert v (VNeutral (NVar f)) e, Set.insert f u)) ([], env, usedVars) vars
+                    bVal = evaluate newEnv body
+                 in CaseBranch con freshes (quote newUsed bVal)
+         in Case (quoteNeutral usedVars target) (map quoteBranch branches)
     NJ a x p d y prf ->
         foldl
             (Application Explicit)
@@ -338,6 +382,9 @@ equalVal usedVars v1 v2 = case (v1, v2) of
         True
     (VSucc k1, VSucc k2) ->
         equalVal usedVars k1 k2
+    (VCon c1 args1, VCon c2 args2) ->
+        c1 == c2 && length args1 == length args2 &&
+        and [vis1 == vis2 && equalVal usedVars a1 a2 | ((vis1, a1), (vis2, a2)) <- zip args1 args2]
     (VVoidType, VVoidType) ->
         True
     (VId a1 x1 y1, VId a2 x2 y2) ->
@@ -408,6 +455,8 @@ equalNeutral usedVars neu1 neu2 = case (neu1, neu2) of
             && equalVal usedVars d1 d2
             && equalVal usedVars y1 y2
             && equalNeutral usedVars prf1 prf2
+    (NCase n1 bs1 _, NCase n2 bs2 _) ->
+        equalNeutral usedVars n1 n2 && length bs1 == length bs2
     (NNatRec p1 z1 s1 n1, NNatRec p2 z2 s2 n2) ->
         equalVal usedVars p1 p2
             && equalVal usedVars z1 z2
