@@ -6,23 +6,32 @@ module Parser (
     parseStatement,
     parseProgram,
     renderParseError,
+    renderParseErrorWithSource,
 ) where
 
 import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), Visibility (..))
 import Control.Applicative (Alternative (..), optional)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Lexer (LexError, Token (..), renderLexError, tokenize)
+import Lexer (
+    LexError (..),
+    PosToken (..),
+    SourcePos (..),
+    Token (..),
+    prettyToken,
+    renderLexError,
+    tokenize,
+ )
 
 data ParseError
-    = ErrorLexical LexError
-    | UnexpectedEndOfInput
-    | ExpectedToken Text Token
-    | UnexpectedToken Token
+    = ErrorLexical !LexError
+    | UnexpectedEndOfInput !(Maybe SourcePos)
+    | ExpectedToken !Text !Token !SourcePos
+    | UnexpectedToken !Token !SourcePos
     deriving (Eq, Show)
 
 newtype Parser a = Parser
-    { runParser :: [Token] -> Either ParseError (a, [Token])
+    { runParser :: [PosToken] -> Either ParseError (a, [PosToken])
     }
 
 instance Functor Parser where
@@ -38,7 +47,11 @@ instance Applicative Parser where
         pure (f a, afterA)
 
 instance Alternative Parser where
-    empty = Parser $ \_ -> Left UnexpectedEndOfInput
+    empty = Parser $ \tokens ->
+        let mPos = case tokens of
+                (PosToken pos _ : _) -> Just pos
+                [] -> Nothing
+         in Left (UnexpectedEndOfInput mPos)
     Parser p1 <|> Parser p2 = Parser $ \tokens ->
         case p1 tokens of
             Right result -> Right result
@@ -52,28 +65,67 @@ instance Monad Parser where
 peekToken :: Parser (Maybe Token)
 peekToken = Parser $ \tokens -> case tokens of
     [] -> Right (Nothing, [])
-    (t : _) -> Right (Just t, tokens)
+    (PosToken _ t : _) -> Right (Just t, tokens)
 
-consumeToken :: Parser Token
+peekPosToken :: Parser (Maybe PosToken)
+peekPosToken = Parser $ \tokens -> case tokens of
+    [] -> Right (Nothing, [])
+    (pt : _) -> Right (Just pt, tokens)
+
+consumeToken :: Parser PosToken
 consumeToken = Parser $ \tokens -> case tokens of
-    [] -> Left UnexpectedEndOfInput
-    (t : ts) -> Right (t, ts)
+    [] -> Left (UnexpectedEndOfInput Nothing)
+    (pt : ts) -> Right (pt, ts)
 
 expectToken :: Token -> Text -> Parser ()
 expectToken expected description = do
-    t <- consumeToken
-    if t == expected
-        then pure ()
-        else Parser $ \_ -> Left (ExpectedToken description t)
+    mNext <- peekPosToken
+    case mNext of
+        Just (PosToken pos t)
+            | t == expected -> do
+                _ <- consumeToken
+                pure ()
+            | otherwise -> Parser $ \_ -> Left (ExpectedToken description t pos)
+        Nothing -> Parser $ \_ -> Left (UnexpectedEndOfInput Nothing)
 
 parseIdentifier :: Parser Identifier
-parseIdentifier = do
-    t <- consumeToken
-    case t of
-        TokenIdentifier ident -> pure ident
-        TokenHole Nothing -> pure (Identifier "_")
-        TokenHole (Just (Identifier name)) -> pure (Identifier ("_" <> name))
-        other -> Parser $ \_ -> Left (ExpectedToken "identifier" other)
+parseIdentifier = parseNamed <|> parseParenOp
+  where
+    parseNamed = do
+        mPt <- peekPosToken
+        case mPt of
+            Just (PosToken _ (TokenIdentifier ident)) -> do
+                _ <- consumeToken
+                pure ident
+            Just (PosToken _ (TokenOperator ident)) -> do
+                _ <- consumeToken
+                pure ident
+            Just (PosToken _ (TokenHole Nothing)) -> do
+                _ <- consumeToken
+                pure (Identifier "_")
+            Just (PosToken _ (TokenHole (Just (Identifier name)))) -> do
+                _ <- consumeToken
+                pure (Identifier ("_" <> name))
+            Just (PosToken _ TokenKeywordZero) -> do
+                _ <- consumeToken
+                pure (Identifier "zero")
+            Just (PosToken _ TokenKeywordSucc) -> do
+                _ <- consumeToken
+                pure (Identifier "successor")
+            _ -> empty
+
+    parseParenOp = do
+        mPt <- peekPosToken
+        case mPt of
+            Just (PosToken _ TokenLeftParen) -> do
+                _ <- consumeToken
+                pt <- consumeToken
+                case tokenValue pt of
+                    TokenOperator ident -> do
+                        expectToken TokenRightParen "')'"
+                        pure ident
+                    other -> Parser $ \_ -> Left (ExpectedToken "operator" other (tokenPos pt))
+            _ -> empty
 
 desugarNatural :: Integer -> Expression
 desugarNatural n
@@ -109,9 +161,9 @@ parseListLiteral = do
 
 parseAtomicExpression :: Parser Expression
 parseAtomicExpression = do
-    nextToken <- peekToken
-    case nextToken of
-        Just TokenKeywordType -> do
+    mPt <- peekPosToken
+    case mPt of
+        Just (PosToken _ TokenKeywordType) -> do
             _ <- consumeToken
             nextTok <- peekToken
             case nextTok of
@@ -119,26 +171,33 @@ parseAtomicExpression = do
                     _ <- consumeToken
                     pure (Universe (fromInteger n))
                 _ -> pure (Universe (-1))
-        Just TokenKeywordId -> Identity <$ consumeToken
-        Just TokenKeywordRefl -> Reflexivity <$ consumeToken
-        Just TokenKeywordJ -> J <$ consumeToken
-        Just TokenKeywordVoid -> VoidType <$ consumeToken
-        Just TokenKeywordAbort -> Abort <$ consumeToken
-        Just TokenKeywordNat -> NatType <$ consumeToken
-        Just TokenKeywordZero -> Zero <$ consumeToken
-        Just TokenKeywordSucc -> Succ <$ consumeToken
-        Just TokenKeywordNatRec -> NatRec <$ consumeToken
-        Just (TokenNatural n) -> desugarNatural n <$ consumeToken
-        Just (TokenHole mIdent) -> Hole mIdent <$ consumeToken
-        Just (TokenIdentifier ident) -> Variable ident <$ consumeToken
-        Just TokenLeftBracket -> parseListLiteral
-        Just TokenLeftParen -> do
+        Just (PosToken _ TokenKeywordId) -> Identity <$ consumeToken
+        Just (PosToken _ TokenKeywordRefl) -> Reflexivity <$ consumeToken
+        Just (PosToken _ TokenKeywordJ) -> J <$ consumeToken
+        Just (PosToken _ TokenKeywordVoid) -> VoidType <$ consumeToken
+        Just (PosToken _ TokenKeywordAbort) -> Abort <$ consumeToken
+        Just (PosToken _ TokenKeywordNat) -> NatType <$ consumeToken
+        Just (PosToken _ TokenKeywordZero) -> Zero <$ consumeToken
+        Just (PosToken _ TokenKeywordSucc) -> Succ <$ consumeToken
+        Just (PosToken _ TokenKeywordNatRec) -> NatRec <$ consumeToken
+        Just (PosToken _ (TokenNatural n)) -> desugarNatural n <$ consumeToken
+        Just (PosToken _ (TokenHole mIdent)) -> Hole mIdent <$ consumeToken
+        Just (PosToken _ (TokenIdentifier ident)) -> Variable ident <$ consumeToken
+        Just (PosToken _ TokenLeftBracket) -> parseListLiteral
+        Just (PosToken _ TokenLeftParen) -> do
             _ <- consumeToken
-            expr <- expressionParser
-            expectToken TokenRightParen "')'"
-            pure expr
-        Just other -> Parser $ \_ -> Left (UnexpectedToken other)
-        Nothing -> Parser $ \_ -> Left UnexpectedEndOfInput
+            nextTok <- peekToken
+            case nextTok of
+                Just (TokenOperator op) -> do
+                    _ <- consumeToken
+                    expectToken TokenRightParen "')'"
+                    pure (Variable op)
+                _ -> do
+                    expr <- expressionParser
+                    expectToken TokenRightParen "')'"
+                    pure expr
+        Just (PosToken pos other) -> Parser $ \_ -> Left (UnexpectedToken other pos)
+        Nothing -> Parser $ \_ -> Left (UnexpectedEndOfInput Nothing)
 
 parseAppArgument :: Parser (Visibility, Expression)
 parseAppArgument = parseImplicitOverride <|> parseExplicitArg
@@ -194,9 +253,24 @@ parseNonDependentArrow = do
 parseArrowOrApplication :: Parser Expression
 parseArrowOrApplication = parseDependentArrow <|> parseNonDependentArrow
 
+parseInfix :: Parser Expression
+parseInfix = do
+    left <- parseArrowOrApplication
+    rest <- many parseOpRight
+    pure (foldl (\acc (op, right) -> Application Explicit (Application Explicit (Variable op) acc) right) left rest)
+  where
+    parseOpRight = do
+        nextTok <- peekToken
+        case nextTok of
+            Just (TokenOperator op) -> do
+                _ <- consumeToken
+                right <- parseArrowOrApplication
+                pure (op, right)
+            _ -> empty
+
 parseAnnotation :: Parser Expression
 parseAnnotation = do
-    termExpr <- parseArrowOrApplication
+    termExpr <- parseInfix
     isAnnotated <- (True <$ expectToken TokenColon "':'") <|> pure False
     if isAnnotated
         then do
@@ -268,7 +342,10 @@ parseCase = do
     expectToken TokenKeywordCase "'case'"
     target <- expressionParser
     expectToken TokenKeywordOf "'of'"
-    branches <- parseBraced <|> parsePiped
+    nextTok <- peekToken
+    branches <- case nextTok of
+        Just TokenLeftBrace -> parseBraced
+        _ -> parsePiped
     pure (Case target branches)
   where
     parseBraced = do
@@ -283,7 +360,13 @@ parseCase = do
         pure (b1 : bs)
 
 expressionParser :: Parser Expression
-expressionParser = parseLambda <|> parseLet <|> parseCase <|> parseAnnotation
+expressionParser = do
+    nextTok <- peekToken
+    case nextTok of
+        Just TokenBackslash -> parseLambda
+        Just TokenKeywordLet -> parseLet
+        Just TokenKeywordCase -> parseCase
+        _ -> parseAnnotation
 
 parseDataParameter :: Parser [(Visibility, Identifier, Expression)]
 parseDataParameter = parseExplicit <|> parseImplicit
@@ -340,13 +423,18 @@ parseEvaluation :: Parser Statement
 parseEvaluation = Evaluation <$> expressionParser
 
 statementParser :: Parser Statement
-statementParser = parseDataDeclaration <|> parseDefinition <|> parseEvaluation
+statementParser = do
+    nextTok <- peekToken
+    case nextTok of
+        Just TokenKeywordData -> parseDataDeclaration
+        Just TokenKeywordDef -> parseDefinition
+        _ -> parseEvaluation
 
-runCompleteParser :: Parser a -> [Token] -> Either ParseError a
+runCompleteParser :: Parser a -> [PosToken] -> Either ParseError a
 runCompleteParser parser tokens =
     case runParser parser tokens of
         Right (result, []) -> Right result
-        Right (_, unconsumed : _) -> Left (UnexpectedToken unconsumed)
+        Right (_, PosToken pos unconsumed : _) -> Left (UnexpectedToken unconsumed pos)
         Left err -> Left err
 
 parseExpression :: Text -> Either ParseError Expression
@@ -368,13 +456,75 @@ parseProgram input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
         Right toks -> Right toks
-    runCompleteParser (many statementParser) tokens
+    parseAll tokens
+  where
+    parseAll [] = Right []
+    parseAll toks = do
+        (stmt, rest) <- runParser statementParser toks
+        if length rest == length toks
+            then case toks of
+                (PosToken pos t : _) -> Left (UnexpectedToken t pos)
+                [] -> Right [stmt]
+            else (stmt :) <$> parseAll rest
 
 renderParseError :: ParseError -> Text
-renderParseError err = case err of
-    ErrorLexical lexErr -> renderLexError lexErr
-    UnexpectedEndOfInput -> "Syntax error: Unexpected end of input."
-    ExpectedToken expected found ->
-        "Syntax error: Expected " <> expected <> ", but found: " <> Text.pack (show found)
-    UnexpectedToken token ->
-        "Syntax error: Unexpected token: " <> Text.pack (show token)
+renderParseError = renderParseErrorWithSource Nothing Nothing
+
+renderParseErrorWithSource :: Maybe FilePath -> Maybe Text -> ParseError -> Text
+renderParseErrorWithSource mFile mSource err = case err of
+    ErrorLexical lexErr -> case mSource of
+        Just src ->
+            let pos = case lexErr of
+                    UnexpectedCharacter p _ -> p
+                    UnterminatedBlockComment p -> p
+                msg = renderLexError lexErr
+             in formatSourceSnippet mFile src pos msg
+        Nothing -> renderLexError lexErr
+    UnexpectedEndOfInput mPos ->
+        let loc = formatLoc mFile mPos
+         in loc <> "Syntax error: Unexpected end of input."
+    ExpectedToken expected found pos ->
+        let msg = "Syntax error: Expected " <> expected <> ", but found " <> prettyToken found
+         in case mSource of
+                Just src -> formatSourceSnippet mFile src pos msg
+                Nothing -> formatLoc mFile (Just pos) <> msg
+    UnexpectedToken token pos ->
+        let msg = "Syntax error: Unexpected token " <> prettyToken token
+         in case mSource of
+                Just src -> formatSourceSnippet mFile src pos msg
+                Nothing -> formatLoc mFile (Just pos) <> msg
+  where
+    formatLoc (Just fp) (Just pos) =
+        Text.pack fp <> ":" <> Text.pack (show (posLine pos)) <> ":" <> Text.pack (show (posColumn pos)) <> ": "
+    formatLoc Nothing (Just pos) =
+        "Line " <> Text.pack (show (posLine pos)) <> ", col " <> Text.pack (show (posColumn pos)) <> ": "
+    formatLoc (Just fp) Nothing = Text.pack fp <> ": "
+    formatLoc Nothing Nothing = ""
+
+formatSourceSnippet :: Maybe FilePath -> Text -> SourcePos -> Text -> Text
+formatSourceSnippet mFile source pos msg =
+    let lineNum = posLine pos
+        colNum = posColumn pos
+        linesList = Text.lines source
+        lineContent =
+            if lineNum > 0 && lineNum <= length linesList
+                then linesList !! (lineNum - 1)
+                else ""
+        filePrefix = case mFile of
+            Just fp -> Text.pack fp <> ":" <> Text.pack (show lineNum) <> ":" <> Text.pack (show colNum) <> ":\n"
+            Nothing -> "Line " <> Text.pack (show lineNum) <> ", col " <> Text.pack (show colNum) <> ":\n"
+        gutter = Text.pack (show lineNum) <> " │ "
+        gutterSpace = Text.replicate (Text.length (Text.pack (show lineNum))) " " <> " │ "
+        colIndex = max 0 (min (colNum - 1) (Text.length lineContent))
+        pointer = Text.replicate colIndex " " <> "^"
+     in filePrefix
+            <> "  "
+            <> gutter
+            <> lineContent
+            <> "\n"
+            <> "  "
+            <> gutterSpace
+            <> pointer
+            <> "\n"
+            <> "  "
+            <> msg

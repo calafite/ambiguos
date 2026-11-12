@@ -20,8 +20,8 @@ data Visibility
 
 data CaseBranch = CaseBranch
     { branchConstructor :: !Identifier
-    , branchBindings    :: ![Identifier]
-    , branchBody        :: !Expression
+    , branchBindings :: ![Identifier]
+    , branchBody :: !Expression
     }
     deriving (Eq, Show)
 

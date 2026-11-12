@@ -1,10 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Lexer (
+    SourcePos (..),
+    PosToken (..),
     Token (..),
     LexError (..),
     tokenize,
     renderLexError,
+    prettyToken,
+    initialPos,
+    advancePosChar,
+    advancePosString,
 ) where
 
 import AST (Identifier (..))
@@ -14,6 +20,23 @@ import Automata.Types (DFA, Regex (..), literalString, matchAny)
 import Data.Char (isAlphaNum, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
+
+data SourcePos = SourcePos
+    { posLine :: !Int
+    , posColumn :: !Int
+    }
+    deriving (Eq, Ord, Show)
+
+initialPos :: SourcePos
+initialPos = SourcePos 1 1
+
+advancePosChar :: SourcePos -> Char -> SourcePos
+advancePosChar (SourcePos l _) '\n' = SourcePos (l + 1) 1
+advancePosChar (SourcePos l c) '\t' = SourcePos l (c + 4)
+advancePosChar (SourcePos l c) _ = SourcePos l (c + 1)
+
+advancePosString :: SourcePos -> String -> SourcePos
+advancePosString = foldl advancePosChar
 
 data Token
     = TokenKeywordType
@@ -48,13 +71,58 @@ data Token
     | TokenRightBrace
     | TokenComma
     | TokenHole (Maybe Identifier)
+    | TokenOperator Identifier
     | TokenIdentifier Identifier
     deriving (Eq, Ord, Show)
 
+data PosToken = PosToken
+    { tokenPos :: !SourcePos
+    , tokenValue :: !Token
+    }
+    deriving (Eq, Ord, Show)
+
 data LexError
-    = UnexpectedCharacter Char
-    | UnterminatedBlockComment
+    = UnexpectedCharacter !SourcePos !Char
+    | UnterminatedBlockComment !SourcePos
     deriving (Eq, Show)
+
+prettyToken :: Token -> Text
+prettyToken tok = case tok of
+    TokenKeywordType -> "'Type'"
+    TokenKeywordDef -> "'def'"
+    TokenKeywordData -> "'data'"
+    TokenKeywordWhere -> "'where'"
+    TokenKeywordCase -> "'case'"
+    TokenKeywordOf -> "'of'"
+    TokenKeywordLet -> "'let'"
+    TokenKeywordIn -> "'in'"
+    TokenKeywordId -> "'Id'"
+    TokenKeywordRefl -> "'refl'"
+    TokenKeywordJ -> "'J'"
+    TokenKeywordVoid -> "'Void'"
+    TokenKeywordAbort -> "'abort'"
+    TokenKeywordNat -> "'Nat'"
+    TokenKeywordZero -> "'zero'"
+    TokenKeywordSucc -> "'successor'"
+    TokenKeywordNatRec -> "'natRec'"
+    TokenNatural n -> Text.pack (show n)
+    TokenBackslash -> "'\\'"
+    TokenArrow -> "'->'"
+    TokenColon -> "':'"
+    TokenEquals -> "'='"
+    TokenPipe -> "'|'"
+    TokenSemicolon -> "';'"
+    TokenLeftParen -> "'('"
+    TokenRightParen -> "')'"
+    TokenLeftBracket -> "'['"
+    TokenRightBracket -> "']'"
+    TokenLeftBrace -> "'{'"
+    TokenRightBrace -> "'}'"
+    TokenComma -> "','"
+    TokenHole Nothing -> "'_'"
+    TokenHole (Just (Identifier name)) -> "'?" <> name <> "'"
+    TokenOperator (Identifier op) -> "'" <> op <> "'"
+    TokenIdentifier (Identifier ident) -> "'" <> ident <> "'"
 
 dfaIdentifier :: DFA
 dfaIdentifier = compileNFAToDFA (compileRegexToNFA regex)
@@ -75,49 +143,62 @@ dfaNatural = compileNFAToDFA (compileRegexToNFA regex)
 dfaArrow :: DFA
 dfaArrow = compileNFAToDFA (compileRegexToNFA (literalString "->"))
 
-tokenize :: Text -> Either LexError [Token]
-tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
+opSymbols :: [Char]
+opSymbols = "+-*/<>=!&|$%^~."
+
+tokenize :: Text -> Either LexError [PosToken]
+tokenize sourceText = scanLoop initialPos (Text.unpack sourceText)
   where
-    scanLoop remaining
-        | null remaining = Right []
+    scanLoop _ [] = Right []
+    scanLoop pos remaining@(headChar : rest)
+        | isSpace headChar =
+            scanLoop (advancePosChar pos headChar) rest
         | take 2 remaining == "--" =
-            let afterComment = dropWhile (/= '\n') remaining
-             in scanLoop (dropWhile isSpace afterComment)
+            let (comment, restAfter) = span (/= '\n') remaining
+                pos' = advancePosString pos comment
+             in scanLoop pos' restAfter
         | take 2 remaining == "{-" =
-            case skipBlockComment 1 (drop 2 remaining) of
+            case skipBlockComment (advancePosString pos "{-") 1 (drop 2 remaining) of
                 Left err -> Left err
-                Right afterBlock -> scanLoop (dropWhile isSpace afterBlock)
-        | Just (_, rest) <- matchPrefixDFA dfaArrow remaining =
-            (TokenArrow :) <$> scanLoop (dropWhile isSpace rest)
-        | Just (numStr, rest) <- matchPrefixDFA dfaNatural remaining =
+                Right (pos', afterBlock) -> scanLoop pos' afterBlock
+        | Just (arrowStr, restAfter) <- matchPrefixDFA dfaArrow remaining =
+            let pos' = advancePosString pos arrowStr
+             in (PosToken pos TokenArrow :) <$> scanLoop pos' restAfter
+        | Just (numStr, restAfter) <- matchPrefixDFA dfaNatural remaining =
             let n = read numStr :: Integer
-             in (TokenNatural n :) <$> scanLoop (dropWhile isSpace rest)
-        | (headChar : rest) <- remaining
-        , headChar == '?' =
+                pos' = advancePosString pos numStr
+             in (PosToken pos (TokenNatural n) :) <$> scanLoop pos' restAfter
+        | headChar == '?' =
             let (identChars, restAfter) = span (\c -> isAlphaNum c || c == '_') rest
                 mIdent = if null identChars then Nothing else Just (Identifier (Text.pack identChars))
-             in (TokenHole mIdent :) <$> scanLoop (dropWhile isSpace restAfter)
-        | Just (identStr, rest) <- matchPrefixDFA dfaIdentifier remaining =
+                consumed = headChar : identChars
+                pos' = advancePosString pos consumed
+             in (PosToken pos (TokenHole mIdent) :) <$> scanLoop pos' restAfter
+        | Just (identStr, restAfter) <- matchPrefixDFA dfaIdentifier remaining =
             let token = classifyIdentifier (Text.pack identStr)
-             in (token :) <$> scanLoop (dropWhile isSpace rest)
-        | (headChar : rest) <- remaining =
+                pos' = advancePosString pos identStr
+             in (PosToken pos token :) <$> scanLoop pos' restAfter
+        | headChar `elem` opSymbols =
+            let (opStr, restAfter) = span (`elem` opSymbols) remaining
+                pos' = advancePosString pos opStr
+                token = case opStr of
+                    "=" -> TokenEquals
+                    "|" -> TokenPipe
+                    _ -> TokenOperator (Identifier (Text.pack opStr))
+             in (PosToken pos token :) <$> scanLoop pos' restAfter
+        | otherwise =
             case headChar of
-                '\\' -> (TokenBackslash :) <$> scanLoop (dropWhile isSpace rest)
-                ':' -> (TokenColon :) <$> scanLoop (dropWhile isSpace rest)
-                '=' -> (TokenEquals :) <$> scanLoop (dropWhile isSpace rest)
-                '|' -> (TokenPipe :) <$> scanLoop (dropWhile isSpace rest)
-                ';' -> (TokenSemicolon :) <$> scanLoop (dropWhile isSpace rest)
-                '(' -> (TokenLeftParen :) <$> scanLoop (dropWhile isSpace rest)
-                ')' -> (TokenRightParen :) <$> scanLoop (dropWhile isSpace rest)
-                '[' -> (TokenLeftBracket :) <$> scanLoop (dropWhile isSpace rest)
-                ']' -> (TokenRightBracket :) <$> scanLoop (dropWhile isSpace rest)
-                '{' -> (TokenLeftBrace :) <$> scanLoop (dropWhile isSpace rest)
-                '}' -> (TokenRightBrace :) <$> scanLoop (dropWhile isSpace rest)
-                ',' -> (TokenComma :) <$> scanLoop (dropWhile isSpace rest)
-                c
-                    | isSpace c -> scanLoop (dropWhile isSpace rest)
-                    | otherwise -> Left (UnexpectedCharacter c)
-        | otherwise = Right []
+                '\\' -> (PosToken pos TokenBackslash :) <$> scanLoop (advancePosChar pos headChar) rest
+                ':' -> (PosToken pos TokenColon :) <$> scanLoop (advancePosChar pos headChar) rest
+                ';' -> (PosToken pos TokenSemicolon :) <$> scanLoop (advancePosChar pos headChar) rest
+                '(' -> (PosToken pos TokenLeftParen :) <$> scanLoop (advancePosChar pos headChar) rest
+                ')' -> (PosToken pos TokenRightParen :) <$> scanLoop (advancePosChar pos headChar) rest
+                '[' -> (PosToken pos TokenLeftBracket :) <$> scanLoop (advancePosChar pos headChar) rest
+                ']' -> (PosToken pos TokenRightBracket :) <$> scanLoop (advancePosChar pos headChar) rest
+                '{' -> (PosToken pos TokenLeftBrace :) <$> scanLoop (advancePosChar pos headChar) rest
+                '}' -> (PosToken pos TokenRightBrace :) <$> scanLoop (advancePosChar pos headChar) rest
+                ',' -> (PosToken pos TokenComma :) <$> scanLoop (advancePosChar pos headChar) rest
+                c -> Left (UnexpectedCharacter pos c)
 
     classifyIdentifier text = case text of
         "Type" -> TokenKeywordType
@@ -145,14 +226,28 @@ tokenize sourceText = scanLoop (Text.unpack (Text.stripStart sourceText))
             | otherwise ->
                 TokenIdentifier (Identifier text)
 
-    skipBlockComment :: Int -> String -> Either LexError String
-    skipBlockComment 0 text = Right text
-    skipBlockComment _ [] = Left UnterminatedBlockComment
-    skipBlockComment depth ('{' : '-' : rest) = skipBlockComment (depth + 1) rest
-    skipBlockComment depth ('-' : '}' : rest) = skipBlockComment (depth - 1) rest
-    skipBlockComment depth (_ : rest) = skipBlockComment depth rest
+    skipBlockComment pos 0 text = Right (pos, text)
+    skipBlockComment pos _ [] = Left (UnterminatedBlockComment pos)
+    skipBlockComment pos depth ('{' : '-' : rest) =
+        skipBlockComment (advancePosString pos "{-") (depth + 1) rest
+    skipBlockComment pos depth ('-' : '}' : rest) =
+        skipBlockComment (advancePosString pos "-}") (depth - 1) rest
+    skipBlockComment pos depth (c : rest) =
+        skipBlockComment (advancePosChar pos c) depth rest
 
 renderLexError :: LexError -> Text
 renderLexError err = case err of
-    UnexpectedCharacter c -> "Lexical error: Unexpected character '" <> Text.singleton c <> "'"
-    UnterminatedBlockComment -> "Lexical error: Unterminated block comment '{- ... -}'"
+    UnexpectedCharacter pos c ->
+        "Lexical error at line "
+            <> Text.pack (show (posLine pos))
+            <> ", col "
+            <> Text.pack (show (posColumn pos))
+            <> ": Unexpected character '"
+            <> Text.singleton c
+            <> "'"
+    UnterminatedBlockComment pos ->
+        "Lexical error at line "
+            <> Text.pack (show (posLine pos))
+            <> ", col "
+            <> Text.pack (show (posColumn pos))
+            <> ": Unterminated block comment '{- ... -}'"

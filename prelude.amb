@@ -1,17 +1,41 @@
 {- ==========================================================================
    Ambiguos Standard Prelude
-   Using Typical Ambiguity (Floating Universes)
+   Calculus of Constructions with Martin-Löf Identity and Inductive Types
    ========================================================================== -}
 
 
+{- --------------------------------------------------------------------------
+   1. Function Combinators
+   -------------------------------------------------------------------------- -}
+
 def identity : {A : Type} -> A -> A
   = \x -> x
+
+def id : {A : Type} -> A -> A
+  = identity
 
 def constant : {A B : Type} -> A -> B -> A
   = \x y -> x
 
 def flip : {A B C : Type} -> (A -> B -> C) -> B -> A -> C
   = \f y x -> f x y
+
+def compose : {A B C : Type} -> (B -> C) -> (A -> B) -> A -> C
+  = \g f x -> g (f x)
+
+def (.) : {A B C : Type} -> (B -> C) -> (A -> B) -> A -> C
+  = compose
+
+def apply : {A B : Type} -> (A -> B) -> A -> B
+  = \f x -> f x
+
+def ($) : {A B : Type} -> (A -> B) -> A -> B
+  = apply
+
+
+{- --------------------------------------------------------------------------
+   2. Propositional Equality (Identity Types & Transport)
+   -------------------------------------------------------------------------- -}
 
 def symmetry : {A : Type} -> {x y : A} -> Id A x y -> Id A y x
   = \p -> J A x (\(z : A) -> \_ -> Id A z x) (refl A x) y p
@@ -22,8 +46,22 @@ def transitivity : {A : Type} -> {x y z : A} -> Id A x y -> Id A y z -> Id A x z
 def congruence : {A B : Type} -> (f : A -> B) -> {x y : A} -> Id A x y -> Id B (f x) (f y)
   = \f p -> J A x (\(z : A) -> \_ -> Id B (f x) (f z)) (refl B (f x)) y p
 
+def congruence2 : {A B C : Type} -> (f : A -> B -> C) -> {x1 x2 : A} -> {y1 y2 : B}
+               -> Id A x1 x2 -> Id B y1 y2 -> Id C (f x1 y1) (f x2 y2)
+  = \f p q -> J A x1 (\(z : A) -> \_ -> Id C (f x1 y1) (f z y2))
+                     (congruence (f x1) q)
+                     x2 p
+
 def substitute : {A : Type} -> (P : A -> Type) -> {x y : A} -> Id A x y -> P x -> P y
   = \P p px -> J A x (\(z : A) -> \_ -> P z) px y p
+
+def transport : {A : Type} -> (P : A -> Type) -> {x y : A} -> Id A x y -> P x -> P y
+  = substitute
+
+
+{- --------------------------------------------------------------------------
+   3. Intuitionistic Logic & Void
+   -------------------------------------------------------------------------- -}
 
 def Not : Type -> Type
   = \A -> A -> Void
@@ -37,157 +75,363 @@ def doubleNegation : {A : Type} -> A -> Not (Not A)
 def contraposition : {P Q : Type} -> (P -> Q) -> Not Q -> Not P
   = \implication notQ p -> notQ (implication p)
 
-def Unit : Type
-  = (R : Type) -> R -> R
 
-def unit : Unit
-  = \(R : Type) -> \(x : R) -> x
+{- --------------------------------------------------------------------------
+   4. Unit & Ordering
+   -------------------------------------------------------------------------- -}
 
-def Pair : Type -> Type -> Type
-  = \A B -> (R : Type) -> (A -> B -> R) -> R
+data Unit : Type where
+  { unit : Unit
+  }
 
-def pair : {A B : Type} -> A -> B -> Pair A B
-  = \x y -> \(R : Type) -> \(f : A -> B -> R) -> f x y
+data Ordering : Type where
+  { less    : Ordering
+  ; equal   : Ordering
+  ; greater : Ordering
+  }
 
-def first : {A B : Type} -> Pair A B -> A
-  = \p -> p A (\x y -> x)
 
-def second : {A B : Type} -> Pair A B -> B
-  = \p -> p B (\x y -> y)
+{- --------------------------------------------------------------------------
+   5. Booleans & Decision Procedures
+   -------------------------------------------------------------------------- -}
 
-def swap : {A B : Type} -> Pair A B -> Pair B A
-  = \p -> pair (second p) (first p)
-
-def nonContradiction : {A : Type} -> Not (Pair A (Not A))
-  = \p -> (second p) (first p)
-
-def Sigma : (A : Type) -> (P : A -> Type) -> Type
-  = \A P -> (R : Type) -> ((x : A) -> P x -> R) -> R
-
-def dependentPair : {A : Type} -> {P : A -> Type} -> (witness : A) -> P witness -> Sigma A P
-  = \witness proof -> \(R : Type) -> \(consumer : (x : A) -> P x -> R) -> consumer witness proof
-
-def Either : Type -> Type -> Type
-  = \A B -> (R : Type) -> (A -> R) -> (B -> R) -> R
-
-def left : {A B : Type} -> A -> Either A B
-  = \x -> \(R : Type) -> \(l : A -> R) -> \(r : B -> R) -> l x
-
-def right : {A B : Type} -> B -> Either A B
-  = \y -> \(R : Type) -> \(l : A -> R) -> \(r : B -> R) -> r y
-
-def either : {A B C : Type} -> (A -> C) -> (B -> C) -> Either A B -> C
-  = \f g e -> e C f g
-
-def Maybe : Type -> Type
-  = \A -> (R : Type) -> R -> (A -> R) -> R
-
-def nothing : {A : Type} -> Maybe A
-  = \(R : Type) -> \(n : R) -> \(j : A -> R) -> n
-
-def just : {A : Type} -> A -> Maybe A
-  = \x -> \(R : Type) -> \(n : R) -> \(j : A -> R) -> j x
-
-def maybe : {A B : Type} -> B -> (A -> B) -> Maybe A -> B
-  = \defaultValue f m -> m B defaultValue f
-
-def fromMaybe : {A : Type} -> A -> Maybe A -> A
-  = \defaultValue m -> m A defaultValue (\x -> x)
-
-def Bool : Type
-  = (P : Type) -> P -> P -> P
-
-def true : Bool
-  = \(P : Type) -> \(t : P) -> \(f : P) -> t
-
-def false : Bool
-  = \(P : Type) -> \(t : P) -> \(f : P) -> f
+data Bool : Type where
+  { true  : Bool
+  ; false : Bool
+  }
 
 def not : Bool -> Bool
-  = \b -> \(P : Type) -> \(t : P) -> \(f : P) -> b P f t
+  = \b -> case b of
+      { true  -> false
+      ; false -> true
+      }
+
+def and : Bool -> Bool -> Bool
+  = \a b -> case a of
+      { true  -> b
+      ; false -> false
+      }
+
+def (&&) : Bool -> Bool -> Bool
+  = and
 
 def booleanAnd : Bool -> Bool -> Bool
-  = \a b -> a Bool b false
+  = and
+
+def or : Bool -> Bool -> Bool
+  = \a b -> case a of
+      { true  -> true
+      ; false -> b
+      }
+
+def (||) : Bool -> Bool -> Bool
+  = or
 
 def booleanOr : Bool -> Bool -> Bool
-  = \a b -> a Bool true b
+  = or
+
+def xor : Bool -> Bool -> Bool
+  = \a b -> case a of
+      { true  -> not b
+      ; false -> b
+      }
 
 def booleanXor : Bool -> Bool -> Bool
-  = \a b -> a Bool (not b) b
+  = xor
 
-def booleanEliminator : {A : Type} -> A -> A -> Bool -> A
-  = \t f b -> b A t f
+def ifThenElse : {A : Type} -> Bool -> A -> A -> A
+  = \b t f -> case b of
+      { true  -> t
+      ; false -> f
+      }
+
+def booleanEliminator : (P : Bool -> Type) -> P true -> P false -> (b : Bool) -> P b
+  = \P pt pf b -> case b of
+      { true  -> pt
+      ; false -> pf
+      }
 
 def boolToType : Bool -> Type
-  = \b -> b Type Type Void
+  = \b -> case b of
+      { true  -> Unit
+      ; false -> Void
+      }
 
 def trueNotEqualFalse : Not (Id Bool true false)
-  = \p -> J Bool true (\(b : Bool) -> \_ -> boolToType b) Type false p
+  = \p -> substitute boolToType p unit
+
+def falseNotEqualTrue : Not (Id Bool false true)
+  = \p -> trueNotEqualFalse (symmetry p)
+
+
+{- --------------------------------------------------------------------------
+   6. Products & Dependent Pairs
+   -------------------------------------------------------------------------- -}
+
+data Pair (A B : Type) : Type where
+  { pair : A -> B -> Pair A B
+  }
+
+def first : {A B : Type} -> Pair A B -> A
+  = \p -> case p of
+      { pair x y -> x
+      }
+
+def second : {A B : Type} -> Pair A B -> B
+  = \p -> case p of
+      { pair x y -> y
+      }
+
+def fst : {A B : Type} -> Pair A B -> A
+  = first
+
+def snd : {A B : Type} -> Pair A B -> B
+  = second
+
+def swap : {A B : Type} -> Pair A B -> Pair B A
+  = \p -> case p of
+      { pair x y -> pair y x
+      }
+
+def curry : {A B C : Type} -> (Pair A B -> C) -> A -> B -> C
+  = \f a b -> f (pair a b)
+
+def uncurry : {A B C : Type} -> (A -> B -> C) -> Pair A B -> C
+  = \f p -> case p of
+      { pair a b -> f a b
+      }
+
+def mapPair : {A B C D : Type} -> (A -> C) -> (B -> D) -> Pair A B -> Pair C D
+  = \f g p -> case p of
+      { pair x y -> pair (f x) (g y)
+      }
+
+def nonContradiction : {A : Type} -> Not (Pair A (Not A))
+  = \p -> case p of
+      { pair x na -> na x
+      }
+
+data Sigma (A : Type) (P : A -> Type) : Type where
+  { dependentPair : (witness : A) -> P witness -> Sigma A P
+  }
+
+def proj1 : {A : Type} -> {P : A -> Type} -> Sigma A P -> A
+  = \s -> case s of
+      { dependentPair witness proof -> witness
+      }
+
+def proj2 : {A : Type} -> {P : A -> Type} -> (s : Sigma A P) -> P (proj1 s)
+  = \s -> case s of
+      { dependentPair witness proof -> proof
+      }
+
+
+{- --------------------------------------------------------------------------
+   7. Disjoint Sums (Either) and Optionals (Maybe)
+   -------------------------------------------------------------------------- -}
+
+data Either (A B : Type) : Type where
+  { left  : A -> Either A B
+  ; right : B -> Either A B
+  }
+
+def either : {A B C : Type} -> (A -> C) -> (B -> C) -> Either A B -> C
+  = \f g e -> case e of
+      { left x  -> f x
+      ; right y -> g y
+      }
+
+def isLeft : {A B : Type} -> Either A B -> Bool
+  = \e -> case e of
+      { left _  -> true
+      ; right _ -> false
+      }
+
+def isRight : {A B : Type} -> Either A B -> Bool
+  = \e -> case e of
+      { left _  -> false
+      ; right _ -> true
+      }
+
+def swapEither : {A B : Type} -> Either A B -> Either B A
+  = \e -> case e of
+      { left x  -> right x
+      ; right y -> left y
+      }
+
+def mapLeft : {A B C : Type} -> (A -> C) -> Either A B -> Either C B
+  = \f e -> case e of
+      { left x  -> left (f x)
+      ; right y -> right y
+      }
+
+def mapRight : {A B C : Type} -> (B -> C) -> Either A B -> Either A C
+  = \g e -> case e of
+      { left x  -> left x
+      ; right y -> right (g y)
+      }
+
+data Maybe (A : Type) : Type where
+  { nothing : Maybe A
+  ; just    : A -> Maybe A
+  }
+
+def maybe : {A B : Type} -> B -> (A -> B) -> Maybe A -> B
+  = \defaultValue f m -> case m of
+      { nothing -> defaultValue
+      ; just x  -> f x
+      }
+
+def fromMaybe : {A : Type} -> A -> Maybe A -> A
+  = \defaultValue m -> case m of
+      { nothing -> defaultValue
+      ; just x  -> x
+      }
+
+def isJust : {A : Type} -> Maybe A -> Bool
+  = \m -> case m of
+      { nothing -> false
+      ; just _  -> true
+      }
+
+def isNothing : {A : Type} -> Maybe A -> Bool
+  = \m -> case m of
+      { nothing -> true
+      ; just _  -> false
+      }
+
+def mapMaybe : {A B : Type} -> (A -> B) -> Maybe A -> Maybe B
+  = \f m -> case m of
+      { nothing -> nothing
+      ; just x  -> just (f x)
+      }
+
+def bindMaybe : {A B : Type} -> Maybe A -> (A -> Maybe B) -> Maybe B
+  = \m f -> case m of
+      { nothing -> nothing
+      ; just x  -> f x
+      }
+
+
+{- --------------------------------------------------------------------------
+   8. Peano Natural Numbers & Arithmetic Operations
+   -------------------------------------------------------------------------- -}
 
 def predecessor : Nat -> Nat
-  = \n -> natRec (\_ -> Nat) 0 (\(k : Nat) -> \_ -> k) n
+  = \n -> case n of
+      { zero        -> 0
+      ; successor k -> k
+      }
+
+def pred : Nat -> Nat
+  = predecessor
+
+def isZero : Nat -> Bool
+  = \n -> case n of
+      { zero        -> true
+      ; successor _ -> false
+      }
 
 def addition : Nat -> Nat -> Nat
   = \x y -> natRec (\_ -> Nat) y (\_ -> \rec -> successor rec) x
 
+def (+) : Nat -> Nat -> Nat
+  = addition
+
 def multiplication : Nat -> Nat -> Nat
-  = \x y -> natRec (\_ -> Nat) 0 (\_ -> \rec -> addition y rec) x
+  = \x y -> natRec (\_ -> Nat) 0 (\_ -> \rec -> y + rec) x
+
+def (*) : Nat -> Nat -> Nat
+  = multiplication
 
 def power : Nat -> Nat -> Nat
-  = \base exponent -> natRec (\_ -> Nat) 1 (\_ -> \rec -> multiplication base rec) exponent
+  = \base exponent -> natRec (\_ -> Nat) 1 (\_ -> \rec -> base * rec) exponent
+
+def (^) : Nat -> Nat -> Nat
+  = power
 
 def factorial : Nat -> Nat
-  = \n -> natRec (\_ -> Nat) 1 (\(k : Nat) -> \(rec : Nat) -> multiplication (successor k) rec) n
+  = \n -> natRec (\_ -> Nat) 1 (\(k : Nat) -> \(rec : Nat) -> (successor k) * rec) n
 
-def mersenne : Nat -> Nat
-  = \n -> predecessor (power 2 n)
+def subtraction : Nat -> Nat -> Nat
+  = \x y -> natRec (\_ -> Nat) x (\_ -> \rec -> predecessor rec) y
 
-def additionZeroLeft : (y : Nat) -> Id Nat (addition 0 y) y
-  = \y -> refl Nat y
+def (-) : Nat -> Nat -> Nat
+  = subtraction
 
-def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
-  = \x -> natRec (\(n : Nat) -> Id Nat (addition n 0) n)
-                 (refl Nat 0)
-                 (\(k : Nat) -> \(ih : Id Nat (addition k 0) k) ->
-                     congruence successor ih)
-                 x
+def equalNat : Nat -> Nat -> Bool
+  = \x y -> natRec (\_ -> Nat -> Bool)
+                   isZero
+                   (\_ -> \rec -> \n -> case n of
+                       { zero        -> false
+                       ; successor m -> rec m
+                       })
+                   x y
 
-def additionSuccessorRight : (x y : Nat) -> Id Nat (addition x (successor y)) (successor (addition x y))
-  = \x y -> natRec (\(n : Nat) -> Id Nat (addition n (successor y)) (successor (addition n y)))
-                       (refl Nat (successor y))
-                       (\(k : Nat) -> \(ih : Id Nat (addition k (successor y)) (successor (addition k y))) ->
-                           congruence successor ih)
-                       x
+def (==) : Nat -> Nat -> Bool
+  = equalNat
 
-def theoremTwoPlusThree : Id Nat (addition 2 3) 5
-  = refl Nat 5
+def notEqualNat : Nat -> Nat -> Bool
+  = \x y -> not (equalNat x y)
 
-def theoremTwoTimesThree : Id Nat (multiplication 2 3) 6
-  = refl Nat 6
+def (/=) : Nat -> Nat -> Bool
+  = notEqualNat
 
-def theoremTwoCubed : Id Nat (power 2 3) 8
-  = refl Nat 8
+def lessOrEqualNat : Nat -> Nat -> Bool
+  = \x y -> isZero (x - y)
 
-def theoremFactorialThree : Id Nat (factorial 3) 6
-  = refl Nat 6
+def (<=) : Nat -> Nat -> Bool
+  = lessOrEqualNat
 
-def Factors : Nat -> Nat -> Nat -> Type
-  = \n a b -> Id Nat n (multiplication a b)
+def lessThanNat : Nat -> Nat -> Bool
+  = \x y -> (successor x) <= y
 
-def IsComposite : Nat -> Type
-  = \n -> Sigma Nat (\(a : Nat) -> Sigma Nat (\(b : Nat) -> Factors n a b))
+def (<) : Nat -> Nat -> Bool
+  = lessThanNat
 
-def mersenneFourFactors : Factors (mersenne 4) 3 5
-  = refl Nat 15
+def greaterOrEqualNat : Nat -> Nat -> Bool
+  = \x y -> y <= x
 
-def mersenneSixFactorsBaseTwo : Factors (mersenne 6) 3 21
-  = refl Nat 63
+def (>=) : Nat -> Nat -> Bool
+  = greaterOrEqualNat
 
-def mersenneSixFactorsBaseThree : Factors (mersenne 6) 7 9
-  = refl Nat 63
+def greaterThanNat : Nat -> Nat -> Bool
+  = \x y -> y < x
 
-def mersenneEightFactors : Factors (mersenne 8) 3 85
-  = refl Nat 255
+def (>) : Nat -> Nat -> Bool
+  = greaterThanNat
+
+def compareNat : Nat -> Nat -> Ordering
+  = \x y -> case equalNat x y of
+      { true  -> equal
+      ; false -> case x < y of
+          { true  -> less
+          ; false -> greater
+          }
+      }
+
+def min : Nat -> Nat -> Nat
+  = \x y -> case x <= y of
+      { true  -> x
+      ; false -> y
+      }
+
+def max : Nat -> Nat -> Nat
+  = \x y -> case x <= y of
+      { true  -> y
+      ; false -> x
+      }
+
+def even : Nat -> Bool
+  = \n -> natRec (\_ -> Bool) true (\_ -> \rec -> not rec) n
+
+def odd : Nat -> Bool
+  = \n -> not (even n)
+
+
+{- --------------------------------------------------------------------------
+   9. Church Lists & Higher-Order Combinators
+   -------------------------------------------------------------------------- -}
 
 def List : Type -> Type
   = \A -> (R : Type) -> R -> (A -> R -> R) -> R
@@ -201,8 +445,17 @@ def cons : {A : Type} -> A -> List A -> List A
 def foldRight : {A B : Type} -> (A -> B -> B) -> B -> List A -> B
   = \f initial xs -> xs B initial f
 
+def foldr : {A B : Type} -> (A -> B -> B) -> B -> List A -> B
+  = foldRight
+
+def foldLeft : {A B : Type} -> (B -> A -> B) -> B -> List A -> B
+  = \f initial xs -> xs (B -> B) (\acc -> acc) (\x rec -> \acc -> rec (f acc x)) initial
+
+def foldl : {A B : Type} -> (B -> A -> B) -> B -> List A -> B
+  = foldLeft
+
 def length : {A : Type} -> List A -> Nat
-  = \xs -> xs Nat 0 (\_ -> \(accumulator : Nat) -> successor accumulator)
+  = \xs -> foldRight (\_ -> \(accumulator : Nat) -> successor accumulator) 0 xs
 
 def map : {A B : Type} -> (A -> B) -> List A -> List B
   = \f xs -> \(R : Type) -> \(n : R) -> \(c : B -> R -> R) ->
@@ -211,5 +464,74 @@ def map : {A B : Type} -> (A -> B) -> List A -> List B
 def append : {A : Type} -> List A -> List A -> List A
   = \xs ys -> xs (List A) ys (\(x : A) -> \(rec : List A) -> cons x rec)
 
-def addTwoEach : List Nat -> List Nat
-  = \xs -> foldRight (\x accumulator -> cons (addition x 2) accumulator) nil xs
+def (++) : {A : Type} -> List A -> List A -> List A
+  = append
+
+def concat : {A : Type} -> List (List A) -> List A
+  = \xss -> foldRight append nil xss
+
+def reverse : {A : Type} -> List A -> List A
+  = \xs -> foldLeft (\acc x -> cons x acc) nil xs
+
+def filter : {A : Type} -> (A -> Bool) -> List A -> List A
+  = \predicate xs -> foldRight (\x acc -> case predicate x of
+      { true  -> cons x acc
+      ; false -> acc
+      }) nil xs
+
+def all : {A : Type} -> (A -> Bool) -> List A -> Bool
+  = \predicate xs -> foldRight (\x acc -> (predicate x) && acc) true xs
+
+def any : {A : Type} -> (A -> Bool) -> List A -> Bool
+  = \predicate xs -> foldRight (\x acc -> (predicate x) || acc) false xs
+
+def isNil : {A : Type} -> List A -> Bool
+  = \xs -> xs Bool true (\_ _ -> false)
+
+def isCons : {A : Type} -> List A -> Bool
+  = \xs -> not (isNil xs)
+
+def headMaybe : {A : Type} -> List A -> Maybe A
+  = \xs -> xs (Maybe A) nothing (\x _ -> just x)
+
+def head : {A : Type} -> A -> List A -> A
+  = \defaultValue xs -> fromMaybe defaultValue (headMaybe xs)
+
+def tail : {A : Type} -> List A -> List A
+  = \xs -> first (foldRight (\x p -> pair (second p) (cons x (second p))) (pair nil nil) xs)
+
+def replicate : {A : Type} -> Nat -> A -> List A
+  = \count x -> natRec (\_ -> List A) nil (\_ -> \rec -> cons x rec) count
+
+def take : {A : Type} -> Nat -> List A -> List A
+  = \count xs ->
+      natRec (\_ -> List A -> List A)
+             (\_ -> nil)
+             (\_ -> \rec -> \list -> case headMaybe list of
+                 { nothing -> nil
+                 ; just h  -> cons h (rec (tail list))
+                 })
+             count
+             xs
+
+def drop : {A : Type} -> Nat -> List A -> List A
+  = \count xs ->
+      natRec (\_ -> List A -> List A)
+             (\list -> list)
+             (\_ -> \rec -> \list -> rec (tail list))
+             count
+             xs
+
+def zipWith : {A B C : Type} -> (A -> B -> C) -> List A -> List B -> List C
+  = \f xs ys ->
+      xs (List B -> List C)
+         (\_ -> nil)
+         (\x rec remaining ->
+             case headMaybe remaining of
+               { nothing -> nil
+               ; just y  -> cons (f x y) (rec (tail remaining))
+               })
+         ys
+
+def zip : {A B : Type} -> List A -> List B -> List (Pair A B)
+  = \xs ys -> zipWith (\a b -> pair a b) xs ys

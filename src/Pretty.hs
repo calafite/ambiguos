@@ -24,7 +24,15 @@ parenthesizeIf True text = "(" <> text <> ")"
 parenthesizeIf False text = text
 
 prettyIdentifier :: Identifier -> Text
-prettyIdentifier (Identifier name) = name
+prettyIdentifier ident@(Identifier name)
+    | isSymbolic ident = "(" <> name <> ")"
+    | otherwise = name
+
+isSymbolic :: Identifier -> Bool
+isSymbolic (Identifier name) =
+    case Text.uncons name of
+        Just (c, _) -> c `elem` ("+-*/<>=!&|$%^~." :: String)
+        Nothing -> False
 
 peanoToInteger :: Expression -> Maybe Integer
 peanoToInteger Zero = Just 0
@@ -109,7 +117,14 @@ prettyWithPrecedence currentPrecedence expression =
                 Application Explicit function argument ->
                     let functionText = prettyWithPrecedence ApplicationPrecedence function
                         argumentText = prettyWithPrecedence AtomicPrecedence argument
-                        rendered = functionText <> " " <> argumentText
+                        rendered = case function of
+                            Application Explicit (Variable op) _
+                                | isSymbolic op ->
+                                    let (Identifier opName) = op
+                                        a1Text = prettyWithPrecedence ApplicationPrecedence function
+                                        a2Text = prettyWithPrecedence AtomicPrecedence argument
+                                     in a1Text <> " " <> opName <> " " <> a2Text
+                            _ -> functionText <> " " <> argumentText
                      in parenthesizeIf (currentPrecedence > ApplicationPrecedence) rendered
                 Application Implicit function argument ->
                     let functionText = prettyWithPrecedence ApplicationPrecedence function

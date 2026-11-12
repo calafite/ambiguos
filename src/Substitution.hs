@@ -196,11 +196,12 @@ alphaEquivalent leftExpression rightExpression =
             alphaEquivalent t1 t2 && length bs1 == length bs2 && and (zipWith branchEq bs1 bs2)
           where
             branchEq (CaseBranch c1 v1 b1) (CaseBranch c2 v2 b2) =
-                c1 == c2 && length v1 == length v2 &&
-                let used = Set.unions [freeVariables b1, freeVariables b2]
-                    freshNames = snd (foldr (\v (u, acc) -> let f = freshIdentifier v u in (Set.insert f u, f : acc)) (used, []) v1)
-                    substAll vs freshes body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs freshes)
-                 in alphaEquivalent (substAll v1 freshNames b1) (substAll v2 freshNames b2)
+                c1 == c2
+                    && length v1 == length v2
+                    && let used = Set.unions [freeVariables b1, freeVariables b2]
+                           freshNames = snd (foldr (\v (u, acc) -> let f = freshIdentifier v u in (Set.insert f u, f : acc)) (used, []) v1)
+                           substAll vs freshes body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs freshes)
+                        in alphaEquivalent (substAll v1 freshNames b1) (substAll v2 freshNames b2)
         (Let p1 ty1 d1 b1, Let p2 ty2 d2 b2) ->
             let typesMatch = case (ty1, ty2) of
                     (Nothing, Nothing) -> True

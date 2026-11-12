@@ -74,17 +74,31 @@ emptyEnvironment = Map.empty
 
 {- | Lazily initialize the top-level environment to permit mutually recursive or
 forward-referenced definitions without evaluation order deadlocks.
+Constructors bound to themselves are immediately initialized to canonical forms
+to prevent blackhole recursion.
 -}
 initEnvironment :: Map Identifier Expression -> Environment
 initEnvironment defs = env
   where
-    env = MapLazy.map (evaluate env) defs
+    env = MapLazy.mapWithKey evalDef defs
+    evalDef ident (Variable v)
+        | v == ident =
+            if ident == Identifier "zero"
+                then VZero
+                else
+                    if ident == Identifier "successor" || ident == Identifier "succ"
+                        then VPrimSucc
+                        else VCon ident []
+    evalDef _ expr = evaluate env expr
 
 lookupVar :: Identifier -> Environment -> Value
 lookupVar ident env =
     case Map.lookup ident env of
         Just val -> val
-        Nothing -> VNeutral (NVar ident)
+        Nothing
+            | ident == Identifier "zero" -> VZero
+            | ident == Identifier "successor" || ident == Identifier "succ" -> VPrimSucc
+            | otherwise -> VNeutral (NVar ident)
 
 instantiateClosure :: Closure -> Value -> Value
 instantiateClosure (Closure param body env) arg =
@@ -310,7 +324,14 @@ quoteNeutral usedVars neu = case neu of
         Application vis (quoteNeutral usedVars fn) (quote usedVars arg)
     NCase target branches env ->
         let quoteBranch (CaseBranch con vars body) =
-                let (freshes, newEnv, newUsed) = foldr (\v (fs, e, u) -> let f = freshIdentifier v u in (f : fs, Map.insert v (VNeutral (NVar f)) e, Set.insert f u)) ([], env, usedVars) vars
+                let (freshes, newEnv, newUsed) =
+                        foldr
+                            ( \v (fs, e, u) ->
+                                let f = freshIdentifier v u
+                                 in (f : fs, Map.insert v (VNeutral (NVar f)) e, Set.insert f u)
+                            )
+                            ([], env, usedVars)
+                            vars
                     bVal = evaluate newEnv body
                  in CaseBranch con freshes (quote newUsed bVal)
          in Case (quoteNeutral usedVars target) (map quoteBranch branches)
@@ -383,8 +404,9 @@ equalVal usedVars v1 v2 = case (v1, v2) of
     (VSucc k1, VSucc k2) ->
         equalVal usedVars k1 k2
     (VCon c1 args1, VCon c2 args2) ->
-        c1 == c2 && length args1 == length args2 &&
-        and [vis1 == vis2 && equalVal usedVars a1 a2 | ((vis1, a1), (vis2, a2)) <- zip args1 args2]
+        c1 == c2
+            && length args1 == length args2
+            && and [vis1 == vis2 && equalVal usedVars a1 a2 | ((vis1, a1), (vis2, a2)) <- zip args1 args2]
     (VVoidType, VVoidType) ->
         True
     (VId a1 x1 y1, VId a2 x2 y2) ->

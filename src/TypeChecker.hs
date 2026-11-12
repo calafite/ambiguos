@@ -24,7 +24,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Evaluation (Value (..), areDefinitionallyEqual, evaluateWeakHeadNormalForm)
+import Evaluation (areDefinitionallyEqual, evaluateWeakHeadNormalForm)
 import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
 
@@ -37,15 +37,15 @@ data Goal = Goal
     deriving (Eq, Show)
 
 data MetaInfo = MetaInfo
-    { metaInfoName     :: !(Maybe Identifier)
+    { metaInfoName :: !(Maybe Identifier)
     , metaInfoExpected :: !Expression
-    , metaInfoContext  :: !Context
+    , metaInfoContext :: !Context
     }
     deriving (Eq, Show)
 
 data DataInfo = DataInfo
-    { dataParams       :: ![(Visibility, Identifier, Expression)]
-    , dataUniverse     :: !Expression
+    { dataParams :: ![(Visibility, Identifier, Expression)]
+    , dataUniverse :: !Expression
     , dataConstructors :: ![(Identifier, Expression)]
     }
     deriving (Eq, Show)
@@ -54,7 +54,7 @@ data TypeError
     = UnboundVariable Identifier
     | TypeMismatch
         { expectedType :: Expression
-        , actualType   :: Expression
+        , actualType :: Expression
         }
     | ExpectedFunctionType
         { actualType :: Expression
@@ -73,42 +73,52 @@ data TypeError
     deriving (Eq, Show)
 
 data Context = Context
-    { contextTypes  :: Map Identifier Expression
+    { contextTypes :: Map Identifier Expression
     , contextValues :: Map Identifier Expression
     , contextLocals :: [Identifier]
-    , contextData   :: Map Identifier DataInfo
+    , contextData :: Map Identifier DataInfo
     }
     deriving (Eq, Show)
 
 builtinData :: Map Identifier DataInfo
-builtinData = Map.fromList
-    [ ( Identifier "Nat"
-      , DataInfo
-            { dataParams = []
-            , dataUniverse = Universe (-1)
-            , dataConstructors =
-                [ (Identifier "zero", NatType)
-                , (Identifier "successor", Pi Explicit (Identifier "_") NatType NatType)
-                , (Identifier "succ", Pi Explicit (Identifier "_") NatType NatType)
-                ]
-            }
-      )
-    , ( Identifier "Void"
-      , DataInfo
-            { dataParams = []
-            , dataUniverse = Universe (-1)
-            , dataConstructors = []
-            }
-      )
-    ]
+builtinData =
+    Map.fromList
+        [
+            ( Identifier "Nat"
+            , DataInfo
+                { dataParams = []
+                , dataUniverse = Universe (-1)
+                , dataConstructors =
+                    [ (Identifier "zero", NatType)
+                    , (Identifier "successor", Pi Explicit (Identifier "_") NatType NatType)
+                    ]
+                }
+            )
+        ,
+            ( Identifier "Void"
+            , DataInfo
+                { dataParams = []
+                , dataUniverse = Universe (-1)
+                , dataConstructors = []
+                }
+            )
+        ]
 
 emptyContext :: Context
 emptyContext =
     Context
-        { contextTypes  = Map.empty
-        , contextValues = Map.empty
+        { contextTypes =
+            Map.fromList
+                [ (Identifier "zero", NatType)
+                , (Identifier "successor", Pi Explicit (Identifier "_") NatType NatType)
+                ]
+        , contextValues =
+            Map.fromList
+                [ (Identifier "zero", Zero)
+                , (Identifier "successor", Succ)
+                ]
         , contextLocals = []
-        , contextData   = builtinData
+        , contextData = builtinData
         }
 
 extendContextType :: Identifier -> Expression -> Context -> Context
@@ -238,9 +248,6 @@ isLinear vars =
     let idents = map snd vars
      in Set.size (Set.fromList idents) == length idents
 
-{- | Solves a metavariable application according to Miller pattern unification
-with strict occurs and scope checking.
--}
 solvePattern :: Context -> Int -> [(Visibility, Identifier)] -> Expression -> Elab ()
 solvePattern ctx mId spine rhs = do
     zonkedRhs <- zonk rhs
@@ -384,54 +391,6 @@ instantiateLeadingImplicits context expr exprType = do
         _ ->
             pure (expr, zonkedType)
 
-checkCaseBranches :: Context -> Expression -> Expression -> Expression -> [CaseBranch] -> Elab [CaseBranch]
-checkCaseBranches context elabTarget whnfTargetType expectedType branches = do
-    let (headExpr, typeArgs) = unfoldApp whnfTargetType
-    dataTypeName <- case headExpr of
-        Variable ident -> pure ident
-        NatType        -> pure (Identifier "Nat")
-        VoidType       -> pure (Identifier "Void")
-        other          -> lift $ Left (CannotMatchOnNonDataType other)
-    dataInfo <- case Map.lookup dataTypeName (contextData context) of
-        Just info -> pure info
-        Nothing   -> lift $ Left (CannotMatchOnNonDataType headExpr)
-    let expectedConstructors = map fst (dataConstructors dataInfo)
-        branchConstructors   = map branchConstructor branches
-        missingConstructors  = filter (`notElem` branchConstructors) expectedConstructors
-    if not (null missingConstructors) && dataTypeName /= Identifier "Void"
-        then lift $ Left (NonExhaustivePatternMatch dataTypeName missingConstructors)
-        else traverse (checkBranch dataTypeName dataInfo typeArgs) branches
-  where
-    checkBranch typeName info tArgs (CaseBranch con vars body) = do
-        rawConType <- case lookup con (dataConstructors info) of
-            Just ty -> pure ty
-            Nothing -> lift $ Left (UnknownConstructor typeName con)
-        let paramNames = map (\(_, p, _) -> p) (dataParams info)
-            conSubst = foldr (\(p, (_, a)) acc -> substitute p a acc) rawConType (zip paramNames tArgs)
-        (explicitArgTypes, _) <- peelConstructorArgs vars conSubst
-        let extContext = foldr (\(v, ty) ctx -> extendContextType v ty ctx) context (zip vars explicitArgTypes)
-            (refContext, branchExpected) = case elabTarget of
-                Variable targetVar ->
-                    let conApp = foldl (Application Explicit) (foldl (Application Implicit) (Variable con) (map snd tArgs)) (map Variable vars)
-                     in (extendContextDefinition targetVar whnfTargetType conApp extContext, substitute targetVar conApp expectedType)
-                _ -> (extContext, expectedType)
-        elabBody <- checkElab refContext body branchExpected
-        pure (CaseBranch con vars elabBody)
-
-    peelConstructorArgs [] ty = pure ([], ty)
-    peelConstructorArgs (v : vs) ty = do
-        let env = contextValues context
-            wTy = evaluateWeakHeadNormalForm env ty
-        case wTy of
-            Pi Explicit param dom codom -> do
-                (rest, finalCodom) <- peelConstructorArgs vs (substitute param (Variable v) codom)
-                pure (dom : rest, finalCodom)
-            Pi Implicit param _ codom -> do
-                m <- freshMeta context (Universe (-1))
-                peelConstructorArgs (v : vs) (substitute param m codom)
-            other ->
-                lift $ Left (ExpectedFunctionType other)
-
 identityType, reflexivityType, jType, abortType, succType, natRecType :: Expression
 identityType =
     Pi
@@ -512,6 +471,60 @@ natRecType =
     psuccn = Application Explicit (Variable (Identifier "P")) (Application Explicit Succ nVar)
     sType = Pi Explicit (Identifier "n") NatType (Pi Explicit (Identifier "_") pn psuccn)
     codomainType = Application Explicit (Variable (Identifier "P")) nVar
+
+checkCaseBranches :: Context -> Expression -> Expression -> Expression -> [CaseBranch] -> Elab [CaseBranch]
+checkCaseBranches context elabTarget whnfTargetType expectedType branches = do
+    let (headExpr, typeArgs) = unfoldApp whnfTargetType
+    dataTypeName <- case headExpr of
+        Variable ident -> pure ident
+        NatType -> pure (Identifier "Nat")
+        VoidType -> pure (Identifier "Void")
+        other -> lift $ Left (CannotMatchOnNonDataType other)
+    dataInfo <- case Map.lookup dataTypeName (contextData context) of
+        Just info -> pure info
+        Nothing -> lift $ Left (CannotMatchOnNonDataType headExpr)
+    let expectedConstructors = map fst (dataConstructors dataInfo)
+        branchConstructors = map branchConstructor branches
+        missingConstructors = filter (`notElem` branchConstructors) expectedConstructors
+    if not (null missingConstructors) && dataTypeName /= Identifier "Void"
+        then lift $ Left (NonExhaustivePatternMatch dataTypeName missingConstructors)
+        else traverse (checkBranch dataTypeName dataInfo typeArgs) branches
+  where
+    checkBranch typeName info tArgs (CaseBranch con vars body) = do
+        localConType <- case lookup con (dataConstructors info) of
+            Just ty -> pure ty
+            Nothing -> lift $ Left (UnknownConstructor typeName con)
+        let paramNames = map (\(_, p, _) -> p) (dataParams info)
+            conSubst = foldr (\(p, (_, a)) acc -> substitute p a acc) localConType (zip paramNames tArgs)
+        (explicitArgTypes, _) <- peelConstructorArgs vars conSubst
+        let extContext = foldr (\(v, ty) ctx -> extendContextType v ty ctx) context (zip vars explicitArgTypes)
+            (refContext, branchExpected) = case elabTarget of
+                Variable targetVar ->
+                    let conApp =
+                            if typeName == Identifier "Nat"
+                                then
+                                    if con == Identifier "zero"
+                                        then Zero
+                                        else foldl (Application Explicit) Succ (map Variable vars)
+                                else foldl (Application Explicit) (foldl (Application Implicit) (Variable con) (map snd tArgs)) (map Variable vars)
+                     in (extendContextDefinition targetVar whnfTargetType conApp extContext, substitute targetVar conApp expectedType)
+                _ -> (extContext, expectedType)
+        elabBody <- checkElab refContext body branchExpected
+        pure (CaseBranch con vars elabBody)
+
+    peelConstructorArgs [] ty = pure ([], ty)
+    peelConstructorArgs (v : vs) ty = do
+        let env = contextValues context
+            wTy = evaluateWeakHeadNormalForm env ty
+        case wTy of
+            Pi Explicit param dom codom -> do
+                (rest, finalCodom) <- peelConstructorArgs vs (substitute param (Variable v) codom)
+                pure (dom : rest, finalCodom)
+            Pi Implicit param _ codom -> do
+                m <- freshMeta context (Universe (-1))
+                peelConstructorArgs (v : vs) (substitute param m codom)
+            other ->
+                lift $ Left (ExpectedFunctionType other)
 
 synthesizeElab :: Context -> Expression -> Elab (Expression, Expression)
 synthesizeElab context expression = case expression of
@@ -680,6 +693,24 @@ checkElab context expression expectedType = do
                 extendedContext = extendContextType targetParameter domain context
             elaboratedBody <- checkElab extendedContext body substitutedCodomain
             pure (Lambda Implicit targetParameter (Just domain) elaboratedBody)
+        (Lambda Explicit parameter maybeDeclaredType body, MetaVar i) -> do
+            dom <- case maybeDeclaredType of
+                Just declType -> do
+                    (elabDeclType, _) <- synthesizeElab context declType
+                    zonk elabDeclType
+                Nothing -> freshMeta context (Universe (-1))
+            codom <- freshMeta (extendContextType parameter dom context) (Universe (-1))
+            solvePattern context i [] (Pi Explicit parameter dom codom)
+            checkElab context (Lambda Explicit parameter maybeDeclaredType body) (Pi Explicit parameter dom codom)
+        (Lambda Implicit parameter maybeDeclaredType body, MetaVar i) -> do
+            dom <- case maybeDeclaredType of
+                Just declType -> do
+                    (elabDeclType, _) <- synthesizeElab context declType
+                    zonk elabDeclType
+                Nothing -> freshMeta context (Universe (-1))
+            codom <- freshMeta (extendContextType parameter dom context) (Universe (-1))
+            solvePattern context i [] (Pi Implicit parameter dom codom)
+            checkElab context (Lambda Implicit parameter maybeDeclaredType body) (Pi Implicit parameter dom codom)
         (otherExpr, Pi Implicit binder domain codomain) -> do
             let extendedContext = extendContextType binder domain context
             elaboratedBody <- checkElab extendedContext otherExpr codomain
@@ -705,10 +736,10 @@ checkDataDeclaration context dataName params univ constructors =
             lvl <- extractUniverseLevel context univLevel
             let typeConType = foldr (\(vis, p, ty) codom -> Pi vis p ty codom) (Universe lvl) params
                 contextWithType = extendContextType dataName typeConType context
-                paramContext = foldr (\(vis, p, ty) ctx -> extendContextType p ty ctx) contextWithType params
-            checkedConstructors <- traverse (checkCon paramContext) constructors
-            let dataInfo = DataInfo params elabUniv checkedConstructors
-                finalContext = foldr addConstructor (contextWithType{contextData = Map.insert dataName dataInfo (contextData contextWithType)}) checkedConstructors
+                paramContext = foldr (\(_, p, ty) ctx -> extendContextType p ty ctx) contextWithType params
+            (localConstructors, fullConstructors) <- unzip <$> traverse (checkCon paramContext) constructors
+            let dataInfo = DataInfo params elabUniv localConstructors
+                finalContext = foldr addConstructor (contextWithType{contextData = Map.insert dataName dataInfo (contextData contextWithType)}) fullConstructors
             pure finalContext
         )
         (ElabState 0 Map.empty Map.empty)
@@ -716,7 +747,7 @@ checkDataDeclaration context dataName params univ constructors =
     checkCon pCtx (cName, cType) = do
         (elabCType, _) <- synthesizeElab pCtx cType
         let fullConType = foldr (\(_, p, ty) codom -> Pi Implicit p ty codom) elabCType params
-        pure (cName, fullConType)
+        pure ((cName, elabCType), (cName, fullConType))
     addConstructor (cName, cType) ctx =
         extendContextDefinition cName cType (Variable cName) ctx
 
@@ -817,13 +848,19 @@ renderTypeError typeError = case typeError of
     CannotMatchOnNonDataType term ->
         "Cannot pattern match on non-data type: " <> prettyExpression term
     NonExhaustivePatternMatch (Identifier dName) missing ->
-        "Non-exhaustive pattern match on data type '" <> dName <> "'. Missing constructor(s):\n  "
+        "Non-exhaustive pattern match on data type '"
+            <> dName
+            <> "'. Missing constructor(s):\n  "
             <> Text.intercalate ", " (map prettyIdentifier missing)
     UnknownConstructor (Identifier dName) (Identifier cName) ->
         "Constructor '" <> cName <> "' does not belong to data type '" <> dName <> "'"
     ArityMismatch (Identifier cName) expected actual ->
-        "Constructor '" <> cName <> "' expects " <> Text.pack (show expected)
-            <> " arguments, but found " <> Text.pack (show actual)
+        "Constructor '"
+            <> cName
+            <> "' expects "
+            <> Text.pack (show expected)
+            <> " arguments, but found "
+            <> Text.pack (show actual)
     OccursCheckFailed i term ->
         "Occurs check failed: ?" <> Text.pack (show i) <> " occurs in " <> prettyExpression term
     ScopeEscapeFailed i (Identifier var) term ->

@@ -10,7 +10,7 @@ build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 
 common warnings
-    ghc-options: -Walla
+    ghc-options: -Wall
 
 executable ambiguos
     import:           warnings
@@ -35,6 +35,8 @@ executable ambiguos
                     , mtl
                     , containers
                     , process
+                    , haskeline
+                    , directory
 
     hs-source-dirs:   app, src
     default-language: Haskell2010
