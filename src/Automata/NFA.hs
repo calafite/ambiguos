@@ -3,7 +3,7 @@ module Automata.NFA (
 ) where
 
 import Automata.Types
-import Control.Monad.State.Strict (State, get, put, runState)
+import Control.Monad.State.Strict (get, put, runState)
 import qualified Control.Monad.State.Strict as MState
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -102,7 +102,7 @@ collectStates start accept transitions =
 
 compileRegexToNFA :: Regex -> NFA
 compileRegexToNFA regex =
-    let (fragment, totalStates) = runState (buildFragment regex) 0
+    let (fragment, _) = runState (buildFragment regex) 0
         allStates = collectStates (fragStart fragment) (fragAccept fragment) (fragTransitions fragment)
      in NFA
             { nfaStates = allStates
