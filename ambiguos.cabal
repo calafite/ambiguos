@@ -12,14 +12,15 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
-executable ambiguos
+library
     import:           warnings
-    main-is:          Main.hs
-    other-modules:    AST
+    hs-source-dirs:   src
+    exposed-modules:  AST
                     , Automata.DFA
                     , Automata.NFA
                     , Automata.Parser
                     , Automata.Types
+                    , Diagnostics
                     , Evaluation
                     , Grammar.Analysis
                     , Grammar.Specification
@@ -29,14 +30,33 @@ executable ambiguos
                     , Pretty
                     , Substitution
                     , TypeChecker
-
     build-depends:    base ^>=4.20.2.0
+                    , text
+                    , mtl
+                    , containers
+    default-language: Haskell2010
+
+executable ambiguos
+    import:           warnings
+    main-is:          Main.hs
+    hs-source-dirs:   app
+    build-depends:    ambiguos
+                    , base ^>=4.20.2.0
                     , text
                     , mtl
                     , containers
                     , process
                     , haskeline
                     , directory
+    default-language: Haskell2010
 
-    hs-source-dirs:   app, src
+test-suite ambiguos-test
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    hs-source-dirs:   test
+    build-depends:    ambiguos
+                    , base ^>=4.20.2.0
+                    , text
+                    , containers
+                    , mtl
     default-language: Haskell2010
