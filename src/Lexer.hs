@@ -20,12 +20,7 @@ import Automata.Types (DFA, Regex (..), literalString, matchAny)
 import Data.Char (isAlphaNum, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
-
-data SourcePos = SourcePos
-    { posLine :: !Int
-    , posColumn :: !Int
-    }
-    deriving (Eq, Ord, Show)
+import Diagnostics (SourcePos (..))
 
 initialPos :: SourcePos
 initialPos = SourcePos 1 1
@@ -158,7 +153,7 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText)
                 pos' = advancePosString pos comment
              in scanLoop pos' restAfter
         | take 2 remaining == "{-" =
-            case skipBlockComment (advancePosString pos "{-") 1 (drop 2 remaining) of
+            case skipBlockComment (advancePosString pos "{-") (1 :: Int) (drop 2 remaining) of
                 Left err -> Left err
                 Right (pos', afterBlock) -> scanLoop pos' afterBlock
         | Just (arrowStr, restAfter) <- matchPrefixDFA dfaArrow remaining =

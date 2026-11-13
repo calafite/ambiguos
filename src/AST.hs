@@ -7,6 +7,7 @@ module AST (
 ) where
 
 import Data.Text (Text)
+import Diagnostics (SourceSpan (..))
 
 newtype Identifier = Identifier
     { unIdentifier :: Text
@@ -45,6 +46,7 @@ data Expression
     | NatRec
     | Hole (Maybe Identifier)
     | MetaVar Int
+    | Located !SourceSpan !Expression
     deriving (Eq, Show)
 
 data Statement
