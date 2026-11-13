@@ -16,25 +16,28 @@ cabal run ambiguos -- prelude.amb
 Running without arguments starts an empty REPL session:
 
 ```sh
-cabal run ambiguos -- prelude.amb
+cabal run ambiguos
 ```
 
 ```text
 ● Verifying prelude.amb...
-✓ Verified prelude.amb (67 definitions)
-  identity, constant, flip, symmetry, transitivity, congruence
-  substitute, Not, absurd, doubleNegation, contraposition, Unit, unit
-  Pair, pair, first, second, swap, nonContradiction, Sigma
-  dependentPair, Either, left, right, either, Maybe, nothing, just
-  maybe, fromMaybe, Bool, true, false, not, booleanAnd, booleanOr
-  booleanXor, booleanEliminator, boolToType, trueNotEqualFalse
-  predecessor, addition, multiplication, power, factorial, mersenne
-  additionZeroLeft, additionZeroRight, additionSuccessorRight
-  theoremTwoPlusThree, theoremTwoTimesThree, theoremTwoCubed
-  theoremFactorialThree, Factors, IsComposite, mersenneFourFactors
-  mersenneSixFactorsBaseTwo, mersenneSixFactorsBaseThree
-  mersenneEightFactors, List, nil, cons, foldRight, length, map, append
-  addTwoEach
+✓ Verified prelude.amb (66 definitions)
+  identity, id, constant, flip, compose, (.), apply, ($), symmetry
+  transitivity, congruence, congruence2, substitute, transport, Not
+  absurd, doubleNegation, contraposition, Unit, unit, Ordering, less
+  equal, greater, Bool, true, false, not, and, (&&), booleanAnd
+  or, (||), booleanOr, xor, booleanXor, ifThenElse, booleanEliminator
+  boolToType, trueNotEqualFalse, falseNotEqualTrue, Pair, pair, first
+  second, fst, snd, swap, curry, uncurry, mapPair, nonContradiction
+  Sigma, dependentPair, proj1, proj2, Either, left, right, either
+  Maybe, nothing, just, maybe, fromMaybe, isJust, isNothing, mapMaybe
+  bindMaybe, predecessor, pred, isZero, addition, (+), multiplication
+  (*), power, (^), factorial, subtraction, (-), equalNat, (==)
+  notEqualNat, (/=), lessOrEqualNat, (<=), lessThanNat, (<)
+  greaterOrEqualNat, (>=), greaterThanNat, (>), compareNat, min, max
+  even, odd, List, nil, cons, foldRight, foldr, foldLeft, foldl
+  length, map, append, (++), concat, reverse, filter, all, any, isNil
+  isCons, headMaybe, head, tail, replicate, take, drop, zipWith, zip
 
 Ambiguos interactive REPL ready.
 Type expressions or 'quit' to exit.
@@ -47,7 +50,16 @@ Type expressions or 'quit' to exit.
 ```text
 def <name> [: <type>] = <term>   typecheck and bind a global definition
 <expr>                           infer type and evaluate term to normal form
-:load <file>                     typecheck and load definitions from file (alias: :l)
+:load <file>                     typecheck and load definitions from file, resetting context (alias: :l)
+:add <file>                      typecheck and load definitions from file, layering onto context (alias: :a)
+:reload | :r                     reload the last loaded file from an empty context
+:type <expr> | :t <expr>         synthesize and print the normalized type of <expr>
+:info <ident> | :i <ident>       show information about an identifier
+:browse | :env                   list all data types and symbols in scope with their types
+:goals                           re-print unsolved goals from the most recent statement
+:set +implicits | -implicits     show or hide implicit arguments in output
+:help | :?                       show a summary of REPL commands and syntax
+:paste                           paste mode (empty line or Ctrl-D to finish)
 :!<command>                      execute a system shell command
 quit                             exit the interactive session
 ```
@@ -98,6 +110,7 @@ natRec P z s n                   primitive recursor for Nat
 [x, y, z]                        desugars to cons x (cons y (cons z nil))
 _                                elaboration hole / placeholder
 term : Type                      explicit type annotation
+x + y                            infix operator application
 ```
 
 ---
@@ -128,10 +141,23 @@ def addition : Nat -> Nat -> Nat
 
 def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
   = \x -> natRec (\(n : Nat) -> Id Nat (addition n 0) n)
-                 (refl Nat 0)
-                 (\(k : Nat) -> \(ih : Id Nat (addition k 0) k) ->
-                     congruence successor ih)
-                 x
+               (refl Nat 0)
+               (\(k : Nat) -> \(ih : Id Nat (addition k 0) k) ->
+                   congruence successor ih)
+               x
+```
+
+### binders.amb / bindings.amb
+
+`bindings.amb` builds on `prelude.amb` and can be loaded after it with `:add bindings.amb` or `:load` it from a prelude context:
+
+```amb
+def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
+  = \x ->
+      let motive = \(n : Nat) -> Id Nat (addition n 0) n in
+      let base   = refl Nat 0 in
+      let step   = \(k : Nat) -> \(ih : Id Nat (addition k 0) k) -> congruence successor ih in
+      natRec motive base step x
 ```
 
 ---
@@ -141,10 +167,10 @@ def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
 Verification proceeds in five distinct stages:
 
 1. **Automata-driven Lexer**: Keywords, operators, and identifiers are tokenized using compiled DFAs (`Automata.DFA`).
-2. **Recursive Descent Parser**: Builds surface AST expressions while desugaring numeric literals, list brackets, and telescopes (`Parser`).
-3. **Elaboration & Metavariables**: Bidirectional checking (`synthesize` / `check`) instantiates implicit arguments and solves unification constraints (`TypeChecker`).
+2. **Recursive Descent Parser**: Builds surface AST expressions while desugaring numeric literals, list brackets, and telescopes (`Parser`). Every parsed expression is wrapped in source-span location info (`Located`) for rich diagnostics.
+3. **Elaboration & Metavariables**: Bidirectional checking (`synthesize` / `check`) instantiates implicit arguments and solves unification constraints (`TypeChecker`). Type errors carry source spans and an elaboration trace.
 4. **Weak Head Normalization**: Evaluates definitions, beta-reductions, $\iota$-reductions on `J`, and primitive recursion on `natRec` (`Evaluation`).
-5. **Definitional Equality**: Converts terms to normal form modulo alpha-equivalence to verify conversion rules and proof certificates.
+5. **Definitional Equality**: Converts terms to normal form modulo alpha-equivalence to verify conversion rules and proof certificates (`Evaluation.equalNeutral` now correctly compares `case` branches, constructor tags, arities, bodies, and environments).
 
 ---
 
