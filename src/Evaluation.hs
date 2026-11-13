@@ -81,15 +81,17 @@ initEnvironment :: Map Identifier Expression -> Environment
 initEnvironment defs = env
   where
     env = MapLazy.mapWithKey evalDef defs
-    evalDef ident (Variable v)
-        | v == ident =
-            if ident == Identifier "zero"
-                then VZero
-                else
-                    if ident == Identifier "successor" || ident == Identifier "succ"
-                        then VPrimSucc
-                        else VCon ident []
-    evalDef _ expr = evaluate env expr
+    evalDef ident expr = case expr of
+        Located _ inner -> evalDef ident inner
+        Variable v
+            | v == ident ->
+                if ident == Identifier "zero"
+                    then VZero
+                    else
+                        if ident == Identifier "successor" || ident == Identifier "succ"
+                            then VPrimSucc
+                            else VCon ident []
+        _ -> evaluate env expr
 
 lookupVar :: Identifier -> Environment -> Value
 lookupVar ident env =
@@ -146,6 +148,8 @@ evaluate env expression = case expression of
         VNeutral (NHole h)
     MetaVar i ->
         VNeutral (NMetaVar i)
+    Located _ e ->
+        evaluate env e
 
 evalCase :: Environment -> Value -> [CaseBranch] -> Value
 evalCase env targetVal branches = case targetVal of
@@ -170,7 +174,7 @@ evalCase env targetVal branches = case targetVal of
     other ->
         VNeutral (NCase (NStuck other) branches env)
   where
-    matchBranch con args [] = Nothing
+    matchBranch _ _ [] = Nothing
     matchBranch con args (b : bs)
         | branchConstructor b == con =
             let newEnv = foldr (\(var, val) e -> Map.insert var val e) env (zip (branchBindings b) args)
@@ -477,8 +481,31 @@ equalNeutral usedVars neu1 neu2 = case (neu1, neu2) of
             && equalVal usedVars d1 d2
             && equalVal usedVars y1 y2
             && equalNeutral usedVars prf1 prf2
-    (NCase n1 bs1 _, NCase n2 bs2 _) ->
-        equalNeutral usedVars n1 n2 && length bs1 == length bs2
+    (NCase n1 bs1 env1, NCase n2 bs2 env2) ->
+        equalNeutral usedVars n1 n2
+            && length bs1 == length bs2
+            && all branchEq (zip bs1 bs2)
+      where
+        branchEq (CaseBranch c1 vs1 b1, CaseBranch c2 vs2 b2) =
+            c1 == c2
+                && length vs1 == length vs2
+                && let used' = foldr Set.insert usedVars (vs1 ++ vs2)
+                       (freshes, _) =
+                           foldr
+                               (\v (fs, u) -> let f = freshIdentifier v u in (f : fs, Set.insert f u))
+                               ([], used')
+                               vs1
+                       env1' =
+                           foldr
+                               (\(v, f) e -> Map.insert v (VNeutral (NVar f)) e)
+                               env1
+                               (zip vs1 freshes)
+                       env2' =
+                           foldr
+                               (\(v, f) e -> Map.insert v (VNeutral (NVar f)) e)
+                               env2
+                               (zip vs2 freshes)
+                    in equalVal used' (evaluate env1' b1) (evaluate env2' b2)
     (NNatRec p1 z1 s1 n1, NNatRec p2 z2 s2 n2) ->
         equalVal usedVars p1 p2
             && equalVal usedVars z1 z2
