@@ -21,7 +21,8 @@ import Lexer (
     prettyToken,
     renderLexError,
     tokenize,
- )
+  )
+import Diagnostics (SourceSpan (..), formatSourceSnippet)
 
 data ParseError
     = ErrorLexical !LexError
@@ -61,6 +62,20 @@ instance Monad Parser where
     Parser p >>= f = Parser $ \tokens -> do
         (val, remaining) <- p tokens
         runParser (f val) remaining
+
+-- | Wraps the parsed expression in a `Located` node spanning from the first
+-- consumed token's position up to the position of the first unconsumed token.
+withSpan :: Parser Expression -> Parser Expression
+withSpan (Parser p) = Parser $ \tokens -> case tokens of
+    [] -> p tokens
+    (PosToken start _ : _) ->
+        case p tokens of
+            Right (expr, remaining) ->
+                let end = case remaining of
+                        [] -> start
+                        (PosToken pos _ : _) -> pos
+                 in Right (Located (SourceSpan start end) expr, remaining)
+            result -> result
 
 peekToken :: Parser (Maybe Token)
 peekToken = Parser $ \tokens -> case tokens of
@@ -360,7 +375,7 @@ parseCase = do
         pure (b1 : bs)
 
 expressionParser :: Parser Expression
-expressionParser = do
+expressionParser = withSpan $ do
     nextTok <- peekToken
     case nextTok of
         Just TokenBackslash -> parseLambda
@@ -459,12 +474,10 @@ parseProgram input = do
     parseAll tokens
   where
     parseAll [] = Right []
-    parseAll toks = do
+    parseAll toks@(PosToken pos t : _) = do
         (stmt, rest) <- runParser statementParser toks
         if length rest == length toks
-            then case toks of
-                (PosToken pos t : _) -> Left (UnexpectedToken t pos)
-                [] -> Right [stmt]
+            then Left (UnexpectedToken t pos)
             else (stmt :) <$> parseAll rest
 
 renderParseError :: ParseError -> Text
@@ -478,7 +491,7 @@ renderParseErrorWithSource mFile mSource err = case err of
                     UnexpectedCharacter p _ -> p
                     UnterminatedBlockComment p -> p
                 msg = renderLexError lexErr
-             in formatSourceSnippet mFile src pos msg
+             in formatSourceSnippet mFile src (SourceSpan pos pos) msg
         Nothing -> renderLexError lexErr
     UnexpectedEndOfInput mPos ->
         let loc = formatLoc mFile mPos
@@ -486,12 +499,12 @@ renderParseErrorWithSource mFile mSource err = case err of
     ExpectedToken expected found pos ->
         let msg = "Syntax error: Expected " <> expected <> ", but found " <> prettyToken found
          in case mSource of
-                Just src -> formatSourceSnippet mFile src pos msg
+                Just src -> formatSourceSnippet mFile src (SourceSpan pos pos) msg
                 Nothing -> formatLoc mFile (Just pos) <> msg
     UnexpectedToken token pos ->
         let msg = "Syntax error: Unexpected token " <> prettyToken token
          in case mSource of
-                Just src -> formatSourceSnippet mFile src pos msg
+                Just src -> formatSourceSnippet mFile src (SourceSpan pos pos) msg
                 Nothing -> formatLoc mFile (Just pos) <> msg
   where
     formatLoc (Just fp) (Just pos) =
@@ -500,31 +513,3 @@ renderParseErrorWithSource mFile mSource err = case err of
         "Line " <> Text.pack (show (posLine pos)) <> ", col " <> Text.pack (show (posColumn pos)) <> ": "
     formatLoc (Just fp) Nothing = Text.pack fp <> ": "
     formatLoc Nothing Nothing = ""
-
-formatSourceSnippet :: Maybe FilePath -> Text -> SourcePos -> Text -> Text
-formatSourceSnippet mFile source pos msg =
-    let lineNum = posLine pos
-        colNum = posColumn pos
-        linesList = Text.lines source
-        lineContent =
-            if lineNum > 0 && lineNum <= length linesList
-                then linesList !! (lineNum - 1)
-                else ""
-        filePrefix = case mFile of
-            Just fp -> Text.pack fp <> ":" <> Text.pack (show lineNum) <> ":" <> Text.pack (show colNum) <> ":\n"
-            Nothing -> "Line " <> Text.pack (show lineNum) <> ", col " <> Text.pack (show colNum) <> ":\n"
-        gutter = Text.pack (show lineNum) <> " │ "
-        gutterSpace = Text.replicate (Text.length (Text.pack (show lineNum))) " " <> " │ "
-        colIndex = max 0 (min (colNum - 1) (Text.length lineContent))
-        pointer = Text.replicate colIndex " " <> "^"
-     in filePrefix
-            <> "  "
-            <> gutter
-            <> lineContent
-            <> "\n"
-            <> "  "
-            <> gutterSpace
-            <> pointer
-            <> "\n"
-            <> "  "
-            <> msg
