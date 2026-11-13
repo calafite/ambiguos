@@ -7,7 +7,7 @@ module Substitution (
     alphaEquivalent,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -27,6 +27,7 @@ freeVariables expression = case expression of
     NatRec -> Set.empty
     Hole _ -> Set.empty
     MetaVar _ -> Set.empty
+    Located _ e -> freeVariables e
     Case target branches ->
         let targetVars = freeVariables target
             branchVars (CaseBranch _ vars body) =
@@ -83,6 +84,7 @@ substitute targetVariable replacementExpression sourceExpression =
         NatRec -> NatRec
         Hole h -> Hole h
         MetaVar i -> MetaVar i
+        Located sp e -> Located sp (substitute targetVariable replacementExpression e)
         Case target branches ->
             Case (substitute targetVariable replacementExpression target) (map substBranch branches)
           where
@@ -243,4 +245,6 @@ alphaEquivalent leftExpression rightExpression =
                     renamedCodom1 = substitute param1 (Variable fresh) codom1
                     renamedCodom2 = substitute param2 (Variable fresh) codom2
                  in alphaEquivalent renamedCodom1 renamedCodom2
+        (Located _ e1, e2) -> alphaEquivalent e1 e2
+        (e1, Located _ e2) -> alphaEquivalent e1 e2
         _ -> False
