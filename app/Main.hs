@@ -3,19 +3,25 @@
 
 module Main (main) where
 
-import AST (Identifier (..), Statement (..))
+import AST (Identifier (..), Statement (..), Visibility (..))
 import qualified Control.Exception as Exception
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad (unless)
 import Data.Char (isSpace)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Evaluation (normalize)
-import Parser (parseProgram, parseStatement, renderParseErrorWithSource)
-import Pretty (prettyExpression, prettyIdentifier)
+import Parser (parseExpression, parseProgram, parseStatement, renderParseErrorWithSource)
+import Pretty (
+    PrettyConfig (..),
+    prettyExpression,
+    prettyExpressionWith,
+    prettyIdentifier
+  )
 import System.Console.Haskeline (
     InputT,
     Settings (..),
@@ -23,21 +29,24 @@ import System.Console.Haskeline (
     outputStr,
     outputStrLn,
     runInputT,
-    simpleCompletion,
- )
+    simpleCompletion
+  )
 import qualified System.Console.Haskeline as Haskeline
 import qualified System.Directory as Directory
 import System.Environment (getArgs)
 import qualified System.Process as Process
 import TypeChecker (
     Context (..),
+    DataInfo (..),
+    Goal (..),
     checkDataDeclaration,
     checkDefinition,
     emptyContext,
+    lookupContext,
     renderGoals,
-    renderTypeError,
+    renderTypeDiagnostic,
     synthesize,
- )
+  )
 
 bold, dim, green, cyan, magenta, red, yellow :: Text -> Text
 bold t = "\ESC[1m" <> t <> "\ESC[0m"
@@ -48,21 +57,31 @@ magenta t = "\ESC[35m" <> t <> "\ESC[0m"
 red t = "\ESC[31m" <> t <> "\ESC[0m"
 yellow t = "\ESC[33m" <> t <> "\ESC[0m"
 
+data ReplState = ReplState
+    { replContext       :: !Context
+    , replLastFile      :: !(Maybe FilePath)
+    , replLastGoals     :: ![Goal]
+    , replPrettyConfig  :: !PrettyConfig
+    }
+
+emptyReplState :: ReplState
+emptyReplState = ReplState emptyContext Nothing [] (PrettyConfig True)
+
 main :: IO ()
 main = do
     args <- getArgs
     case args of
         [] -> do
             printWelcomeBanner
-            runReplWithHaskeline emptyContext
+            runReplWithHaskeline emptyReplState
         [filePath] -> do
             TextIO.putStrLn (dim "●" <> " Verifying " <> bold (Text.pack filePath) <> dim "...")
-            result <- loadFile emptyContext filePath
+            result <- loadFileFrom emptyContext filePath
             case result of
                 Just contextWithFile -> do
                     TextIO.putStrLn ("\n" <> bold (magenta "Ambiguos") <> dim " interactive REPL ready.")
                     TextIO.putStrLn (dim "Type expressions or 'quit' to exit.\n")
-                    runReplWithHaskeline contextWithFile
+                    runReplWithHaskeline (ReplState contextWithFile (Just filePath) [] (PrettyConfig True))
                 Nothing ->
                     TextIO.putStrLn (red "✗ " <> "Verification aborted.")
         _ ->
@@ -72,11 +91,11 @@ printWelcomeBanner :: IO ()
 printWelcomeBanner = do
     TextIO.putStrLn ("\n" <> bold (magenta "Ambiguos") <> " " <> dim "v0.1.0" <> " — " <> dim "Formal Verification System")
     TextIO.putStrLn (dim "Calculus of Constructions with Martin-Löf Identity")
-    TextIO.putStrLn (dim "Commands: def <name> = <term> | data <name> ... | :load <file> | :paste | :!<command> | quit\n")
+    TextIO.putStrLn (dim "Commands: def <name> = <term> | data <name> ... | :load <file> | :add <file> | :reload | :type <expr> | :info <ident> | :browse | :goals | :set +/-implicits | :paste | :!<command> | :help | quit\n")
 
-runReplWithHaskeline :: Context -> IO ()
-runReplWithHaskeline initialContext = do
-    contextRef <- newIORef initialContext
+runReplWithHaskeline :: ReplState -> IO ()
+runReplWithHaskeline initialState = do
+    contextRef <- newIORef initialState
     homeDir <- Exception.catch Directory.getHomeDirectory (\(_ :: Exception.IOException) -> pure ".")
     let historyPath = homeDir ++ "/.ambiguos_history"
         settings =
@@ -87,9 +106,9 @@ runReplWithHaskeline initialContext = do
                 }
     runInputT settings (replLoop contextRef)
 
-replCompletion :: IORef Context -> Haskeline.CompletionFunc IO
+replCompletion :: IORef ReplState -> Haskeline.CompletionFunc IO
 replCompletion contextRef = Haskeline.completeWord Nothing " \t(){}[];:" $ \word -> do
-    ctx <- liftIO (readIORef contextRef)
+    ReplState{replContext = ctx} <- liftIO (readIORef contextRef)
     let userDefs = map unIdentifier (Map.keys (contextTypes ctx) ++ Map.keys (contextData ctx))
         builtins =
             [ "def"
@@ -111,18 +130,44 @@ replCompletion contextRef = Haskeline.completeWord Nothing " \t(){}[];:" $ \word
             , "abort"
             , ":load"
             , ":l"
+            , ":add"
+            , ":a"
+            , ":reload"
+            , ":r"
+            , ":type"
+            , ":t"
+            , ":info"
+            , ":i"
+            , ":browse"
+            , ":env"
+            , ":goals"
+            , ":set"
             , ":paste"
             , ":!"
             , "quit"
+            , ":help"
+            , ":?"
             ]
         allCandidates = map Text.unpack (userDefs ++ builtins)
     pure [simpleCompletion c | c <- allCandidates, List.isPrefixOf word c]
 
+-- | Remove line (`-- ...`) and block (`{- ... -}`) comments so that a trailing
+-- dangling operator inside a comment is not mistaken for an incomplete input.
+cleanSource :: Text -> Text
+cleanSource = Text.pack . go (0 :: Int) . Text.unpack
+  where
+    go :: Int -> String -> String
+    go _ [] = ""
+    go depth ('{':'-':rest) = go (depth + 1) (drop 2 rest)
+    go depth ('-':'}':rest) = go (max 0 (depth - 1)) (drop 2 rest)
+    go 0 ('-':'-':rest) = go 0 (dropWhile (/= '\n') rest)
+    go depth (_ : rest) | depth > 0 = go depth rest
+    go depth (c : rest) = c : go depth rest
+
 isInputComplete :: Text -> Bool
 isInputComplete txt =
-    let chars = Text.unpack txt
-        (delims, commentDepth) = checkDelimiters chars [] (0 :: Int)
-        stripped = Text.stripEnd txt
+    let (delims, commentDepth) = checkDelimiters (Text.unpack txt) [] (0 :: Int)
+        stripped = Text.stripEnd (cleanSource txt)
         dangling = any (`Text.isSuffixOf` stripped) ["=", "\\", "->", "|", "where", "let", "in", "of", ","]
      in null delims && commentDepth == 0 && not dangling
   where
@@ -162,7 +207,7 @@ readPasteMode acc = do
             | all isSpace line -> pure (Text.unlines (reverse acc))
             | otherwise -> readPasteMode (Text.pack line : acc)
 
-replLoop :: IORef Context -> InputT IO ()
+replLoop :: IORef ReplState -> InputT IO ()
 replLoop contextRef = do
     mLine <- getInputLine "\ESC[1m\ESC[35mλ\ESC[0m \ESC[36m›\ESC[0m "
     case mLine of
@@ -170,23 +215,49 @@ replLoop contextRef = do
         Just "quit" -> outputStrLn "Terminating session."
         Just rawStr -> do
             let rawInput = Text.pack rawStr
+                trimmed = Text.strip rawInput
+                (cmdWord, cmdArg) = Text.break isSpace trimmed
             case () of
                 _ | Text.isPrefixOf ":!" rawInput -> do
                     let cmd = Text.unpack (Text.strip (Text.drop 2 rawInput))
                     liftIO (runShellCommand cmd)
                     replLoop contextRef
-                _ | rawInput == ":paste" -> do
+                _ | trimmed == ":paste" -> do
                     outputStrLn "// Entering paste mode (empty line or Ctrl-D to finish):"
                     pastedContent <- readPasteMode []
                     processStatement contextRef pastedContent
                     replLoop contextRef
-                _ | Text.isPrefixOf ":load " rawInput || Text.isPrefixOf ":l " rawInput -> do
-                    let filePath = Text.unpack (Text.strip (Text.dropWhile (/= ' ') rawInput))
-                    currentContext <- liftIO (readIORef contextRef)
-                    mUpdated <- liftIO (loadFile currentContext filePath)
-                    case mUpdated of
-                        Just newCtx -> liftIO (writeIORef contextRef newCtx)
-                        Nothing -> pure ()
+                _ | cmdWord `elem` [":load", ":l"] -> do
+                    let filePath = Text.unpack (Text.strip cmdArg)
+                    unless (Text.null cmdArg) $ liftIO (cmdLoadFile contextRef filePath True)
+                    replLoop contextRef
+                _ | cmdWord `elem` [":add", ":a"] -> do
+                    let filePath = Text.unpack (Text.strip cmdArg)
+                    unless (Text.null cmdArg) $ liftIO (cmdLoadFile contextRef filePath False)
+                    replLoop contextRef
+                _ | cmdWord `elem` [":reload", ":r"] -> do
+                    cmdReload contextRef
+                    replLoop contextRef
+                _ | cmdWord == ":goals" -> do
+                    cmdGoals contextRef
+                    replLoop contextRef
+                _ | cmdWord == ":set" -> do
+                    let rest = Text.strip cmdArg
+                    cmdSet contextRef rest
+                    replLoop contextRef
+                _ | cmdWord `elem` [":help", ":?"] -> do
+                    cmdHelp
+                    replLoop contextRef
+                _ | cmdWord `elem` [":t", ":type"] -> do
+                    let exprText = Text.strip cmdArg
+                    unless (Text.null cmdArg) $ cmdType contextRef exprText
+                    replLoop contextRef
+                _ | cmdWord `elem` [":i", ":info"] -> do
+                    let identText = Text.strip cmdArg
+                    unless (Text.null cmdArg) $ cmdInfo contextRef identText
+                    replLoop contextRef
+                _ | cmdWord `elem` [":browse", ":env"] -> do
+                    cmdBrowse contextRef
                     replLoop contextRef
                 _ -> do
                     mFull <- readMultiLine rawInput
@@ -196,39 +267,167 @@ replLoop contextRef = do
                             replLoop contextRef
                         Nothing -> pure ()
 
-processStatement :: IORef Context -> Text -> InputT IO ()
+
+cmdLoadFile :: IORef ReplState -> FilePath -> Bool -> IO ()
+cmdLoadFile contextRef filePath reset = do
+    ReplState{replContext = ctx, replPrettyConfig = cfg} <- readIORef contextRef
+    let startCtx = if reset then emptyContext else ctx
+    mNew <- loadFileFrom startCtx filePath
+    case mNew of
+        Just newCtx -> writeIORef contextRef (ReplState newCtx (Just filePath) [] cfg)
+        Nothing -> pure ()
+
+cmdReload :: IORef ReplState -> InputT IO ()
+cmdReload contextRef = do
+    mState <- liftIO (readIORef contextRef)
+    case replLastFile mState of
+        Nothing -> outputStrLn "No file to reload."
+        Just fp -> do
+            liftIO (cmdLoadFile contextRef fp True)
+            liftIO (modifyIORef' contextRef (\s -> s{replLastGoals = []}))
+            outputStrLn "Reloaded."
+
+cmdGoals :: IORef ReplState -> InputT IO ()
+cmdGoals contextRef = do
+    ReplState{replLastGoals = goals} <- liftIO (readIORef contextRef)
+    unless (null goals) $ do
+        outputStrLn (Text.unpack (yellow "⚠" <> " Unsolved goal(s):"))
+        outputStr (Text.unpack (renderGoals goals))
+
+cmdSet :: IORef ReplState -> Text -> InputT IO ()
+cmdSet contextRef rest = case rest of
+    "+implicits" -> do
+        liftIO (modifyIORef' contextRef (\s -> s{replPrettyConfig = PrettyConfig True}))
+        outputStrLn "implicits: on"
+    "-implicits" -> do
+        liftIO (modifyIORef' contextRef (\s -> s{replPrettyConfig = PrettyConfig False}))
+        outputStrLn "implicits: off"
+    _ -> outputStrLn "Unknown :set option. Use ':set +implicits' or ':set -implicits'."
+
+cmdHelp :: InputT IO ()
+cmdHelp = do
+    outputStrLn (Text.unpack (bold "Ambiguos REPL commands:"))
+    outputStrLn (Text.unpack "  def <name> [: <type>] = <term>   typecheck and bind a global definition")
+    outputStrLn (Text.unpack "  <expr>                         infer type and evaluate to normal form")
+    outputStrLn (Text.unpack "  :load <file>                   load and verify a file, resetting context (alias: :l)")
+    outputStrLn (Text.unpack "  :add <file>                    load and verify a file, layering onto context (alias: :a)")
+    outputStrLn (Text.unpack "  :reload | :r                   reload replLastFile from an empty context")
+    outputStrLn (Text.unpack "  :type <expr> | :t <expr>       synthesize and print the normalized type of <expr>")
+    outputStrLn (Text.unpack "  :info <ident> | :i <ident>     show information about an identifier")
+    outputStrLn (Text.unpack "  :browse | :env                 list all data types and symbols in scope")
+    outputStrLn (Text.unpack "  :goals                         re-print unsolved goals from the last statement")
+    outputStrLn (Text.unpack "  :set +implicits | -implicits   show or hide implicit arguments in output")
+    outputStrLn (Text.unpack "  :help | :?                     show this help message")
+    outputStrLn (Text.unpack "  :!<command>                    execute a system shell command")
+    outputStrLn (Text.unpack "  :paste                         paste mode (empty line or Ctrl-D to finish)")
+    outputStrLn (Text.unpack "  quit                           exit the interactive session")
+
+cmdType :: IORef ReplState -> Text -> InputT IO ()
+cmdType contextRef exprText = do
+    ReplState{replContext = ctx, replPrettyConfig = cfg} <- liftIO (readIORef contextRef)
+    case parseExpression exprText of
+        Left pe ->
+            outputStrLn (Text.unpack (red "✗ " <> renderParseErrorWithSource Nothing (Just exprText) pe))
+        Right expr ->
+            case synthesize ctx expr of
+                Left diag ->
+                    outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just exprText) diag))
+                Right (_, inferredType, goals) ->
+                    let values = contextValues ctx
+                        normType = normalize values inferredType
+                     in do
+                         outputStrLn (Text.unpack ("  " <> dim ":" <> " " <> magenta (prettyExpressionWith cfg normType)))
+                         unless (null goals) $ do
+                             outputStrLn (Text.unpack (yellow "⚠" <> " Unsolved goal(s):"))
+                             outputStr (Text.unpack (renderGoals goals))
+
+cmdInfo :: IORef ReplState -> Text -> InputT IO ()
+cmdInfo contextRef identText = do
+    ReplState{replContext = ctx} <- liftIO (readIORef contextRef)
+    let ident = Identifier (Text.strip identText)
+    case Map.lookup ident (contextData ctx) of
+        Just info -> cmdPrintData ident info
+        Nothing ->
+            case lookupContext ident ctx of
+                Left _ ->
+                    outputStrLn (Text.unpack (red "✗ " <> "Unknown identifier: '" <> identText <> "'"))
+                Right ty -> do
+                    outputStrLn (Text.unpack (bold (prettyIdentifier ident) <> " : " <> prettyExpression ty))
+                    case Map.lookup ident (contextValues ctx) of
+                        Just val -> outputStrLn (Text.unpack ("  = " <> prettyExpression val))
+                        Nothing -> pure ()
+
+cmdPrintData :: Identifier -> DataInfo -> InputT IO ()
+cmdPrintData ident info = do
+    let paramsText =
+            Text.intercalate
+                " "
+                [ ( if vis == Explicit
+                      then "("
+                      else "{"
+                  )
+                    <> prettyIdentifier p
+                    <> " : "
+                    <> prettyExpression ty
+                    <> ( if vis == Explicit
+                          then ")"
+                          else "}"
+                  )
+                | (vis, p, ty) <- dataParams info
+                ]
+        universeText = prettyExpression (dataUniverse info)
+    outputStrLn (Text.unpack ("data " <> prettyIdentifier ident <> " " <> paramsText <> " : " <> universeText <> " where"))
+    mapM_
+        (\(cName, cType) -> outputStrLn (Text.unpack ("  " <> prettyIdentifier cName <> " : " <> prettyExpression cType)))
+        (dataConstructors info)
+
+cmdBrowse :: IORef ReplState -> InputT IO ()
+cmdBrowse contextRef = do
+    ReplState{replContext = ctx} <- liftIO (readIORef contextRef)
+    outputStrLn (Text.unpack (bold "Data types:"))
+    mapM_
+        (\(ident, info) ->
+            outputStrLn (Text.unpack ("  " <> prettyIdentifier ident <> " : " <> prettyExpression (dataUniverse info))))
+        (Map.toList (contextData ctx))
+    outputStrLn (Text.unpack (bold "Symbols:"))
+    mapM_
+        (\(ident, ty) ->
+            outputStrLn (Text.unpack ("  " <> prettyIdentifier ident <> " : " <> prettyExpression ty)))
+        (Map.toList (contextTypes ctx))
+
+processStatement :: IORef ReplState -> Text -> InputT IO ()
 processStatement contextRef input
     | Text.null (Text.strip input) = pure ()
     | otherwise = do
-        context <- liftIO (readIORef contextRef)
+        ReplState{replContext = ctx, replPrettyConfig = cfg} <- liftIO (readIORef contextRef)
         case parseStatement input of
             Left parseError ->
                 outputStrLn (Text.unpack (red "✗ " <> renderParseErrorWithSource Nothing (Just input) parseError))
             Right (DataDeclaration name params univ constrs) ->
-                case checkDataDeclaration context name params univ constrs of
+                case checkDataDeclaration ctx name params univ constrs of
                     Left typeError ->
-                        outputStrLn (Text.unpack (red "✗ " <> renderTypeError typeError))
+                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right updatedContext -> do
                         let conNames = Text.intercalate ", " (map (prettyIdentifier . fst) constrs)
                         outputStrLn (Text.unpack (green "✓" <> " Defined data " <> bold (prettyIdentifier name) <> " with: " <> cyan conNames))
-                        liftIO (writeIORef contextRef updatedContext)
+                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
             Right (Definition name maybeType bodyTerm) ->
-                case checkDefinition context name maybeType bodyTerm of
+                case checkDefinition ctx name maybeType bodyTerm of
                     Left typeError ->
-                        outputStrLn (Text.unpack (red "✗ " <> renderTypeError typeError))
+                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right (updatedContext, finalType, goals) -> do
                         if null goals
-                            then outputStrLn (Text.unpack (green "✓" <> " Defined " <> bold (prettyIdentifier name) <> " " <> dim ":" <> " " <> magenta (prettyExpression finalType)))
+                            then outputStrLn (Text.unpack (green "✓" <> " Defined " <> bold (prettyIdentifier name) <> " " <> dim ":" <> " " <> magenta (prettyExpressionWith cfg finalType)))
                             else do
                                 outputStrLn (Text.unpack (yellow "⚠" <> " Defined " <> bold (prettyIdentifier name) <> " with " <> bold (Text.pack (show (length goals))) <> " goal(s):"))
                                 outputStr (Text.unpack (renderGoals goals))
-                        liftIO (writeIORef contextRef updatedContext)
+                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = goals}))
             Right (Evaluation expression) -> do
-                case synthesize context expression of
+                case synthesize ctx expression of
                     Left typeError ->
-                        outputStrLn (Text.unpack (red "✗ " <> renderTypeError typeError))
+                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right (elaboratedExpr, inferredType, goals) -> do
-                        let values = contextValues context
+                        let values = contextValues ctx
                         evalResult <-
                             liftIO $
                                 Exception.try $
@@ -240,13 +439,12 @@ processStatement contextRef input
                             Left (ex :: Exception.SomeException) ->
                                 outputStrLn (Text.unpack (red "✗ " <> "Evaluation exception: " <> Text.pack (show ex)))
                             Right (normType, normExpr) -> do
-                                outputStrLn (Text.unpack ("  " <> dim ":" <> " " <> magenta (prettyExpression normType)))
-                                outputStrLn (Text.unpack ("  " <> dim "=" <> " " <> bold (green (prettyExpression normExpr))))
-                                if null goals
-                                    then pure ()
-                                    else do
-                                        outputStrLn (Text.unpack (yellow "⚠" <> " Unsolved goal(s):"))
-                                        outputStr (Text.unpack (renderGoals goals))
+                                outputStrLn (Text.unpack ("  " <> dim ":" <> " " <> magenta (prettyExpressionWith cfg normType)))
+                                outputStrLn (Text.unpack ("  " <> dim "=" <> " " <> bold (green (prettyExpressionWith cfg normExpr))))
+                                unless (null goals) $ do
+                                    outputStrLn (Text.unpack (yellow "⚠" <> " Unsolved goal(s):"))
+                                    outputStr (Text.unpack (renderGoals goals))
+                        liftIO (modifyIORef' contextRef (\s -> s{replLastGoals = goals}))
 
 runShellCommand :: String -> IO ()
 runShellCommand cmd = do
@@ -255,8 +453,8 @@ runShellCommand cmd = do
         Left err -> TextIO.putStrLn (red "✗ " <> "Shell error: " <> Text.pack (show err))
         Right () -> pure ()
 
-loadFile :: Context -> FilePath -> IO (Maybe Context)
-loadFile initialContext filePath = do
+loadFileFrom :: Context -> FilePath -> IO (Maybe Context)
+loadFileFrom initialContext filePath = do
     fileContentResult <- Exception.try (TextIO.readFile filePath)
     case fileContentResult of
         Left ioException -> do
@@ -299,12 +497,12 @@ runStatements currentContext accNames filePath content (statement : remaining) =
         DataDeclaration dName params univ constrs ->
             case checkDataDeclaration currentContext dName params univ constrs of
                 Left typeError ->
-                    Left (red "✗ " <> "Type error in data '" <> bold (prettyIdentifier dName) <> "':\n  " <> renderTypeError typeError)
+                    Left (red "✗ " <> "Type error in data '" <> bold (prettyIdentifier dName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
         Definition defName maybeType bodyTerm ->
             case checkDefinition currentContext defName maybeType bodyTerm of
                 Left typeError ->
-                    Left (red "✗ " <> "Type error in definition '" <> bold (prettyIdentifier defName) <> "':\n  " <> renderTypeError typeError)
+                    Left (red "✗ " <> "Type error in definition '" <> bold (prettyIdentifier defName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right (updatedContext, _, goals) ->
                     if null goals
                         then Right updatedContext
@@ -321,12 +519,11 @@ runStatements currentContext accNames filePath content (statement : remaining) =
         Evaluation expression ->
             case synthesize currentContext expression of
                 Left typeError ->
-                    Left (red "✗ " <> "Error in expression: " <> renderTypeError typeError)
-                Right (elaboratedExpr, inferredType, goals) ->
-                    let values = contextValues currentContext
-                     in if null goals
-                            then Right currentContext
-                            else Left (red "✗ " <> "Expression contains unsolved goal(s):\n" <> renderGoals goals)
+                    Left (red "✗ " <> "Error in expression: " <> renderTypeDiagnostic Nothing (Just content) typeError)
+                Right (_, _, goals) ->
+                    if null goals
+                        then Right currentContext
+                        else Left (red "✗ " <> "Expression contains unsolved goal(s):\n" <> renderGoals goals)
     case execResult of
         Left (ex :: Exception.SomeException) -> do
             TextIO.putStrLn (red "✗ " <> "Internal runtime exception in '" <> bold (prettyIdentifier name) <> "': " <> Text.pack (show ex))
