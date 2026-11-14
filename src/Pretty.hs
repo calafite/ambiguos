@@ -87,7 +87,9 @@ prettyWithConfig config currentPrecedence expression =
                 Zero -> "zero"
                 Succ -> "successor"
                 NatRec -> "natRec"
-                Literal literal -> prettyLiteral literal
+                Literal literal ->
+                    let rendered = prettyLiteral literal
+                     in parenthesizeIf (currentPrecedence >= precLevel ApplicationPrecedence && isNegativeLiteral literal) rendered
                 PrimType primitiveType -> prettyPrimType primitiveType
                 PrimOp operation -> prettyPrimOp operation
                 Hole Nothing -> "?"
@@ -211,6 +213,10 @@ prettyLiteral literal = case literal of
     LitChar c -> Text.pack (show c)
     LitString s -> Text.pack (show (Text.unpack s))
 
+isNegativeLiteral :: Literal -> Bool
+isNegativeLiteral (LitInt n) = n < 0
+isNegativeLiteral _ = False
+
 prettyPrimType :: PrimType -> Text
 prettyPrimType PTInt = "Int"
 prettyPrimType PTFloat = "Float"
@@ -220,8 +226,9 @@ prettyPrimType PTString = "String"
 prettyPrimOp :: PrimOp -> Text
 prettyPrimOp operation = "prim" <> case operation of
     NatToInt -> "NatToInt"
-    IntAdd -> "IntAdd"; IntSub -> "IntSub"; IntMul -> "IntMul"; IntDiv -> "IntDiv"; IntMod -> "IntMod"; IntNeg -> "IntNeg"
-    IntEq -> "IntEq"; IntLt -> "IntLt"; IntLe -> "IntLe"
+    IntAdd -> "IntAdd"; IntSub -> "IntSub"; IntMul -> "IntMul"; IntDiv -> "IntDiv"; IntMod -> "IntMod"; IntPow -> "IntPow"; IntNeg -> "IntNeg"
+    IntEq -> "IntEq"; IntNeq -> "IntNeq"; IntLt -> "IntLt"; IntLe -> "IntLe"; IntGt -> "IntGt"; IntGe -> "IntGe"
+    IntFold -> "IntFold"
     FloatAdd -> "FloatAdd"; FloatSub -> "FloatSub"; FloatMul -> "FloatMul"; FloatDiv -> "FloatDiv"; FloatNeg -> "FloatNeg"
     FloatEq -> "FloatEq"; FloatLt -> "FloatLt"; FloatLe -> "FloatLe"; FloatSqrt -> "FloatSqrt"; FloatSin -> "FloatSin"; FloatCos -> "FloatCos"; FloatExp -> "FloatExp"; FloatLog -> "FloatLog"
     IntToFloat -> "IntToFloat"; FloatToInt -> "FloatToInt"; FloatTruncate -> "FloatTruncate"

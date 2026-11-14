@@ -2,7 +2,7 @@
 
 module Main (main) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), UniverseLevel (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), PrimType (..), Statement (..), UniverseLevel (..), Visibility (..))
 import Data.Either (isLeft)
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef')
 import Data.Maybe (isJust)
@@ -12,12 +12,12 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Diagnostics (SourcePos (..), SourceSpan (..), spanStart)
-import Evaluation (areDefinitionallyEqual)
+import Evaluation (areDefinitionallyEqual, normalize)
 import Parser (ParseError (..), defaultFixityEnv, parseExpression, parseProgram, renderParseErrorWithSource)
 import Pretty (PrettyConfig (..), prettyExpression, prettyExpressionWith)
 import System.Exit (exitFailure, exitSuccess)
 import TypeChecker (
-    Context, Goal (..), TypeDiagnostic (..),
+    Context (..), Goal (..), TypeDiagnostic (..),
     check, checkDataDeclaration, checkDefinition, emptyContext, renderTypeDiagnostic,
     synthesize, checkClassDeclaration, checkInstanceDeclaration,
   )
@@ -235,6 +235,31 @@ testTypeCheckerPositive ref = do
         Right (_, _, goals) -> assert ref (length goals >= 1) "synthesized hole creates at least one goal"
         Left _ -> modifyIORef' ref (+1) >> putStrLn "FAIL: synthesized hole should not error"
 
+testIntDefaults :: IORef Int -> IO ()
+testIntDefaults ref = do
+    prelude <- readProgram "prelude.amb"
+    (ctx, errors, _) <- verifyStmts emptyContext prelude
+    assert ref (errors == 0) "Int prelude remains valid for list operations"
+    let checkExpr ctx source expectedType expectedValue = do
+            expr <- parseOk ref source
+            case synthesize ctx expr of
+                Left diag -> modifyIORef' ref (+1) >> putStrLn ("FAIL: " ++ Text.unpack source ++ " should typecheck (" ++ Text.unpack (renderTypeDiagnostic Nothing Nothing diag) ++ ")")
+                Right (elaborated, inferred, _) -> do
+                    assertEqual ref inferred expectedType ("inferred type of " ++ Text.unpack source)
+                    assertEqual ref (prettyExpression (normalize (contextValues ctx) elaborated)) expectedValue ("normalized value of " ++ Text.unpack source)
+    checkExpr emptyContext "42" (PrimType PTInt) "42"
+    checkExpr emptyContext "42 - 42 * 0" (PrimType PTInt) "42"
+    checkExpr emptyContext "42 ^ 10" (PrimType PTInt) "17080198121677824"
+    checkExpr ctx "factorial 20" (PrimType PTInt) "2432902008176640000"
+    checkExpr emptyContext "successor 42" (PrimType PTInt) "43"
+    checkExpr ctx "predecessor 42" (PrimType PTInt) "41"
+    natZero <- parseOk ref "0"
+    case check emptyContext natZero NatType of
+        Left diag -> modifyIORef' ref (+1) >> putStrLn ("FAIL: nonnegative Int literal should check as Nat (" ++ Text.unpack (renderTypeDiagnostic Nothing Nothing diag) ++ ")")
+        Right _ -> pure ()
+    checkExpr ctx "length [1, 2, 3]" (PrimType PTInt) "3"
+    checkExpr ctx "take 2 [10, 20, 30]" (Application Explicit (Variable (Identifier "List")) (PrimType PTInt)) "[10, 20]"
+
 --------------------------------------------------------------
 -- 5. TypeChecker negative tests
 --------------------------------------------------------------
@@ -280,6 +305,7 @@ main = do
     testPretty failed
     testEvaluation failed
     testTypeCheckerPositive failed
+    testIntDefaults failed
     testTypeCheckerNegative failed
     n <- readIORef failed
     if n == 0

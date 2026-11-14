@@ -69,8 +69,9 @@ data PrimType
     deriving (Eq, Ord, Show)
 
 data PrimOp
-    = IntAdd | IntSub | IntMul | IntDiv | IntMod | IntNeg
-    | IntEq | IntLt | IntLe
+    = IntAdd | IntSub | IntMul | IntDiv | IntMod | IntPow | IntNeg
+    | IntEq | IntNeq | IntLt | IntLe | IntGt | IntGe
+    | IntFold
     | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatNeg
     | FloatEq | FloatLt | FloatLe | FloatSqrt | FloatSin | FloatCos | FloatExp | FloatLog
     | NatToInt | IntToFloat | FloatToInt | FloatTruncate

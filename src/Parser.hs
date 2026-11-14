@@ -234,7 +234,7 @@ parseAtomicExpression env = do
         Just (PosToken _ TokenKeywordZero) -> Zero <$ consumeToken
         Just (PosToken _ TokenKeywordSucc) -> Succ <$ consumeToken
         Just (PosToken _ TokenKeywordNatRec) -> NatRec <$ consumeToken
-        Just (PosToken _ (TokenNatural n)) -> Literal (LitNat n) <$ consumeToken
+        Just (PosToken _ (TokenNatural n)) -> Literal (LitInt n) <$ consumeToken
         Just (PosToken _ (TokenFloat n)) -> Literal (LitFloat n) <$ consumeToken
         Just (PosToken _ (TokenChar c)) -> Literal (LitChar c) <$ consumeToken
         Just (PosToken _ (TokenString s)) -> Literal (LitString s) <$ consumeToken

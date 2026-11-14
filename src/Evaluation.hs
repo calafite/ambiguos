@@ -267,6 +267,7 @@ evalNatRec p z s target = case target of
 primitiveArity :: PrimOp -> Int
 primitiveArity operation = case operation of
     NatToInt -> 1; IntToNat -> 1; IntAbs -> 1; ClampToNat -> 1
+    IntFold -> 4
     IntNeg -> 1; FloatNeg -> 1; FloatSqrt -> 1; FloatSin -> 1; FloatCos -> 1; FloatExp -> 1; FloatLog -> 1
     IntToFloat -> 1; FloatToInt -> 1; FloatTruncate -> 1; CharToInt -> 1; IntToChar -> 1
     StringLength -> 1; StringToList -> 1; ListToString -> 1; IntToString -> 1; FloatToString -> 1; CharToString -> 1
@@ -288,6 +289,9 @@ applyPrimOp operation args = case (operation, args) of
     (IntAdd, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a + b))
     (IntSub, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a - b))
     (IntMul, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a * b))
+    (IntPow, [VLit (LitInt a), VLit (LitInt e)])
+        | e < 0 -> VLit (LitInt 0)
+        | otherwise -> VLit (LitInt (a ^ e))
     (IntDiv, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if b == 0 then 0 else a `div` b))
     (IntMod, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if b == 0 then a else a `mod` b))
     (IntNeg, [VLit (LitInt a)]) -> VLit (LitInt (-a))
@@ -301,8 +305,12 @@ applyPrimOp operation args = case (operation, args) of
     (StringEq, [VLit (LitString a), VLit (LitString b)]) -> boolValue (a == b)
     (CharEq, [VLit (LitChar a), VLit (LitChar b)]) -> boolValue (a == b)
     (IntEq, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a == b)
+    (IntNeq, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a /= b)
     (IntLt, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a < b)
     (IntLe, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a <= b)
+    (IntGt, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a > b)
+    (IntGe, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a >= b)
+    (IntFold, [_, VLit (LitInt n), z, step]) -> intFold n z step
     (FloatEq, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a == b)
     (FloatLt, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a < b)
     (FloatLe, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a <= b)
@@ -314,6 +322,13 @@ applyPrimOp operation args = case (operation, args) of
   where
     boolValue True = VCon (Identifier "true") []
     boolValue False = VCon (Identifier "false") []
+    intFold n z step
+        | n <= 0 = z
+        | otherwise = go 1 z
+      where
+        go i acc
+            | i > n = acc
+            | otherwise = go (i + 1) (vApp Explicit (vApp Explicit step (VLit (LitInt i))) acc)
 
 -- | Primitive eliminator for Identity (Martin-Löf J).
 evalJ :: Value -> Value -> Value -> Value -> Value -> Value -> Value

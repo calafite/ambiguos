@@ -163,9 +163,10 @@ primitiveBindings :: [(Identifier, PrimOp)]
 primitiveBindings =
     [ (Identifier "primNatToInt", NatToInt)
     , (Identifier "intToNat", IntToNat), (Identifier "intAbs", IntAbs), (Identifier "clampToNat", ClampToNat)
-    , (Identifier "primIntAdd", IntAdd), (Identifier "primIntSub", IntSub), (Identifier "primIntMul", IntMul)
+    , (Identifier "primIntAdd", IntAdd), (Identifier "primIntSub", IntSub), (Identifier "primIntMul", IntMul), (Identifier "primIntPow", IntPow)
     , (Identifier "primIntDiv", IntDiv), (Identifier "primIntMod", IntMod), (Identifier "primIntNeg", IntNeg)
-    , (Identifier "primIntEq", IntEq), (Identifier "primIntLt", IntLt), (Identifier "primIntLe", IntLe)
+    , (Identifier "primIntEq", IntEq), (Identifier "primIntNeq", IntNeq), (Identifier "primIntLt", IntLt), (Identifier "primIntLe", IntLe), (Identifier "primIntGt", IntGt), (Identifier "primIntGe", IntGe)
+    , (Identifier "primIntFold", IntFold)
     , (Identifier "primFloatAdd", FloatAdd), (Identifier "primFloatSub", FloatSub), (Identifier "primFloatMul", FloatMul), (Identifier "primFloatDiv", FloatDiv), (Identifier "primFloatEq", FloatEq)
     , (Identifier "primStringAppend", StringAppend), (Identifier "primStringEq", StringEq), (Identifier "primStringLength", StringLength)
     , (Identifier "primCharEq", CharEq), (Identifier "primCharToInt", CharToInt), (Identifier "primIntToChar", IntToChar)
@@ -647,6 +648,10 @@ abortType =
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
 succType =
     Pi Explicit (Identifier "_") NatType NatType
+
+intSuccType :: Expression
+intSuccType =
+    Pi Explicit (Identifier "_") (PrimType PTInt) (PrimType PTInt)
 natRecType =
     Pi Explicit (Identifier "P") pType
         $ Pi Explicit (Identifier "z") zType
@@ -877,9 +882,9 @@ primitiveOpType operation = case operation of
     ClampToNat -> unary (PrimType PTInt) NatType
     IntNeg -> unary (PrimType PTInt) (PrimType PTInt)
     FloatNeg -> unary (PrimType PTFloat) (PrimType PTFloat)
-    IntAdd -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntSub -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMul -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
+    IntAdd -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntSub -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMul -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntPow -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
     IntDiv -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMod -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
-    IntEq -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLt -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLe -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool"))
+    IntEq -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntNeq -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLt -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLe -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntGt -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntGe -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool"))
     FloatAdd -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatSub -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatMul -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatDiv -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat)
     FloatEq -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool")); FloatLt -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool")); FloatLe -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool"))
     StringAppend -> binary (PrimType PTString) (PrimType PTString) (PrimType PTString); StringEq -> binary (PrimType PTString) (PrimType PTString) (Variable (Identifier "Bool"))
@@ -890,6 +895,7 @@ primitiveOpType operation = case operation of
     IntToString -> unary (PrimType PTInt) (PrimType PTString); FloatToString -> unary (PrimType PTFloat) (PrimType PTString); CharToString -> unary (PrimType PTChar) (PrimType PTString)
     FloatSqrt -> unary (PrimType PTFloat) (PrimType PTFloat); FloatSin -> unary (PrimType PTFloat) (PrimType PTFloat); FloatCos -> unary (PrimType PTFloat) (PrimType PTFloat); FloatExp -> unary (PrimType PTFloat) (PrimType PTFloat); FloatLog -> unary (PrimType PTFloat) (PrimType PTFloat)
     StringIndex -> binary (PrimType PTString) NatType (Variable (Identifier "Maybe")); StringSlice -> binary (PrimType PTString) (PrimType PTInt) (PrimType PTString)
+    IntFold -> Pi Implicit (Identifier "A") (Universe (UFixed (-1))) (Pi Explicit (Identifier "n") (PrimType PTInt) (Pi Explicit (Identifier "z") (Variable (Identifier "A")) (Pi Explicit (Identifier "step") (Pi Explicit (Identifier "_") (PrimType PTInt) (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Variable (Identifier "A")))) (Variable (Identifier "A")))))
   where
     unary domain codomain = Pi Explicit (Identifier "_") domain codomain
     binary left right codomain = Pi Explicit (Identifier "_") left (Pi Explicit (Identifier "_") right codomain)
@@ -901,7 +907,7 @@ primitiveOpType operation = case operation of
 -- consulted.
 numericOperator :: Identifier -> Bool
 numericOperator name = name `elem`
-    map Identifier ["+" , "-", "*", "/", "==", "/=", "<", "<=", ">", ">="]
+    map Identifier ["+" , "-", "*", "/", "^", "==", "/=", "<", "<=", ">", ">="]
 
 numericKind :: Expression -> Maybe PrimType
 numericKind ty = case ty of
@@ -914,12 +920,13 @@ numericPrimitive name kind = case (name, kind) of
     (Identifier "-", PTInt) -> Just IntSub
     (Identifier "*", PTInt) -> Just IntMul
     (Identifier "/", PTInt) -> Just IntDiv
+    (Identifier "^", PTInt) -> Just IntPow
     (Identifier "==", PTInt) -> Just IntEq
     (Identifier "<", PTInt) -> Just IntLt
     (Identifier "<=", PTInt) -> Just IntLe
-    (Identifier ">", PTInt) -> Just IntLt
-    (Identifier ">=", PTInt) -> Just IntLe
-    (Identifier "/=", PTInt) -> Just IntEq
+    (Identifier ">", PTInt) -> Just IntGt
+    (Identifier ">=", PTInt) -> Just IntGe
+    (Identifier "/=", PTInt) -> Just IntNeq
     (Identifier "+", PTFloat) -> Just FloatAdd
     (Identifier "-", PTFloat) -> Just FloatSub
     (Identifier "*", PTFloat) -> Just FloatMul
@@ -1022,6 +1029,9 @@ synthesizeElab context expression = case expression of
     Abort -> pure (Abort, abortType)
     NatType -> pure (NatType, Universe (UFixed (-1)))
     Zero -> pure (Zero, NatType)
+    -- The constructor itself remains Nat -> Nat so higher-order Nat proofs
+    -- (for example `congruence successor ih`) infer the inductive operation.
+    -- Applications are specialized to Int by the application rule below.
     Succ -> pure (Succ, succType)
     NatRec -> pure (NatRec, natRecType)
     Literal (LitNat n) -> pure (Literal (LitNat n), NatType)
@@ -1196,7 +1206,11 @@ checkElab context expression expType = case expression of
             (Literal (LitNat n), NatType) -> pure (Literal (LitNat n))
             (Literal (LitNat n), PrimType PTInt) -> pure (Literal (LitInt n))
             (Literal (LitNat n), PrimType PTFloat) -> pure (Literal (LitFloat (fromIntegral n)))
+            (Literal (LitInt n), NatType)
+                | n >= 0 -> pure (Literal (LitNat n))
+                | otherwise -> throwError (TypeMismatch NatType (PrimType PTInt))
             (Literal (LitInt n), PrimType PTInt) -> pure (Literal (LitInt n))
+            (Literal (LitInt n), PrimType PTFloat) -> pure (Literal (LitFloat (fromIntegral n)))
             (Literal (LitFloat n), PrimType PTFloat) -> pure (Literal (LitFloat n))
             (Literal (LitChar c), PrimType PTChar) -> pure (Literal (LitChar c))
             (Literal (LitString s), PrimType PTString) -> pure (Literal (LitString s))
@@ -1214,6 +1228,7 @@ checkElab context expression expType = case expression of
                 (elabTarget, rawTargetType) <- synthesizeElab context target
                 compiled <- compilePatternCase context elabTarget branches
                 checkElab context (Case elabTarget mMotive compiled) expType
+            (Succ, Pi Explicit _ NatType _) -> pure Succ
             (Application Explicit successorExpr argument, PrimType PTInt)
                 | isSuccessorExpression successorExpr -> do
                     (elabArg, argType) <- synthesizeElab context argument

@@ -317,14 +317,14 @@ def bindMaybe : {A B : Type} -> Maybe A -> (A -> Maybe B) -> Maybe B
    8. Peano Natural Numbers & Arithmetic Operations
    -------------------------------------------------------------------------- -}
 
-def predecessor : Nat -> Nat
+def natPredecessor : Nat -> Nat
   = \n -> case n of
       { zero        -> 0
       ; successor k -> k
       }
 
-def pred : Nat -> Nat
-  = predecessor
+def natPred : Nat -> Nat
+  = natPredecessor
 
 def isZero : Nat -> Bool
   = \n -> case n of
@@ -335,29 +335,14 @@ def isZero : Nat -> Bool
 def addition : Nat -> Nat -> Nat
   = \x y -> natRec (\_ -> Nat) y (\_ -> \rec -> successor rec) x
 
-def (+) : Nat -> Nat -> Nat
-  = addition
-
 def multiplication : Nat -> Nat -> Nat
-  = \x y -> natRec (\_ -> Nat) 0 (\_ -> \rec -> y + rec) x
-
-def (*) : Nat -> Nat -> Nat
-  = multiplication
+  = \x y -> natRec (\_ -> Nat) 0 (\_ -> \rec -> addition y rec) x
 
 def power : Nat -> Nat -> Nat
-  = \base exponent -> natRec (\_ -> Nat) 1 (\_ -> \rec -> base * rec) exponent
-
-def (^) : Nat -> Nat -> Nat
-  = power
-
-def factorial : Nat -> Nat
-  = \n -> natRec (\_ -> Nat) 1 (\(k : Nat) -> \(rec : Nat) -> (successor k) * rec) n
+  = \base exponent -> natRec (\_ -> Nat) 1 (\_ -> \rec -> multiplication base rec) exponent
 
 def subtraction : Nat -> Nat -> Nat
-  = \x y -> natRec (\_ -> Nat) x (\_ -> \rec -> predecessor rec) y
-
-def (-) : Nat -> Nat -> Nat
-  = subtraction
+  = \x y -> natRec (\_ -> Nat) x (\_ -> \rec -> natPredecessor rec) y
 
 def equalNat : Nat -> Nat -> Bool
   = \x y -> natRec (\_ -> Nat -> Bool)
@@ -374,59 +359,59 @@ def (==) : Nat -> Nat -> Bool
 def notEqualNat : Nat -> Nat -> Bool
   = \x y -> not (equalNat x y)
 
-def (/=) : Nat -> Nat -> Bool
-  = notEqualNat
-
 def lessOrEqualNat : Nat -> Nat -> Bool
-  = \x y -> isZero (x - y)
-
-def (<=) : Nat -> Nat -> Bool
-  = lessOrEqualNat
+  = \x y -> isZero (subtraction x y)
 
 def lessThanNat : Nat -> Nat -> Bool
-  = \x y -> (successor x) <= y
-
-def (<) : Nat -> Nat -> Bool
-  = lessThanNat
+  = \x y -> lessOrEqualNat (successor x) y
 
 def greaterOrEqualNat : Nat -> Nat -> Bool
-  = \x y -> y <= x
-
-def (>=) : Nat -> Nat -> Bool
-  = greaterOrEqualNat
+  = \x y -> lessOrEqualNat y x
 
 def greaterThanNat : Nat -> Nat -> Bool
-  = \x y -> y < x
-
-def (>) : Nat -> Nat -> Bool
-  = greaterThanNat
+  = \x y -> lessThanNat y x
 
 def compareNat : Nat -> Nat -> Ordering
   = \x y -> case equalNat x y of
       { true  -> equal
-      ; false -> case x < y of
+        ; false -> case lessThanNat x y of
           { true  -> less
           ; false -> greater
           }
       }
 
-def min : Nat -> Nat -> Nat
+def min : Int -> Int -> Int
   = \x y -> case x <= y of
       { true  -> x
       ; false -> y
       }
 
-def max : Nat -> Nat -> Nat
+def max : Int -> Int -> Int
   = \x y -> case x <= y of
       { true  -> y
       ; false -> x
       }
 
-def even : Nat -> Bool
-  = \n -> natRec (\_ -> Bool) true (\_ -> \rec -> not rec) n
+def even : Int -> Bool
+  = \n -> primIntEq (primIntMod n 2) 0
 
-def odd : Nat -> Bool
+def odd : Int -> Bool
   = \n -> not (even n)
+
+def (+) : Int -> Int -> Int = primIntAdd
+def (-) : Int -> Int -> Int = primIntSub
+def (*) : Int -> Int -> Int = primIntMul
+def (/) : Int -> Int -> Int = primIntDiv
+def (^) : Int -> Int -> Int = primIntPow
+def (==) : Int -> Int -> Bool = primIntEq
+def (/=) : Int -> Int -> Bool = primIntNeq
+def (<) : Int -> Int -> Bool = primIntLt
+def (<=) : Int -> Int -> Bool = primIntLe
+def (>) : Int -> Int -> Bool = primIntGt
+def (>=) : Int -> Int -> Bool = primIntGe
+def factorial : Int -> Int = \n -> primIntFold n 1 (\k -> \rec -> primIntMul k rec)
+def predecessor : Int -> Int = \n -> primIntSub n 1
+def pred : Int -> Int = predecessor
 
 
 {- --------------------------------------------------------------------------
@@ -458,8 +443,8 @@ def foldLeft : {A B : Type} -> (B -> A -> B) -> B -> List A -> B
 def foldl : {A B : Type} -> (B -> A -> B) -> B -> List A -> B
   = foldLeft
 
-def length : {A : Type} -> List A -> Nat
-  = \xs -> foldRight (\_ -> \(accumulator : Nat) -> successor accumulator) 0 xs
+def length : {A : Type} -> List A -> Int
+  = \xs -> foldRight (\_ -> \(accumulator : Int) -> successor accumulator) 0 xs
 
 def map : {A B : Type} -> (A -> B) -> List A -> List B
   = \f xs -> case xs of
@@ -521,25 +506,40 @@ def tail : {A : Type} -> List A -> List A
       ; cons _ xs  -> xs
       }
 
-def replicate : {A : Type} -> Nat -> A -> List A
-  = \count x -> natRec (\_ -> List A) nil (\_ -> \rec -> cons x rec) count
+def replicate : {A : Type} -> Int -> A -> List A
+  = \count x -> case intToNat count of
+      { nothing -> nil
+      ; just n  -> natRec (\_ -> List A) nil (\_ -> \rec -> cons x rec) n
+      }
 
-def take : {A : Type} -> Nat -> List A -> List A
+def natTake : {A : Type} -> Nat -> List A -> List A
   = \count xs -> case count of
-      { zero        -> nil
+      { zero -> nil
       ; successor k -> case xs of
-          { nil        -> nil
-          ; cons x xs  -> cons x (take k xs)
+          { nil -> nil
+          ; cons x rest -> cons x (natTake k rest)
           }
       }
 
-def drop : {A : Type} -> Nat -> List A -> List A
+def natDrop : {A : Type} -> Nat -> List A -> List A
   = \count xs -> case count of
-      { zero        -> xs
+      { zero -> xs
       ; successor k -> case xs of
-          { nil        -> nil
-          ; cons _ xs  -> drop k xs
+          { nil -> nil
+          ; cons _ rest -> natDrop k rest
           }
+      }
+
+def take : {A : Type} -> Int -> List A -> List A
+  = \count xs -> case intToNat count of
+      { nothing -> nil
+      ; just n  -> natTake n xs
+      }
+
+def drop : {A : Type} -> Int -> List A -> List A
+  = \count xs -> case intToNat count of
+      { nothing -> xs
+      ; just n  -> natDrop n xs
       }
 
 def zipWith : {A B C : Type} -> (A -> B -> C) -> List A -> List B -> List C
@@ -569,9 +569,6 @@ def intMul : Int -> Int -> Int
 
 def intDiv : Int -> Int -> Int
   = primIntDiv
-
-def intAbs : Int -> Int
-  = \x -> x
 
 def floatAdd : Float -> Float -> Float
   = primFloatAdd
