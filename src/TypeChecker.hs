@@ -10,6 +10,9 @@ module TypeChecker (
     extendContextType,
     extendContextDefinition,
     checkDataDeclaration,
+    checkRecordDeclaration,
+    checkClassDeclaration,
+    checkInstanceDeclaration,
     synthesize,
     check,
     checkDefinition,
@@ -19,13 +22,14 @@ module TypeChecker (
     renderGoals,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), UniverseLevel (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Pattern (..), RecordField (..), RecordInfo (..), UniverseLevel (..), Visibility (..))
 import Control.Monad (filterM, foldM)
 import Control.Monad.State.Strict (StateT (..), evalStateT, gets, modify, runStateT)
 import Control.Monad.Trans (lift)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Diagnostics (SourceSpan (..), formatSourceSnippet)
@@ -71,6 +75,10 @@ data TypeError
         }
     | CannotSynthesizeType Expression
     | CannotMatchOnNonDataType Expression
+    | ExpectedDataType Expression
+    | UnknownField Identifier Identifier
+    | NoInstanceFound Expression
+    | AmbiguousInstance Expression [Identifier]
     | NonExhaustivePatternMatch Identifier [Identifier]
     | UnknownConstructor Identifier Identifier
     | ArityMismatch Identifier Int Int
@@ -100,6 +108,8 @@ data Context = Context
     , contextLocals :: [Identifier]
     , contextData :: Map Identifier DataInfo
     , contextFixities :: Map Identifier Fixity
+    , contextRecords :: Map Identifier RecordInfo
+    , contextInstances :: Map Identifier [Identifier]
     }
     deriving (Eq, Show)
 
@@ -145,6 +155,8 @@ emptyContext =
         , contextLocals = []
         , contextData = builtinData
         , contextFixities = defaultFixityEnv
+        , contextRecords = Map.empty
+        , contextInstances = Map.empty
         }
 
 extendContextType :: Identifier -> Expression -> Context -> Context
@@ -516,8 +528,39 @@ instantiateLeadingImplicits context expr exprType = do
             let newExpr = Application Implicit expr meta
                 newType = substitute param meta codomain
             instantiateLeadingImplicits context newExpr newType
+        Pi Instance param domain codomain -> do
+            instanceExpr <- resolveInstance context domain
+            let newExpr = Application Instance expr instanceExpr
+                newType = substitute param instanceExpr codomain
+            instantiateLeadingImplicits context newExpr newType
         _ ->
             pure (expr, zonkedType)
+
+resolveInstance :: Context -> Expression -> Elab Expression
+resolveInstance context domain = do
+    let (headExpr, _) = unfoldApp domain
+        className = case headExpr of
+            Variable name -> Just name
+            _ -> Nothing
+        localCandidates =
+            [ name
+            | name <- contextLocals context
+            , Just ty <- [Map.lookup name (contextTypes context)]
+            , areDefinitionallyEqual (contextValues context) ty domain
+            ]
+        registeredCandidates = case className of
+            Nothing -> []
+            Just name ->
+                [ instanceName
+                | instanceName <- Map.findWithDefault [] name (contextInstances context)
+                , Just ty <- [Map.lookup instanceName (contextTypes context)]
+                , areDefinitionallyEqual (contextValues context) ty domain
+                ]
+        candidates = Set.toList (Set.fromList (localCandidates ++ registeredCandidates))
+    case candidates of
+        [name] -> pure (Variable name)
+        [] -> throwError (NoInstanceFound domain)
+        names -> throwError (AmbiguousInstance domain names)
 
 identityType, reflexivityType, jType, abortType, succType, natRecType :: Expression
 identityType =
@@ -767,6 +810,47 @@ checkBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTar
     elabBody <- checkElab refContext body branchExpected
     pure (CaseBranch con vars elabBody)
 
+compilePatternCase :: Context -> Expression -> [(Pattern, Expression)] -> Elab [CaseBranch]
+compilePatternCase context target clauses = do
+    (_, targetType) <- synthesizeElab context target
+    let (headType, _) = unfoldApp targetType
+        constructors = case headType of
+            Variable name -> maybe [] (map fst . dataConstructors) (Map.lookup name (contextData context))
+            NatType -> [Identifier "zero", Identifier "successor"]
+            _ -> []
+        constructorArity name = case Map.lookup name (contextData context) >>= lookup name . dataConstructors of
+            Nothing | name == Identifier "zero" -> 0
+            Nothing | name == Identifier "successor" -> 1
+            Nothing -> 0
+            Just ty -> countExplicit ty
+        countExplicit ty = case evaluateWeakHeadNormalForm (contextValues context) ty of
+            Pi Explicit _ _ codom -> 1 + countExplicit codom
+            Pi _ _ _ codom -> countExplicit codom
+            _ -> 0
+        freshArgs name = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. constructorArity name - 1]]
+        expandWild body =
+            [ CaseBranch con (freshArgs con) body | con <- constructors ]
+        literalPattern n
+            | n <= 0 = PatCon (Identifier "zero") []
+            | otherwise = PatCon (Identifier "successor") [literalPattern (n - 1)]
+        compileAt scrutinee pattern body = case pattern of
+            PatVar name -> Let name Nothing scrutinee body
+            PatWild -> body
+            PatLit n -> compileAt scrutinee (literalPattern n) body
+            PatCon con subpatterns ->
+                let args = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. length subpatterns - 1]]
+                    nested = foldr (\(arg, subpattern) acc -> compileAt (Variable arg) subpattern acc) body (zip args subpatterns)
+                 in Case scrutinee Nothing [CaseBranch con args nested]
+        compileTop pattern body = case pattern of
+            PatVar name -> expandWild (substitute name target body)
+            PatWild -> expandWild body
+            PatLit n -> compileTop (literalPattern n) body
+            PatCon con subpatterns ->
+                let args = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. length subpatterns - 1]]
+                    nested = foldr (\(arg, subpattern) acc -> compileAt (Variable arg) subpattern acc) body (zip args subpatterns)
+                 in [CaseBranch con args nested]
+    pure (concatMap (uncurry compileTop) clauses)
+
 peelConstructorArgs :: Context -> [Identifier] -> Expression -> Elab ([Expression], Expression)
 peelConstructorArgs _ [] ty = pure ([], ty)
 peelConstructorArgs ctx (v : vs) ty = do
@@ -777,6 +861,9 @@ peelConstructorArgs ctx (v : vs) ty = do
             (rest, finalCodom) <- peelConstructorArgs ctx vs (substitute param (Variable v) codom)
             pure (dom : rest, finalCodom)
         Pi Implicit param _ codom -> do
+            m <- freshMeta ctx (Universe (UFixed (-1)))
+            peelConstructorArgs ctx (v : vs) (substitute param m codom)
+        Pi Instance param _ codom -> do
             m <- freshMeta ctx (Universe (UFixed (-1)))
             peelConstructorArgs ctx (v : vs) (substitute param m codom)
         other ->
@@ -856,6 +943,36 @@ synthesizeElab context expression = case expression of
         elabCase <- checkElab context (Case target mMotive branches) retMeta
         zonkedRet <- zonk retMeta
         pure (elabCase, zonkedRet)
+    PatternCase target mMotive branches -> do
+        retMeta <- freshMeta context (Universe (UFixed (-1)))
+        compiled <- compilePatternCase context target branches
+        elabCase <- checkElab context (Case target mMotive compiled) retMeta
+        zonkedRet <- zonk retMeta
+        pure (elabCase, zonkedRet)
+    Projection expr field -> do
+        (elabExpr, exprType) <- synthesizeElab context expr
+        let (headExpr, _) = unfoldApp exprType
+        case headExpr of
+            Variable dataTypeName ->
+                case Map.lookup dataTypeName (contextRecords context) of
+                    Just _ | Map.member field (contextTypes context) -> do
+                        (proj, _) <- instantiateLeadingImplicits context (Variable field) (fromMaybe (Universe (UFixed (-1))) (Map.lookup field (contextTypes context)))
+                        pure (Application Explicit proj elabExpr, fromMaybe (Universe (UFixed (-1))) (Map.lookup field (contextTypes context)))
+                    Just _ -> throwError (UnknownField field dataTypeName)
+                    Nothing -> throwError (ExpectedDataType exprType)
+            _ -> throwError (ExpectedDataType exprType)
+    RecordLiteral recordName fieldValues -> do
+        recInfo <- case Map.lookup recordName (contextRecords context) of
+            Just info -> pure info
+            Nothing -> throwError (UnboundVariable recordName)
+        let valueMap = Map.fromList fieldValues
+        ordered <- traverse (\field ->
+            case Map.lookup (recordFieldName field) valueMap of
+                Just value -> pure value
+                Nothing -> throwError (UnknownField (recordFieldName field) recordName)) (recordFields recInfo)
+        let constructor = Variable (recordConName recInfo)
+            applied = foldl (Application Explicit) constructor ordered
+        synthesizeElab context applied
     Pi vis parameter domain codomain -> do
         (elabDomain, domainUniverse) <- synthesizeElab context domain
         levelI <- extractUniverseLevel context domainUniverse
@@ -895,6 +1012,17 @@ synthesizeElab context expression = case expression of
                 pure (Application Implicit fnExpr zonkedArg, substitute parameter zonkedArg codomain)
             nonFunctionType ->
                 throwError (ExpectedFunctionType nonFunctionType)
+    Application Instance function argument -> do
+        (fnExpr, functionType) <- synthesizeElab context function
+        zonkedType <- zonk functionType
+        let env = contextValues context
+        case evaluateWeakHeadNormalForm env zonkedType of
+            Pi Instance parameter domain codomain -> do
+                elabArg <- checkElab context argument domain
+                zonkedArg <- zonk elabArg
+                pure (Application Instance fnExpr zonkedArg, substitute parameter zonkedArg codomain)
+            nonFunctionType ->
+                throwError (ExpectedFunctionType nonFunctionType)
     Lambda vis parameter (Just parameterType) body -> do
         (elabParamType, paramUniverse) <- synthesizeElab context parameterType
         _ <- extractUniverseLevel context paramUniverse
@@ -924,6 +1052,10 @@ checkElab context expression expType = case expression of
                 let whnfTargetType = evaluateWeakHeadNormalForm env zonkedTargetType
                 elabBranches <- checkCaseBranches context elabTarget whnfTargetType whnfExpected mMotive branches
                 pure (Case elabTarget mMotive elabBranches)
+            (PatternCase target mMotive branches, _) -> do
+                (elabTarget, rawTargetType) <- synthesizeElab context target
+                compiled <- compilePatternCase context elabTarget branches
+                checkElab context (Case elabTarget mMotive compiled) expType
             (Let param maybeDeclaredType defExpr body, _) -> do
                 (elabDef, defType) <- case maybeDeclaredType of
                     Just declaredType -> do
@@ -1134,6 +1266,96 @@ checkDataDeclaration context dataName params univ constructors =
     addConstructor (cName, cType) ctx =
         extendContextDefinition cName cType (Variable cName) ctx
 
+checkRecordDeclaration ::
+    Context ->
+    Identifier ->
+    [(Visibility, Identifier, Expression)] ->
+    Expression ->
+    [RecordField] ->
+    Maybe Identifier ->
+    Either TypeDiagnostic Context
+checkRecordDeclaration context recName params univ fields mConName =
+    let traceMsg = "while checking record declaration '" <> prettyIdentifier recName <> "'"
+     in evalStateT
+            ( localTrace traceMsg $
+                do
+                    (elabUniv, _) <- synthesizeElab context univ
+                    (indices, lvl) <- peelIndexTelescope context elabUniv
+                    let allArgs = params ++ indices
+                        typeConType = foldr (\(vis, p, ty) codom -> Pi vis p ty codom) (Universe lvl) allArgs
+                        contextWithType = extendContextType recName typeConType context
+                        paramContext =
+                            foldr
+                                (\(_, p, ty) ctx -> extendContextType p ty ctx)
+                                contextWithType
+                                allArgs
+                    let conName = fromMaybe (Identifier ("mk" <> unIdentifier recName)) mConName
+                        conAppArgs = map (\(_, p, _) -> Variable p) allArgs
+                        conApp = foldl (\acc x -> Application Explicit acc x) (Variable recName) conAppArgs
+                        conRawType =
+                            foldr
+                                (\field acc -> Pi Explicit (recordFieldName field) (recordFieldType field) acc)
+                                conApp
+                                fields
+                    _ <- checkPositive recName conRawType
+                    (elabConType, _) <- synthesizeElab paramContext conRawType
+                    let fullConType =
+                            foldr (\(_, p, ty) codom -> Pi Implicit p ty codom) elabConType allArgs
+                    let recordType = foldr (\(vis, p, ty) codom -> Pi vis p ty codom) (Universe lvl) allArgs
+                        conVars = map recordFieldName fields
+                        conValue = foldl (Application Explicit) (Variable conName) (map Variable conVars)
+                        projectionFor field =
+                            let recVar = Identifier "record"
+                                branch = CaseBranch conName conVars (Variable (recordFieldName field))
+                                body = Lambda Explicit recVar Nothing (Case (Variable recVar) Nothing [branch])
+                                value = foldr (\(_, p, _) b -> Lambda Implicit p Nothing b) body allArgs
+                                ty = foldr (\(_, p, t) b -> Pi Implicit p t b)
+                                         (Pi Explicit recVar (foldl (Application Explicit) (Variable recName) conAppArgs) (recordFieldType field))
+                                         allArgs
+                             in (recordFieldName field, ty, value)
+                        projectionBindings = map projectionFor fields
+                        ctxWithCon =
+                            extendContextDefinition conName fullConType (Variable conName) paramContext
+                        ctxWithProjections =
+                            foldr (\(fieldName, fieldType, fieldValue) ctx ->
+                                    extendContextDefinition fieldName fieldType fieldValue ctx)
+                                  ctxWithCon projectionBindings
+                    let recInfo =
+                            RecordInfo
+                                { recordName = recName
+                                , recordParams = params
+                                , recordUniverse = elabUniv
+                                , recordFields = fields
+                                , recordConName = conName
+                                }
+                        finalContext =
+                            ctxWithProjections
+                                { contextRecords =
+                                    Map.insert recName recInfo (contextRecords ctxWithCon)
+                                }
+                    solveUnivConstraints
+                    pure finalContext
+            )
+            (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
+
+checkClassDeclaration :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> [RecordField] -> Either TypeDiagnostic Context
+checkClassDeclaration context name params fields =
+    checkRecordDeclaration context name params (Universe (UFixed (-1))) fields Nothing
+
+checkInstanceDeclaration :: Context -> Identifier -> Expression -> [(Identifier, Expression)] -> Either TypeDiagnostic Context
+checkInstanceDeclaration context className headType fields = do
+    info <- case Map.lookup className (contextRecords context) of
+        Just x -> Right x
+        Nothing -> Left (TypeDiagnostic Nothing [] (UnboundVariable className))
+    let instanceName = Identifier ("instance_" <> unIdentifier className <> "_" <> Text.pack (show headType))
+        supplied = Map.fromList fields
+        ordered = traverse (\f -> maybe (Left (TypeDiagnostic Nothing [] (UnknownField (recordFieldName f) className))) Right (Map.lookup (recordFieldName f) supplied)) (recordFields info)
+        instanceType = Application Explicit (Variable className) headType
+    values <- ordered
+    let dict = foldl (Application Explicit) (Variable (recordConName info)) values
+    (updated, _, _) <- checkDefinition context instanceName (Just instanceType) dict
+    Right updated { contextInstances = Map.insertWith (++) className [instanceName] (contextInstances updated) }
+
 synthesize :: Context -> Expression -> Either TypeDiagnostic (Expression, Expression, [Goal])
 synthesize context rawExpr =
     evalStateT
@@ -1244,6 +1466,14 @@ renderTypeError typeError = case typeError of
             <> "\nProvide an explicit type annotation: (term : Type)"
     CannotMatchOnNonDataType term ->
         "Cannot pattern match on non-data type: " <> prettyExpression term
+    ExpectedDataType term ->
+        "Expected a record/data value, but encountered: " <> prettyExpression term
+    UnknownField (Identifier field) (Identifier recordName) ->
+        "Unknown field '" <> field <> "' on record '" <> recordName <> "'"
+    NoInstanceFound domain ->
+        "No instance found for " <> prettyExpression domain
+    AmbiguousInstance domain names ->
+        "Ambiguous instances for " <> prettyExpression domain <> ": " <> Text.intercalate ", " (map prettyIdentifier names)
     NonExhaustivePatternMatch (Identifier dName) missing ->
         "Non-exhaustive pattern match on data type '"
             <> dName
