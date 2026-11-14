@@ -14,7 +14,7 @@ module Parser (
     renderParseErrorWithSource,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), Visibility (..), Associativity (..), Fixity (..))
+import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Statement (..), UniverseLevel (..), Associativity (..), Visibility (..))
 import Control.Applicative (Alternative (..), optional)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -219,8 +219,8 @@ parseAtomicExpression env = do
             case nextTok of
                 Just (TokenNatural n) -> do
                     _ <- consumeToken
-                    pure (Universe (fromInteger n))
-                _ -> pure (Universe (-1))
+                    pure (Universe (UFixed (fromInteger n)))
+                _ -> pure (Universe (UFixed (-1)))
         Just (PosToken _ TokenKeywordId) -> Identity <$ consumeToken
         Just (PosToken _ TokenKeywordRefl) -> Reflexivity <$ consumeToken
         Just (PosToken _ TokenKeywordJ) -> J <$ consumeToken

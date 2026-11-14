@@ -14,7 +14,7 @@ module Evaluation (
     areDefinitionallyEqual,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), UniverseLevel (..), Visibility (..))
 import qualified Data.Map.Lazy as MapLazy
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -35,7 +35,7 @@ data Closure = Closure
 
 -- | Semantic values in the domain of interpretation.
 data Value
-    = VUniverse !Int
+    = VUniverse UniverseLevel
     | VPi !Visibility !Identifier !Value !Closure
     | VLambda !Visibility !Identifier !(Maybe Value) !Closure
     | VCon !Identifier ![(Visibility, Value)]

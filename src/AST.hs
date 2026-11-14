@@ -3,6 +3,7 @@ module AST (
     Visibility (..),
     Associativity (..),
     Fixity (..),
+    UniverseLevel (..),
     CaseBranch (..),
     Expression (..),
     Statement (..),
@@ -33,6 +34,18 @@ data Fixity = Fixity
     }
     deriving (Eq, Ord, Show)
 
+-- | Universe level representation.
+--   UFixed n   = concrete level n (e.g., Type 0, Type 1)
+--   UVar u     = level variable (for level polymorphism / typical ambiguity)
+--   UMax l1 l2 = maximum of two levels
+--   USucc l    = successor of a level (l + 1)
+data UniverseLevel
+    = UFixed !Int
+    | UVar !Int
+    | UMax !UniverseLevel !UniverseLevel
+    | USucc !UniverseLevel
+    deriving (Eq, Ord, Show)
+
 data CaseBranch = CaseBranch
     { branchConstructor :: !Identifier
     , branchBindings :: ![Identifier]
@@ -42,7 +55,7 @@ data CaseBranch = CaseBranch
 
 data Expression
     = Variable Identifier
-    | Universe !Int
+    | Universe UniverseLevel
     | Lambda Visibility Identifier (Maybe Expression) Expression
     | Application Visibility Expression Expression
     | Pi Visibility Identifier Expression Expression

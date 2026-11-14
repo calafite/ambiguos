@@ -2,7 +2,7 @@
 
 module Main (main) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), UniverseLevel (..), Visibility (..))
 import Data.Either (isLeft)
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef')
 import Data.Maybe (isJust)
@@ -162,7 +162,7 @@ testEvaluation ref = do
                 (Application Explicit (Variable (Identifier "f")) (Variable (Identifier "x")))
     let etaEq = areDefinitionallyEqual Map.empty eta1 (Variable (Identifier "f"))
     assert ref etaEq "eta equality (\\x -> f x) == f"
-    let p = Universe (-1)
+    let p = Universe (UFixed (-1))
         z = Zero
         k = Identifier "k"
         rec = Identifier "rec"

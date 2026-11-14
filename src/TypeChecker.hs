@@ -19,8 +19,8 @@ module TypeChecker (
     renderGoals,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Visibility (..))
-import Control.Monad (filterM)
+import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), UniverseLevel (..), Visibility (..))
+import Control.Monad (filterM, foldM)
 import Control.Monad.State.Strict (StateT (..), evalStateT, gets, modify, runStateT)
 import Control.Monad.Trans (lift)
 import Data.Map.Strict (Map)
@@ -79,6 +79,13 @@ data TypeError
     | NonStrictlyPositive Identifier Identifier
     | NonTerminatingDefinition Identifier
     | UnsolvedMetavariable Int
+    | UniverseInconsistency Text
+    deriving (Eq, Show)
+
+-- | Universe level constraints.
+data UnivConstraint
+    = ULeq UniverseLevel UniverseLevel  -- l1 <= l2
+    | ULt UniverseLevel UniverseLevel   -- l1 < l2  (i.e., l1 + 1 <= l2)
     deriving (Eq, Show)
 
 data TypeDiagnostic = TypeDiagnostic
@@ -104,7 +111,7 @@ builtinData =
             , DataInfo
                 { dataParams = []
                 , dataIndices = []
-                , dataUniverse = Universe (-1)
+                , dataUniverse = Universe (UFixed (-1))
                 , dataConstructors =
                     [ (Identifier "zero", NatType)
                     , (Identifier "successor", Pi Explicit (Identifier "_") NatType NatType)
@@ -116,7 +123,7 @@ builtinData =
             , DataInfo
                 { dataParams = []
                 , dataIndices = []
-                , dataUniverse = Universe (-1)
+                , dataUniverse = Universe (UFixed (-1))
                 , dataConstructors = []
                 }
             )
@@ -166,6 +173,8 @@ data ElabState = ElabState
     , metaRegistry :: !(Map Int MetaInfo)
     , activeSpan :: !(Maybe SourceSpan)
     , elabTrace  :: ![Text]
+    , nextUnivVar :: !Int
+    , univConstraints :: ![UnivConstraint]
     }
 
 type Elab a = StateT ElabState (Either TypeDiagnostic) a
@@ -211,6 +220,15 @@ freshMetaId = do
     modify (\s -> s{nextMetaId = idx + 1})
     pure idx
 
+freshUnivVar :: Elab Int
+freshUnivVar = do
+    idx <- gets nextUnivVar
+    modify (\s -> s{nextUnivVar = idx + 1})
+    pure idx
+
+addUnivConstraint :: UnivConstraint -> Elab ()
+addUnivConstraint c = modify (\s -> s{univConstraints = c : univConstraints s})
+
 freshMeta :: Context -> Expression -> Elab Expression
 freshMeta ctx expType = do
     mId <- freshMetaId
@@ -244,7 +262,7 @@ collectUnsolvedGoals = do
                 }
 
     zonkLocal ctx ident = do
-        let rawType = Map.findWithDefault (Universe (-1)) ident (contextTypes ctx)
+        let rawType = Map.findWithDefault (Universe (UFixed (-1))) ident (contextTypes ctx)
         zonkedType <- zonk rawType
         let normType = evaluateWeakHeadNormalForm (contextValues ctx) zonkedType
         pure (ident, normType)
@@ -333,11 +351,16 @@ extractUniverseLevel context expr = do
     let env = contextValues context
         w = evaluateWeakHeadNormalForm env z
     case w of
-        Universe n -> pure n
+        Universe lvl -> pure (levelToInt lvl)
         MetaVar i -> do
-            solvePattern context i [] (Universe (-1))
+            solvePattern context i [] (Universe (UFixed (-1)))
             pure (-1)
         other -> throwError (ExpectedUniverse other)
+  where
+    levelToInt (UFixed n) = n
+    levelToInt (UVar _) = -1
+    levelToInt (UMax l1 l2) = max (levelToInt l1) (levelToInt l2)
+    levelToInt (USucc l) = levelToInt l + 1
 
 unify :: Context -> Expression -> Expression -> Elab ()
 unify ctx e1 e2 = do
@@ -368,9 +391,9 @@ unify ctx e1 e2 = do
             | Just spineVars <- checkPatternSpine sp2
             , isLinear spineVars ->
                 tryElab (solvePattern ctx j spineVars z1) (unfoldAndRetry z1 z2)
-        (Universe i, [], Universe j, [])
-            | i <= j -> pure ()
-            | otherwise -> throwError (TypeMismatch (Universe j) (Universe i))
+        (Universe l1, [], Universe l2, []) -> do
+            addUnivConstraint (ULeq l1 l2)
+            pure ()
         _ -> case (z1, z2) of
             (Application v1 f1 a1, Application v2 f2 a2)
                 | v1 == v2 ->
@@ -428,10 +451,59 @@ unify ctx e1 e2 = do
                 | Just spineVars <- checkPatternSpine wsp2
                 , isLinear spineVars ->
                     tryElab (solvePattern ctx j spineVars w1) fallbackDefEq
-            (Universe i, [], Universe j, [])
-                | i <= j -> pure ()
-                | otherwise -> throwError (TypeMismatch (Universe j) (Universe i))
+            (Universe l1, [], Universe l2, []) -> do
+                addUnivConstraint (ULeq l1 l2)
+                pure ()
             _ -> fallbackDefEq
+
+-- | Solve universe level constraints. Collects all constraints from the
+-- elaboration state, flattens UMax/USucc into difference constraints, and
+-- checks for inconsistencies (e.g., Type : Type would create 0 <= -1).
+solveUnivConstraints :: Elab ()
+solveUnivConstraints = do
+    constraints <- gets univConstraints
+    case checkConstraints constraints of
+        Left msg -> throwError (UniverseInconsistency msg)
+        Right () -> pure ()
+
+-- | Check a list of universe constraints. Returns Left with an error message
+-- if any constraint is violated.
+checkConstraints :: [UnivConstraint] -> Either Text ()
+checkConstraints = foldM checkConstraint ()
+  where
+    checkConstraint () (ULeq l1 l2) = checkLeq l1 l2 0
+    checkConstraint () (ULt l1 l2) = checkLeq l1 l2 (-1)
+
+    -- | Check l1 <= l2 + c.
+    checkLeq l1 l2 c = case levelValue l1 of
+        Just v1 -> case levelValue l2 of
+            Just v2 ->
+                if v1 <= v2 + c
+                    then Right ()
+                    else Left
+                        ( "Universe level inconsistency: "
+                            <> prettyUnivLevel l1
+                            <> " <= "
+                            <> prettyUnivLevel l2
+                            <> " + "
+                            <> Text.pack (show c)
+                        )
+            Nothing -> Right ()  -- Can't fully check l2 yet; assume OK
+        Nothing -> Right ()  -- Can't fully check l1 yet; assume OK
+
+    -- | Compute the integer value of a universe level, if fully determined.
+    levelValue :: UniverseLevel -> Maybe Int
+    levelValue (UFixed n) = Just n
+    levelValue (UVar _) = Nothing
+    levelValue (UMax l1 l2) = max <$> levelValue l1 <*> levelValue l2
+    levelValue (USucc l) = (+1) <$> levelValue l
+
+    -- | Pretty-print a universe level for error messages.
+    prettyUnivLevel :: UniverseLevel -> Text
+    prettyUnivLevel (UFixed n) = Text.pack (show n)
+    prettyUnivLevel (UVar u) = "?u" <> Text.pack (show u)
+    prettyUnivLevel (UMax l1 l2) = "max(" <> prettyUnivLevel l1 <> "," <> prettyUnivLevel l2 <> ")"
+    prettyUnivLevel (USucc l) = "succ(" <> prettyUnivLevel l <> ")"
 
 instantiateLeadingImplicits :: Context -> Expression -> Expression -> Elab (Expression, Expression)
 instantiateLeadingImplicits context expr exprType = do
@@ -452,18 +524,18 @@ identityType =
     Pi
         Explicit
         (Identifier "A")
-        (Universe (-1))
+        (Universe (UFixed (-1)))
         ( Pi
             Explicit
             (Identifier "_")
             (Variable (Identifier "A"))
-            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Universe (-1)))
+            (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Universe (UFixed (-1))))
         )
 reflexivityType =
     Pi
         Explicit
         (Identifier "A")
-        (Universe (-1))
+        (Universe (UFixed (-1)))
         ( Pi
             Explicit
             (Identifier "x")
@@ -479,7 +551,7 @@ reflexivityType =
             )
         )
 jType =
-    Pi Explicit (Identifier "A") (Universe (-1))
+    Pi Explicit (Identifier "A") (Universe (UFixed (-1)))
         $ Pi Explicit (Identifier "x") (Variable (Identifier "A"))
         $ Pi Explicit (Identifier "P") motiveType
         $ Pi Explicit (Identifier "d") baseCaseType
@@ -495,7 +567,7 @@ jType =
                 Explicit
                 (Identifier "_")
                 (Application Explicit (Application Explicit (Application Explicit Identity (Variable (Identifier "A"))) (Variable (Identifier "x"))) (Variable (Identifier "y")))
-                (Universe (-1))
+                (Universe (UFixed (-1)))
             )
     baseCaseType =
         Application
@@ -510,7 +582,7 @@ abortType =
     Pi
         Explicit
         (Identifier "A")
-        (Universe (-1))
+        (Universe (UFixed (-1)))
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
 succType =
     Pi Explicit (Identifier "_") NatType NatType
@@ -520,7 +592,7 @@ natRecType =
         $ Pi Explicit (Identifier "s") sType
         $ Pi Explicit (Identifier "n") NatType codomainType
   where
-    pType = Pi Explicit (Identifier "_") NatType (Universe (-1))
+    pType = Pi Explicit (Identifier "_") NatType (Universe (UFixed (-1)))
     zType = Application Explicit (Variable (Identifier "P")) Zero
     nVar = Variable (Identifier "n")
     pn = Application Explicit (Variable (Identifier "P")) nVar
@@ -705,7 +777,7 @@ peelConstructorArgs ctx (v : vs) ty = do
             (rest, finalCodom) <- peelConstructorArgs ctx vs (substitute param (Variable v) codom)
             pure (dom : rest, finalCodom)
         Pi Implicit param _ codom -> do
-            m <- freshMeta ctx (Universe (-1))
+            m <- freshMeta ctx (Universe (UFixed (-1)))
             peelConstructorArgs ctx (v : vs) (substitute param m codom)
         other ->
             throwError (ExpectedFunctionType other)
@@ -716,13 +788,28 @@ synthesizeElab context expression = case expression of
     Variable identifier -> do
         rawType <- liftEither (lookupContext identifier context)
         instantiateLeadingImplicits context (Variable identifier) rawType
-    Universe n -> pure (Universe n, Universe (if n == -1 then 0 else n + 1))
+    Universe lvl -> do
+        case lvl of
+            UFixed n -> pure (Universe (UFixed n), Universe (UFixed (n + 1)))
+            UVar u -> do
+                u' <- freshUnivVar
+                addUnivConstraint (ULt (UVar u) (UVar u'))
+                pure (Universe (UVar u), Universe (UVar u'))
+            UMax l1 l2 -> do
+                u' <- freshUnivVar
+                addUnivConstraint (ULt l1 (UVar u'))
+                addUnivConstraint (ULt l2 (UVar u'))
+                pure (Universe (UMax l1 l2), Universe (UVar u'))
+            USucc l -> do
+                u' <- freshUnivVar
+                addUnivConstraint (ULt l (UVar u'))
+                pure (Universe (USucc l), Universe (UVar u'))
     Identity -> pure (Identity, identityType)
     Reflexivity -> pure (Reflexivity, reflexivityType)
     J -> pure (J, jType)
-    VoidType -> pure (VoidType, Universe (-1))
+    VoidType -> pure (VoidType, Universe (UFixed (-1)))
     Abort -> pure (Abort, abortType)
-    NatType -> pure (NatType, Universe (-1))
+    NatType -> pure (NatType, Universe (UFixed (-1)))
     Zero -> pure (Zero, NatType)
     Succ -> pure (Succ, succType)
     NatRec -> pure (NatRec, natRecType)
@@ -731,10 +818,10 @@ synthesizeElab context expression = case expression of
         case Map.lookup i substMap of
             Just term -> synthesizeElab context term
             Nothing -> do
-                tMeta <- freshMeta context (Universe (-1))
+                tMeta <- freshMeta context (Universe (UFixed (-1)))
                 pure (MetaVar i, tMeta)
     Hole mName -> do
-        tMeta <- freshMeta context (Universe (-1))
+        tMeta <- freshMeta context (Universe (UFixed (-1)))
         mId <- freshMetaId
         recordMeta mId mName context tMeta
         pure (MetaVar mId, tMeta)
@@ -765,7 +852,7 @@ synthesizeElab context expression = case expression of
         let finalType = substitute param zonkedDef zonkedBodyType
         pure (Let param (Just zonkedDefType) zonkedDef zonkedBody, finalType)
     Case target mMotive branches -> do
-        retMeta <- freshMeta context (Universe (-1))
+        retMeta <- freshMeta context (Universe (UFixed (-1)))
         elabCase <- checkElab context (Case target mMotive branches) retMeta
         zonkedRet <- zonk retMeta
         pure (elabCase, zonkedRet)
@@ -776,7 +863,7 @@ synthesizeElab context expression = case expression of
         (elabCodomain, codomainUniverse) <- synthesizeElab extendedContext codomain
         levelJ <- extractUniverseLevel extendedContext codomainUniverse
         let maxLevel = if levelI == -1 || levelJ == -1 then -1 else max levelI levelJ
-        pure (Pi vis parameter elabDomain elabCodomain, Universe maxLevel)
+        pure (Pi vis parameter elabDomain elabCodomain, Universe (UFixed maxLevel))
     Application Explicit function argument -> do
         (fnExpr, functionType) <- synthesizeElab context function
         (instantiatedFn, fnType) <- instantiateLeadingImplicits context fnExpr functionType
@@ -788,8 +875,8 @@ synthesizeElab context expression = case expression of
                 zonkedArg <- zonk elabArg
                 pure (Application Explicit instantiatedFn zonkedArg, substitute parameter zonkedArg codomain)
             MetaVar i -> do
-                paramDomain <- freshMeta context (Universe (-1))
-                codomainMeta <- freshMeta context (Universe (-1))
+                paramDomain <- freshMeta context (Universe (UFixed (-1)))
+                codomainMeta <- freshMeta context (Universe (UFixed (-1)))
                 let assumedPi = Pi Explicit (Identifier "_") paramDomain codomainMeta
                 solvePattern context i [] assumedPi
                 elabArg <- checkElab context argument paramDomain
@@ -885,8 +972,8 @@ checkElab context expression expType = case expression of
                     Just declType -> do
                         (elabDeclType, _) <- synthesizeElab context declType
                         zonk elabDeclType
-                    Nothing -> freshMeta context (Universe (-1))
-                codom <- freshMeta (extendContextType parameter dom context) (Universe (-1))
+                    Nothing -> freshMeta context (Universe (UFixed (-1)))
+                codom <- freshMeta (extendContextType parameter dom context) (Universe (UFixed (-1)))
                 solvePattern context i [] (Pi Explicit parameter dom codom)
                 checkElab context (Lambda Explicit parameter maybeDeclaredType body) (Pi Explicit parameter dom codom)
             (Lambda Implicit parameter maybeDeclaredType body, MetaVar i) -> do
@@ -894,8 +981,8 @@ checkElab context expression expType = case expression of
                     Just declType -> do
                         (elabDeclType, _) <- synthesizeElab context declType
                         zonk elabDeclType
-                    Nothing -> freshMeta context (Universe (-1))
-                codom <- freshMeta (extendContextType parameter dom context) (Universe (-1))
+                    Nothing -> freshMeta context (Universe (UFixed (-1)))
+                codom <- freshMeta (extendContextType parameter dom context) (Universe (UFixed (-1)))
                 solvePattern context i [] (Pi Implicit parameter dom codom)
                 checkElab context (Lambda Implicit parameter maybeDeclaredType body) (Pi Implicit parameter dom codom)
             (otherExpr, Pi Implicit binder domain codomain) -> do
@@ -911,7 +998,7 @@ checkElab context expression expType = case expression of
 
 -- | Peel Pi binders from a data's declared universe until reaching `Universe lvl`,
 -- returning the index binders and the universe level.
-peelIndexTelescope :: Context -> Expression -> Elab ([(Visibility, Identifier, Expression)], Int)
+peelIndexTelescope :: Context -> Expression -> Elab ([(Visibility, Identifier, Expression)], UniverseLevel)
 peelIndexTelescope ctx expr = go expr []
   where
     go e acc = do
@@ -1033,9 +1120,10 @@ checkDataDeclaration context dataName params univ constructors =
                                     }
                                 )
                                 fullConstructors
+                    solveUnivConstraints
                     pure finalContext
             )
-            (ElabState 0 Map.empty Map.empty Nothing [])
+            (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
   where
     checkCon pCtx allArgs (cName, cType) = do
         (elabCType, _) <- synthesizeElab pCtx cType
@@ -1054,9 +1142,10 @@ synthesize context rawExpr =
             zonkedType <- zonk rawType
             zonkedExpr <- zonk elabExpr
             goals <- collectUnsolvedGoals
+            solveUnivConstraints
             pure (zonkedExpr, zonkedType, goals)
         )
-        (ElabState 0 Map.empty Map.empty Nothing [])
+        (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
 
 check :: Context -> Expression -> Expression -> Either TypeDiagnostic (Expression, [Goal])
 check context rawExpr expType =
@@ -1067,9 +1156,10 @@ check context rawExpr expType =
             elabExpr <- checkElab context rawExpr zonkedExpected
             zonkedExpr <- zonk elabExpr
             goals <- collectUnsolvedGoals
+            solveUnivConstraints
             pure (zonkedExpr, goals)
         )
-        (ElabState 0 Map.empty Map.empty Nothing [])
+        (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
 
 checkDefinition ::
     Context ->
@@ -1107,10 +1197,11 @@ checkDefinition context name maybeDeclaredType bodyTerm =
                                 zonkedFinalType <- zonk zonkedType
                                 pure (zonkedBodyTerm, zonkedFinalType)
                     goals <- collectUnsolvedGoals
+                    solveUnivConstraints
                     let updatedContext = extendContextDefinition name finalType zonkedBody context
                     pure (updatedContext, finalType, goals)
             )
-            (ElabState 0 Map.empty Map.empty Nothing [])
+            (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
 
 renderGoals :: [Goal] -> Text
 renderGoals goals = Text.concat (map formatGoal goals)
@@ -1189,6 +1280,8 @@ renderTypeError typeError = case typeError of
             <> " because it was bound outside the metavariable's scope."
     UnsolvedMetavariable i ->
         "Unsolved metavariable: ?" <> Text.pack (show i)
+    UniverseInconsistency msg ->
+        "Universe inconsistency: " <> msg
 
 renderTypeDiagnostic :: Maybe FilePath -> Maybe Text -> TypeDiagnostic -> Text
 renderTypeDiagnostic mFile mSource diag =

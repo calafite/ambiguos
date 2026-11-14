@@ -10,7 +10,7 @@ module Pretty (
     parenRight,
 ) where
 
-import AST (Associativity (..), CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Visibility (..))
+import AST (Associativity (..), CaseBranch (..), Expression (..), Fixity (..), Identifier (..), UniverseLevel (..), Visibility (..))
 import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -69,9 +69,8 @@ prettyWithConfig config currentPrecedence expression =
                     prettyWithConfig config currentPrecedence e
                 Variable identifier ->
                     prettyIdentifier identifier
-                Universe (-1) -> "Type"
-                Universe 0 -> "Type 0"
-                Universe n -> "Type " <> Text.pack (show n)
+                Universe level ->
+                    prettyUniverseLevel level
                 Identity -> "Id"
                 Reflexivity -> "refl"
                 J -> "J"
@@ -177,6 +176,14 @@ isSymbolic (Identifier name) =
     case Text.uncons name of
         Just (c, _) -> c `elem` ("+-*/<>=!&|$%^~." :: String)
         Nothing -> False
+
+prettyUniverseLevel :: UniverseLevel -> Text
+prettyUniverseLevel (UFixed (-1)) = "Type"
+prettyUniverseLevel (UFixed 0) = "Type 0"
+prettyUniverseLevel (UFixed n) = "Type " <> Text.pack (show n)
+prettyUniverseLevel (UVar u) = "Type ?" <> Text.pack (show u)
+prettyUniverseLevel (UMax l1 l2) = "Type (max " <> prettyUniverseLevel l1 <> " " <> prettyUniverseLevel l2 <> ")"
+prettyUniverseLevel (USucc l) = "Type (succ " <> prettyUniverseLevel l <> ")"
 
 peanoToInteger :: Expression -> Maybe Integer
 peanoToInteger Zero = Just 0
