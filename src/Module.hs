@@ -71,6 +71,7 @@ loadModuleWithPaths searchPaths entry = do
     mergeContexts a b = Context
         { contextTypes = Map.union (contextTypes a) (contextTypes b)
         , contextValues = Map.union (contextValues a) (contextValues b)
+        , contextEnv = Map.union (contextEnv a) (contextEnv b)
         , contextLocals = contextLocals a ++ contextLocals b
         , contextData = Map.union (contextData a) (contextData b)
         , contextFixities = Map.union (contextFixities a) (contextFixities b)

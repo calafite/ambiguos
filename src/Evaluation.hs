@@ -6,7 +6,6 @@ module Evaluation (
     Closure (..),
     Environment,
     emptyEnvironment,
-    initEnvironment,
     evaluate,
     evaluateWeakHeadNormalForm,
     normalize,
@@ -18,7 +17,6 @@ import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), Pri
 import Data.List (foldl')
 import GHC.Float (isNaN)
 import qualified Data.Text
-import qualified Data.Map.Lazy as MapLazy
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -32,7 +30,7 @@ type Environment = Map Identifier Value
 data Closure = Closure
     { closureParam :: !Identifier
     , closureBody :: !Expression
-    , closureEnv :: !Environment
+    , closureEnv :: Environment
     }
     deriving (Eq, Show)
 
@@ -78,27 +76,6 @@ data Neutral
 
 emptyEnvironment :: Environment
 emptyEnvironment = Map.empty
-
-{- | Lazily initialize the top-level environment to permit mutually recursive or
-forward-referenced definitions without evaluation order deadlocks.
-Constructors bound to themselves are immediately initialized to canonical forms
-to prevent blackhole recursion.
--}
-initEnvironment :: Map Identifier Expression -> Environment
-initEnvironment defs = env
-  where
-    env = MapLazy.mapWithKey evalDef defs
-    evalDef ident expr = case expr of
-        Located _ inner -> evalDef ident inner
-        Variable v
-            | v == ident ->
-                if ident == Identifier "zero"
-                    then VZero
-                    else
-                        if ident == Identifier "successor" || ident == Identifier "succ"
-                            then VPrimSucc
-                            else VCon ident []
-        _ -> evaluate env expr
 
 lookupVar :: Identifier -> Environment -> Value
 lookupVar ident env =
@@ -471,29 +448,22 @@ quoteNeutral usedVars neu = case neu of
     NPrimOp operation args -> foldl (Application Explicit) (PrimOp operation) (map (quote usedVars) args)
 
 -- | Evaluates an expression to weak head normal form.
-evaluateWeakHeadNormalForm :: Map Identifier Expression -> Expression -> Expression
-evaluateWeakHeadNormalForm defs expr =
-    let env = initEnvironment defs
-        val = evaluate env expr
-        usedVars = Map.keysSet defs `Set.union` freeVariables expr
-     in quote usedVars val
+evaluateWeakHeadNormalForm :: Environment -> Expression -> Expression
+evaluateWeakHeadNormalForm env expr =
+    quote (Map.keysSet env `Set.union` freeVariables expr) (evaluate env expr)
 
 -- | Fully normalizes an expression (evaluates under binders).
-normalize :: Map Identifier Expression -> Expression -> Expression
-normalize defs expr =
-    let env = initEnvironment defs
-        val = evaluate env expr
-        usedVars = Map.keysSet defs `Set.union` freeVariables expr
-     in quote usedVars val
+normalize :: Environment -> Expression -> Expression
+normalize env expr =
+    quote (Map.keysSet env `Set.union` freeVariables expr) (evaluate env expr)
 
 -- | Definitional equality check with semantic eta-conversion.
-areDefinitionallyEqual :: Map Identifier Expression -> Expression -> Expression -> Bool
-areDefinitionallyEqual defs e1 e2 =
-    let env = initEnvironment defs
-        v1 = evaluate env e1
+areDefinitionallyEqual :: Environment -> Expression -> Expression -> Bool
+areDefinitionallyEqual env e1 e2 =
+    let v1 = evaluate env e1
         v2 = evaluate env e2
         usedVars =
-            Map.keysSet defs
+            Map.keysSet env
                 `Set.union` freeVariables e1
                 `Set.union` freeVariables e2
      in equalVal usedVars v1 v2

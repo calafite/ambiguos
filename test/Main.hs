@@ -246,7 +246,7 @@ testIntDefaults ref = do
                 Left diag -> modifyIORef' ref (+1) >> putStrLn ("FAIL: " ++ Text.unpack source ++ " should typecheck (" ++ Text.unpack (renderTypeDiagnostic Nothing Nothing diag) ++ ")")
                 Right (elaborated, inferred, _) -> do
                     assertEqual ref inferred expectedType ("inferred type of " ++ Text.unpack source)
-                    assertEqual ref (prettyExpression (normalize (contextValues ctx) elaborated)) expectedValue ("normalized value of " ++ Text.unpack source)
+                    assertEqual ref (prettyExpression (normalize (contextEnv ctx) elaborated)) expectedValue ("normalized value of " ++ Text.unpack source)
     checkExpr emptyContext "42" (PrimType PTInt) "42"
     checkExpr emptyContext "42 - 42 * 0" (PrimType PTInt) "42"
     checkExpr emptyContext "42 ^ 10" (PrimType PTInt) "17080198121677824"
@@ -259,6 +259,32 @@ testIntDefaults ref = do
         Right _ -> pure ()
     checkExpr ctx "length [1, 2, 3]" (PrimType PTInt) "3"
     checkExpr ctx "take 2 [10, 20, 30]" (Application Explicit (Variable (Identifier "List")) (PrimType PTInt)) "[10, 20]"
+
+testIncrementalEnvironment :: IORef Int -> IO ()
+testIncrementalEnvironment ref = do
+    prelude <- readProgram "prelude.amb"
+    (ctx0, errors, _) <- verifyStmts emptyContext prelude
+    assert ref (errors == 0) "prelude loads for incremental environment tests"
+    let define ctx name source = do
+            body <- parseOk ref source
+            case checkDefinition ctx (Identifier name) Nothing body of
+                Left diag -> modifyIORef' ref (+1) >> putStrLn ("FAIL: definition " ++ Text.unpack name ++ " should typecheck (" ++ Text.unpack (renderTypeDiagnostic Nothing Nothing diag) ++ ")") >> pure ctx
+                Right (ctx', _, _) -> pure ctx'
+        normalizeExpr ctx source expected = do
+            expr <- parseOk ref source
+            case synthesize ctx expr of
+                Left diag -> modifyIORef' ref (+1) >> putStrLn ("FAIL: " ++ Text.unpack source ++ " should normalize (" ++ Text.unpack (renderTypeDiagnostic Nothing Nothing diag) ++ ")")
+                Right (elaborated, _, _) -> assertEqual ref (prettyExpression (normalize (contextEnv ctx) elaborated)) expected ("normalized value of " ++ Text.unpack source)
+    ctx1 <- define ctx0 "a" "2"
+    ctx2 <- define ctx1 "b" "a"
+    ctx3 <- define ctx2 "a" "successor a"
+    normalizeExpr ctx3 "a" "3"
+    normalizeExpr ctx3 "b" "2"
+    normalizeExpr ctx3 "a == b" "false"
+    normalizeExpr ctx3 "let a = 2 in let a = a + 1 in a" "3"
+    normalizeExpr ctx3 "(\\(a : Int) -> a) 10" "10"
+    normalizeExpr ctx3 "not true" "false"
+    normalizeExpr ctx3 "first (pair 1 2)" "1"
 
 --------------------------------------------------------------
 -- 5. TypeChecker negative tests
@@ -306,6 +332,7 @@ main = do
     testEvaluation failed
     testTypeCheckerPositive failed
     testIntDefaults failed
+    testIncrementalEnvironment failed
     testTypeCheckerNegative failed
     n <- readIORef failed
     if n == 0

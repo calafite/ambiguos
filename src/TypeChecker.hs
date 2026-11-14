@@ -34,7 +34,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Diagnostics (SourceSpan (..), formatSourceSnippet)
 import Parser (defaultFixityEnv)
-import Evaluation (areDefinitionallyEqual, evaluateWeakHeadNormalForm)
+import Evaluation (Environment, Value (..), areDefinitionallyEqual, emptyEnvironment, evaluate, evaluateWeakHeadNormalForm)
 import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
 
@@ -105,6 +105,7 @@ data TypeDiagnostic = TypeDiagnostic
 data Context = Context
     { contextTypes :: Map Identifier Expression
     , contextValues :: Map Identifier Expression
+    , contextEnv :: Environment
     , contextLocals :: [Identifier]
     , contextData :: Map Identifier DataInfo
     , contextFixities :: Map Identifier Fixity
@@ -152,6 +153,12 @@ emptyContext =
                 [ (Identifier "zero", Zero)
                 , (Identifier "successor", Succ)
                 ])
+        , contextEnv =
+            Map.union (Map.map (evaluate emptyEnvironment) primitiveValues)
+                (Map.fromList
+                    [ (Identifier "zero", VZero)
+                    , (Identifier "successor", VPrimSucc)
+                    ])
         , contextLocals = []
         , contextData = builtinData
         , contextFixities = defaultFixityEnv
@@ -182,15 +189,33 @@ extendContextType :: Identifier -> Expression -> Context -> Context
 extendContextType identifier expressionType context =
     context
         { contextTypes = Map.insert identifier expressionType (contextTypes context)
+        , contextEnv = Map.delete identifier (contextEnv context)
         , contextLocals = identifier : contextLocals context
         }
 
 extendContextDefinition :: Identifier -> Expression -> Expression -> Context -> Context
 extendContextDefinition identifier expressionType expressionValue context =
-    context
-        { contextTypes = Map.insert identifier expressionType (contextTypes context)
-        , contextValues = Map.insert identifier expressionValue (contextValues context)
-        }
+    let oldEnv = contextEnv context
+        value = if isFunctionExpression expressionValue
+            then evaluate recursiveEnv expressionValue
+            else evaluate oldEnv expressionValue
+        recursiveEnv = Map.insert identifier (evaluate recursiveEnv expressionValue) oldEnv
+     in context
+            { contextTypes = Map.insert identifier expressionType (contextTypes context)
+            , contextValues = Map.insert identifier expressionValue (contextValues context)
+            , contextEnv = Map.insert identifier value (contextEnv context)
+            }
+
+-- Recursive definitions are represented by closures whose environment contains
+-- their own binding.  Restricting this knot to lambdas is important: a bare
+-- value redefinition such as `a = successor a` must read the old environment,
+-- not recursively force itself.
+isFunctionExpression :: Expression -> Bool
+isFunctionExpression expression = case expression of
+    Located _ inner -> isFunctionExpression inner
+    Annotation inner _ -> isFunctionExpression inner
+    Lambda _ _ _ _ -> True
+    _ -> False
 
 lookupContext :: Identifier -> Context -> Either TypeError Expression
 lookupContext identifier context =
@@ -281,7 +306,7 @@ collectUnsolvedGoals = do
     toGoal (mId, info) = do
         zonkedExp <- zonk (metaInfoExpected info)
         let ctx = metaInfoContext info
-            env = contextValues ctx
+            env = contextEnv ctx
             normExp = evaluateWeakHeadNormalForm env zonkedExp
         locals <- traverse (zonkLocal ctx) (contextLocals ctx)
         pure
@@ -295,7 +320,7 @@ collectUnsolvedGoals = do
     zonkLocal ctx ident = do
         let rawType = Map.findWithDefault (Universe (UFixed (-1))) ident (contextTypes ctx)
         zonkedType <- zonk rawType
-        let normType = evaluateWeakHeadNormalForm (contextValues ctx) zonkedType
+        let normType = evaluateWeakHeadNormalForm (contextEnv ctx) zonkedType
         pure (ident, normType)
 
 zonk :: Expression -> Elab Expression
@@ -379,7 +404,7 @@ solvePattern ctx mId spine rhs = do
 extractUniverseLevel :: Context -> Expression -> Elab Int
 extractUniverseLevel context expr = do
     z <- zonk expr
-    let env = contextValues context
+    let env = contextEnv context
         w = evaluateWeakHeadNormalForm env z
     case w of
         Universe lvl -> pure (levelToInt lvl)
@@ -461,7 +486,7 @@ unify ctx e1 e2 = do
   where
     unfoldAndRetry :: Expression -> Expression -> Elab ()
     unfoldAndRetry t1 t2 = do
-        let env = contextValues ctx
+        let env = contextEnv ctx
             w1 = evaluateWeakHeadNormalForm env t1
             w2 = evaluateWeakHeadNormalForm env t2
             (wh1, wsp1) = unfoldApp w1
@@ -539,7 +564,7 @@ checkConstraints = foldM checkConstraint ()
 instantiateLeadingImplicits :: Context -> Expression -> Expression -> Elab (Expression, Expression)
 instantiateLeadingImplicits context expr exprType = do
     zonkedType <- zonk exprType
-    let env = contextValues context
+    let env = contextEnv context
         whnfType = evaluateWeakHeadNormalForm env zonkedType
     case whnfType of
         Pi Implicit param domain codomain -> do
@@ -565,7 +590,7 @@ resolveInstance context domain = do
             [ name
             | name <- contextLocals context
             , Just ty <- [Map.lookup name (contextTypes context)]
-            , areDefinitionallyEqual (contextValues context) ty domain
+            , areDefinitionallyEqual (contextEnv context) ty domain
             ]
         registeredCandidates = case className of
             Nothing -> []
@@ -573,7 +598,7 @@ resolveInstance context domain = do
                 [ instanceName
                 | instanceName <- Map.findWithDefault [] name (contextInstances context)
                 , Just ty <- [Map.lookup instanceName (contextTypes context)]
-                , areDefinitionallyEqual (contextValues context) ty domain
+                , areDefinitionallyEqual (contextEnv context) ty domain
                 ]
         candidates = Set.toList (Set.fromList (localCandidates ++ registeredCandidates))
     case candidates of
@@ -648,10 +673,6 @@ abortType =
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
 succType =
     Pi Explicit (Identifier "_") NatType NatType
-
-intSuccType :: Expression
-intSuccType =
-    Pi Explicit (Identifier "_") (PrimType PTInt) (PrimType PTInt)
 natRecType =
     Pi Explicit (Identifier "P") pType
         $ Pi Explicit (Identifier "z") zType
@@ -756,7 +777,7 @@ isConNonAbsurd context dataInfo paramArgs indexArgs dataTypeName cName = do
 extractConIndexArgs ::
     Context -> Expression -> [Expression] -> Identifier -> Elab (Maybe [Expression])
 extractConIndexArgs context expr paramArgs dataTypeName = do
-    let env = contextValues context
+    let env = contextEnv context
         w = evaluateWeakHeadNormalForm env expr
     case w of
         Pi _ _ _ codom -> extractConIndexArgs context codom paramArgs dataTypeName
@@ -846,7 +867,7 @@ compilePatternCase context target clauses = do
             Nothing | name == Identifier "successor" -> 1
             Nothing -> 0
             Just ty -> countExplicit ty
-        countExplicit ty = case evaluateWeakHeadNormalForm (contextValues context) ty of
+        countExplicit ty = case evaluateWeakHeadNormalForm (contextEnv context) ty of
             Pi Explicit _ _ codom -> 1 + countExplicit codom
             Pi _ _ _ codom -> countExplicit codom
             _ -> 0
@@ -985,7 +1006,7 @@ numericBinary context op left right = do
 peelConstructorArgs :: Context -> [Identifier] -> Expression -> Elab ([Expression], Expression)
 peelConstructorArgs _ [] ty = pure ([], ty)
 peelConstructorArgs ctx (v : vs) ty = do
-    let env = contextValues ctx
+    let env = contextEnv ctx
         wTy = evaluateWeakHeadNormalForm env ty
     case wTy of
         Pi Explicit param dom codom -> do
@@ -1120,7 +1141,7 @@ synthesizeElab context expression = case expression of
         | isSuccessorExpression successorExpr -> do
             (elabArg, argType0) <- synthesizeElab context argument
             argType <- zonk argType0
-            let argWhnf = evaluateWeakHeadNormalForm (contextValues context) argType
+            let argWhnf = evaluateWeakHeadNormalForm (contextEnv context) argType
             case argWhnf of
                 NatType -> pure (Application Explicit Succ elabArg, NatType)
                 PrimType PTInt -> pure (intSuccessorExpression elabArg, PrimType PTInt)
@@ -1137,7 +1158,7 @@ synthesizeElab context expression = case expression of
         (fnExpr, functionType) <- synthesizeElab context function
         (instantiatedFn, fnType) <- instantiateLeadingImplicits context fnExpr functionType
         zonkedType <- zonk fnType
-        let env = contextValues context
+        let env = contextEnv context
         case evaluateWeakHeadNormalForm env zonkedType of
             Pi Explicit parameter domain codomain -> do
                 elabArg <- checkElab context argument domain
@@ -1156,7 +1177,7 @@ synthesizeElab context expression = case expression of
     Application Implicit function argument -> do
         (fnExpr, functionType) <- synthesizeElab context function
         zonkedType <- zonk functionType
-        let env = contextValues context
+        let env = contextEnv context
         case evaluateWeakHeadNormalForm env zonkedType of
             Pi Implicit parameter domain codomain -> do
                 elabArg <- checkElab context argument domain
@@ -1167,7 +1188,7 @@ synthesizeElab context expression = case expression of
     Application Instance function argument -> do
         (fnExpr, functionType) <- synthesizeElab context function
         zonkedType <- zonk functionType
-        let env = contextValues context
+        let env = contextEnv context
         case evaluateWeakHeadNormalForm env zonkedType of
             Pi Instance parameter domain codomain -> do
                 elabArg <- checkElab context argument domain
@@ -1200,7 +1221,7 @@ checkElab context expression expType = case expression of
         pure result
     _ -> do
         zonkedExpected <- zonk expType
-        let env = contextValues context
+        let env = contextEnv context
             whnfExpected = evaluateWeakHeadNormalForm env zonkedExpected
         case (expression, whnfExpected) of
             (Literal (LitNat n), NatType) -> pure (Literal (LitNat n))
@@ -1336,7 +1357,7 @@ peelIndexTelescope :: Context -> Expression -> Elab ([(Visibility, Identifier, E
 peelIndexTelescope ctx expr = go expr []
   where
     go e acc = do
-        let env = contextValues ctx
+        let env = contextEnv ctx
             w = evaluateWeakHeadNormalForm env e
         case w of
             Pi vis p ty codom -> go codom ((vis, p, ty) : acc)
@@ -1466,7 +1487,11 @@ checkDataDeclaration context dataName params univ constructors =
                 foldr (\(_, p, ty) codom -> Pi Implicit p ty codom) elabCType allArgs
         pure ((cName, elabCType), (cName, fullConType))
     addConstructor (cName, cType) ctx =
-        extendContextDefinition cName cType (Variable cName) ctx
+        ctx
+            { contextTypes = Map.insert cName cType (contextTypes ctx)
+            , contextValues = Map.insert cName (Variable cName) (contextValues ctx)
+            , contextEnv = Map.insert cName (VCon cName []) (contextEnv ctx)
+            }
 
 checkRecordDeclaration ::
     Context ->
@@ -1517,7 +1542,11 @@ checkRecordDeclaration context recName params univ fields mConName =
                              in (recordFieldName field, ty, value)
                         projectionBindings = map projectionFor fields
                         ctxWithCon =
-                            extendContextDefinition conName fullConType (Variable conName) paramContext
+                            paramContext
+                                { contextTypes = Map.insert conName fullConType (contextTypes paramContext)
+                                , contextValues = Map.insert conName (Variable conName) (contextValues paramContext)
+                                , contextEnv = Map.insert conName (VCon conName []) (contextEnv paramContext)
+                                }
                         ctxWithProjections =
                             foldr (\(fieldName, fieldType, fieldValue) ctx ->
                                     extendContextDefinition fieldName fieldType fieldValue ctx)
