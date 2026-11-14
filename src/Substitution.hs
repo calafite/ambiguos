@@ -28,7 +28,13 @@ freeVariables expression = case expression of
     Hole _ -> Set.empty
     MetaVar _ -> Set.empty
     Located _ e -> freeVariables e
-    Case target branches ->
+    Case target (Just (mv, mtype)) branches ->
+        let targetVars = freeVariables target
+            motiveVars = Set.delete mv (freeVariables mtype)
+            branchVars (CaseBranch _ vars body) =
+                foldr Set.delete (freeVariables body) vars
+         in Set.unions (targetVars : motiveVars : map branchVars branches)
+    Case target Nothing branches ->
         let targetVars = freeVariables target
             branchVars (CaseBranch _ vars body) =
                 foldr Set.delete (freeVariables body) vars
@@ -85,8 +91,11 @@ substitute targetVariable replacementExpression sourceExpression =
         Hole h -> Hole h
         MetaVar i -> MetaVar i
         Located sp e -> Located sp (substitute targetVariable replacementExpression e)
-        Case target branches ->
-            Case (substitute targetVariable replacementExpression target) (map substBranch branches)
+        Case target mMotive branches ->
+            Case
+                (substitute targetVariable replacementExpression target)
+                (fmap (\(mv, mt) -> (mv, substitute targetVariable replacementExpression mt)) mMotive)
+                (map substBranch branches)
           where
             substBranch (CaseBranch con vars body)
                 | elem targetVariable vars = CaseBranch con vars body
@@ -194,7 +203,23 @@ alphaEquivalent leftExpression rightExpression =
         (NatRec, NatRec) -> True
         (Hole _, Hole _) -> True
         (MetaVar i, MetaVar j) -> i == j
-        (Case t1 bs1, Case t2 bs2) ->
+        (Case t1 (Just (mv1, mtype1)) bs1, Case t2 (Just (mv2, mtype2)) bs2) ->
+            let freshMotive = freshIdentifier mv1 (Set.unions [freeVariables mtype1, freeVariables mtype2])
+                mtype1' = substitute mv1 (Variable freshMotive) mtype1
+                mtype2' = substitute mv2 (Variable freshMotive) mtype2
+             in alphaEquivalent t1 t2
+                && alphaEquivalent mtype1' mtype2'
+                && length bs1 == length bs2
+                && and (zipWith branchEq bs1 bs2)
+          where
+            branchEq (CaseBranch c1 v1 b1) (CaseBranch c2 v2 b2) =
+                c1 == c2
+                    && length v1 == length v2
+                    && let used = Set.unions [freeVariables b1, freeVariables b2]
+                           freshNames = snd (foldr (\v (u, acc) -> let f = freshIdentifier v u in (Set.insert f u, f : acc)) (used, []) v1)
+                           substAll vs freshes body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs freshes)
+                        in alphaEquivalent (substAll v1 freshNames b1) (substAll v2 freshNames b2)
+        (Case t1 Nothing bs1, Case t2 Nothing bs2) ->
             alphaEquivalent t1 t2 && length bs1 == length bs2 && and (zipWith branchEq bs1 bs2)
           where
             branchEq (CaseBranch c1 v1 b1) (CaseBranch c2 v2 b2) =
@@ -204,6 +229,8 @@ alphaEquivalent leftExpression rightExpression =
                            freshNames = snd (foldr (\v (u, acc) -> let f = freshIdentifier v u in (Set.insert f u, f : acc)) (used, []) v1)
                            substAll vs freshes body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs freshes)
                         in alphaEquivalent (substAll v1 freshNames b1) (substAll v2 freshNames b2)
+        (Case _ (Just _) _, Case _ Nothing _) -> False
+        (Case _ Nothing _, Case _ (Just _) _) -> False
         (Let p1 ty1 d1 b1, Let p2 ty2 d2 b2) ->
             let typesMatch = case (ty1, ty2) of
                     (Nothing, Nothing) -> True

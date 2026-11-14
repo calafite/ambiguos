@@ -124,7 +124,7 @@ evaluate env expression = case expression of
         VPi vis param (evaluate env dom) (Closure param codom env)
     Application vis fn arg ->
         vApp vis (evaluate env fn) (evaluate env arg)
-    Case target branches ->
+    Case target _ branches ->
         evalCase env (evaluate env target) branches
     Identity ->
         VPrimIdentity []
@@ -338,7 +338,7 @@ quoteNeutral usedVars neu = case neu of
                             vars
                     bVal = evaluate newEnv body
                  in CaseBranch con freshes (quote newUsed bVal)
-         in Case (quoteNeutral usedVars target) (map quoteBranch branches)
+         in Case (quoteNeutral usedVars target) Nothing (map quoteBranch branches)
     NJ a x p d y prf ->
         foldl
             (Application Explicit)
@@ -400,7 +400,7 @@ areDefinitionallyEqual defs e1 e2 =
 equalVal :: Set Identifier -> Value -> Value -> Bool
 equalVal usedVars v1 v2 = case (v1, v2) of
     (VUniverse i, VUniverse j) ->
-        i == -1 || j == -1 || i == j
+        i == j
     (VNatType, VNatType) ->
         True
     (VZero, VZero) ->
