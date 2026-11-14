@@ -2,15 +2,22 @@
 
 module Parser (
     ParseError (..),
-    parseExpression,
+    FixityEnv,
+    defaultFixityEnv,
+    fixityOf,    parseExpression,
+    parseExpressionWith,
     parseStatement,
+    parseStatementWith,
     parseProgram,
+    parseProgramWith,
     renderParseError,
     renderParseErrorWithSource,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Statement (..), Visibility (..), Associativity (..), Fixity (..))
 import Control.Applicative (Alternative (..), optional)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Lexer (
@@ -23,6 +30,32 @@ import Lexer (
     tokenize,
   )
 import Diagnostics (SourceSpan (..), formatSourceSnippet)
+
+-- | Environment mapping operators to their declared fixity.
+type FixityEnv = Map Identifier Fixity
+
+-- | Default fixity environment matching standard math and prelude.amb operators.
+defaultFixityEnv :: FixityEnv
+defaultFixityEnv = Map.fromList
+    [ (Identifier ".", Fixity AssocRight 9)
+    , (Identifier "^", Fixity AssocRight 8)
+    , (Identifier "*", Fixity AssocLeft 7)
+    , (Identifier "+", Fixity AssocLeft 6)
+    , (Identifier "-", Fixity AssocLeft 6)
+    , (Identifier "++", Fixity AssocRight 5)
+    , (Identifier "==", Fixity AssocNone 4)
+    , (Identifier "/=", Fixity AssocNone 4)
+    , (Identifier "<", Fixity AssocNone 4)
+    , (Identifier "<=", Fixity AssocNone 4)
+    , (Identifier ">", Fixity AssocNone 4)
+    , (Identifier ">=", Fixity AssocNone 4)
+    , (Identifier "&&", Fixity AssocRight 3)
+    , (Identifier "||", Fixity AssocRight 2)
+    , (Identifier "$", Fixity AssocRight 0)
+    ]
+
+fixityOf :: FixityEnv -> Identifier -> Fixity
+fixityOf env op = Map.findWithDefault (Fixity AssocLeft 9) op env
 
 data ParseError
     = ErrorLexical !LexError
@@ -129,20 +162,22 @@ parseIdentifier = parseNamed <|> parseParenOp
                 pure (Identifier "successor")
             _ -> empty
 
-    parseParenOp = do
-        mPt <- peekPosToken
-        case mPt of
-            Just (PosToken _ TokenLeftParen) -> do
-                _ <- consumeToken
-                pt <- consumeToken
-                case tokenValue pt of
-                    TokenOperator ident -> do
-                        expectToken TokenRightParen "')'"
-                        pure ident
-                    other -> Parser $ \_ -> Left (ExpectedToken "operator" other (tokenPos pt))
-            _ -> empty
-
 desugarNatural :: Integer -> Expression
+
+-- | Parse a parenthesized operator, e.g. `(+)`.
+parseParenOp :: Parser Identifier
+parseParenOp = do
+    mPt <- peekPosToken
+    case mPt of
+        Just (PosToken _ TokenLeftParen) -> do
+            _ <- consumeToken
+            pt <- consumeToken
+            case tokenValue pt of
+                TokenOperator ident -> do
+                    expectToken TokenRightParen "')'"
+                    pure ident
+                other -> Parser $ \_ -> Left (ExpectedToken "operator" other (tokenPos pt))
+        _ -> empty
 desugarNatural n
     | n <= 0 = Zero
     | otherwise = Application Explicit Succ (desugarNatural (n - 1))
@@ -155,14 +190,14 @@ desugarList (x : xs) =
         (Application Explicit (Variable (Identifier "cons")) x)
         (desugarList xs)
 
-parseListElements :: Parser [Expression]
-parseListElements = do
-    firstElem <- expressionParser
-    restElems <- many (expectToken TokenComma "','" *> expressionParser)
+parseListElements :: FixityEnv -> Parser [Expression]
+parseListElements env = do
+    firstElem <- expressionParser env
+    restElems <- many (expectToken TokenComma "','" *> expressionParser env)
     pure (firstElem : restElems)
 
-parseListLiteral :: Parser Expression
-parseListLiteral = do
+parseListLiteral :: FixityEnv -> Parser Expression
+parseListLiteral env = do
     _ <- consumeToken
     nextToken <- peekToken
     case nextToken of
@@ -170,12 +205,12 @@ parseListLiteral = do
             _ <- consumeToken
             pure (desugarList [])
         _ -> do
-            elems <- parseListElements
+            elems <- parseListElements env
             expectToken TokenRightBracket "']'"
             pure (desugarList elems)
 
-parseAtomicExpression :: Parser Expression
-parseAtomicExpression = do
+parseAtomicExpression :: FixityEnv -> Parser Expression
+parseAtomicExpression env = do
     mPt <- peekPosToken
     case mPt of
         Just (PosToken _ TokenKeywordType) -> do
@@ -198,7 +233,7 @@ parseAtomicExpression = do
         Just (PosToken _ (TokenNatural n)) -> desugarNatural n <$ consumeToken
         Just (PosToken _ (TokenHole mIdent)) -> Hole mIdent <$ consumeToken
         Just (PosToken _ (TokenIdentifier ident)) -> Variable ident <$ consumeToken
-        Just (PosToken _ TokenLeftBracket) -> parseListLiteral
+        Just (PosToken _ TokenLeftBracket) -> parseListLiteral env
         Just (PosToken _ TokenLeftParen) -> do
             _ <- consumeToken
             nextTok <- peekToken
@@ -208,88 +243,106 @@ parseAtomicExpression = do
                     expectToken TokenRightParen "')'"
                     pure (Variable op)
                 _ -> do
-                    expr <- expressionParser
+                    expr <- expressionParser env
                     expectToken TokenRightParen "')'"
                     pure expr
         Just (PosToken pos other) -> Parser $ \_ -> Left (UnexpectedToken other pos)
         Nothing -> Parser $ \_ -> Left (UnexpectedEndOfInput Nothing)
 
-parseAppArgument :: Parser (Visibility, Expression)
-parseAppArgument = parseImplicitOverride <|> parseExplicitArg
+parseAppArgument :: FixityEnv -> Parser (Visibility, Expression)
+parseAppArgument env = parseImplicitOverride <|> parseExplicitArg env
   where
     parseImplicitOverride = do
         expectToken TokenLeftBrace "'{'"
-        expr <- expressionParser
+        expr <- expressionParser env
         expectToken TokenRightBrace "'}'"
         pure (Implicit, expr)
-    parseExplicitArg = do
-        expr <- parseAtomicExpression
+    parseExplicitArg e = do
+        expr <- parseAtomicExpression e
         pure (Explicit, expr)
 
-parseApplication :: Parser Expression
-parseApplication = do
-    headExpr <- parseAtomicExpression
-    argExprs <- many parseAppArgument
+parseApplication :: FixityEnv -> Parser Expression
+parseApplication env = do
+    headExpr <- parseAtomicExpression env
+    argExprs <- many (parseAppArgument env)
     pure (foldl (\acc (vis, arg) -> Application vis acc arg) headExpr argExprs)
 
-parseDependentArrow :: Parser Expression
-parseDependentArrow = parseExplicit <|> parseImplicit
+parseDependentArrow :: FixityEnv -> Parser Expression
+parseDependentArrow env = parseExplicit <|> parseImplicit
   where
     parseExplicit = do
         expectToken TokenLeftParen "'('"
         parameterNames <- some parseIdentifier
         expectToken TokenColon "':'"
-        domainType <- expressionParser
+        domainType <- expressionParser env
         expectToken TokenRightParen "')'"
         expectToken TokenArrow "'->'"
-        codomainType <- expressionParser
+        codomainType <- expressionParser env
         pure (foldr (\name acc -> Pi Explicit name domainType acc) codomainType parameterNames)
 
     parseImplicit = do
         expectToken TokenLeftBrace "'{'"
         parameterNames <- some parseIdentifier
         expectToken TokenColon "':'"
-        domainType <- expressionParser
+        domainType <- expressionParser env
         expectToken TokenRightBrace "'}'"
         expectToken TokenArrow "'->'"
-        codomainType <- expressionParser
+        codomainType <- expressionParser env
         pure (foldr (\name acc -> Pi Implicit name domainType acc) codomainType parameterNames)
 
-parseNonDependentArrow :: Parser Expression
-parseNonDependentArrow = do
-    domain <- parseApplication
+parseNonDependentArrow :: FixityEnv -> Parser Expression
+parseNonDependentArrow env = do
+    domain <- parseInfix env 0
     isArrow <- (True <$ expectToken TokenArrow "'->'") <|> pure False
     if isArrow
         then do
-            codomain <- expressionParser
+            codomain <- expressionParser env
             pure (Pi Explicit (Identifier "_") domain codomain)
         else pure domain
 
-parseArrowOrApplication :: Parser Expression
-parseArrowOrApplication = parseDependentArrow <|> parseNonDependentArrow
+parseArrowOrApplication :: FixityEnv -> Parser Expression
+parseArrowOrApplication env = parseDependentArrow env <|> parseNonDependentArrow env
 
-parseInfix :: Parser Expression
-parseInfix = do
-    left <- parseArrowOrApplication
-    rest <- many parseOpRight
-    pure (foldl (\acc (op, right) -> Application Explicit (Application Explicit (Variable op) acc) right) left rest)
+-- | Precedence-climbing parser for infix operators.
+-- `minPrec` is the minimum precedence an operator must have to be consumed.
+parseInfix :: FixityEnv -> Int -> Parser Expression
+parseInfix env minPrec = do
+    left <- parseApplication env
+    precLoop left minPrec
   where
-    parseOpRight = do
-        nextTok <- peekToken
-        case nextTok of
-            Just (TokenOperator op) -> do
+    precLoop left curMin = do
+        mOp <- peekOperatorFixity env
+        case mOp of
+            Just (op, p, assoc) | p >= curMin -> do
                 _ <- consumeToken
-                right <- parseArrowOrApplication
-                pure (op, right)
-            _ -> empty
+                let nextMin = case assoc of
+                        AssocLeft -> p + 1
+                        AssocRight -> p
+                        AssocNone -> p + 1
+                right <- parseInfix env nextMin
+                -- For non-associative operators, reject chaining at the same level.
+                let contMin = case assoc of
+                        AssocNone -> p + 1
+                        _ -> curMin
+                precLoop (Application Explicit (Application Explicit (Variable op) left) right) contMin
+            _ -> pure left
 
-parseAnnotation :: Parser Expression
-parseAnnotation = do
-    termExpr <- parseInfix
+    peekOperatorFixity :: FixityEnv -> Parser (Maybe (Identifier, Int, Associativity))
+    peekOperatorFixity e = do
+        mPt <- peekPosToken
+        case mPt of
+            Just (PosToken _ (TokenOperator op)) ->
+                let f = fixityOf e op
+                 in pure (Just (op, fixityPrec f, fixityAssoc f))
+            _ -> pure Nothing
+
+parseAnnotation :: FixityEnv -> Parser Expression
+parseAnnotation env = do
+    termExpr <- parseArrowOrApplication env
     isAnnotated <- (True <$ expectToken TokenColon "':'") <|> pure False
     if isAnnotated
         then do
-            annType <- expressionParser
+            annType <- expressionParser env
             pure (Annotation termExpr annType)
         else pure termExpr
 
@@ -297,14 +350,14 @@ data ParameterGroup
     = SimpleParameters [Identifier]
     | TypedParameters Visibility [Identifier] Expression
 
-parseParameterGroup :: Parser ParameterGroup
-parseParameterGroup = parseTypedParen <|> parseTypedBrace <|> parseSimple
+parseParameterGroup :: FixityEnv -> Parser ParameterGroup
+parseParameterGroup env = parseTypedParen <|> parseTypedBrace <|> parseSimple
   where
     parseTypedParen = do
         expectToken TokenLeftParen "'('"
         names <- some parseIdentifier
         expectToken TokenColon "':'"
-        paramType <- expressionParser
+        paramType <- expressionParser env
         expectToken TokenRightParen "')'"
         pure (TypedParameters Explicit names paramType)
 
@@ -312,7 +365,7 @@ parseParameterGroup = parseTypedParen <|> parseTypedBrace <|> parseSimple
         expectToken TokenLeftBrace "'{'"
         names <- some parseIdentifier
         expectToken TokenColon "':'"
-        paramType <- expressionParser
+        paramType <- expressionParser env
         expectToken TokenRightBrace "'}'"
         pure (TypedParameters Implicit names paramType)
 
@@ -320,12 +373,12 @@ parseParameterGroup = parseTypedParen <|> parseTypedBrace <|> parseSimple
         names <- some parseIdentifier
         pure (SimpleParameters names)
 
-parseLambda :: Parser Expression
-parseLambda = do
+parseLambda :: FixityEnv -> Parser Expression
+parseLambda env = do
     expectToken TokenBackslash "'\\'"
-    paramGroups <- some parseParameterGroup
+    paramGroups <- some (parseParameterGroup env)
     expectToken TokenArrow "'->'"
-    body <- expressionParser
+    body <- expressionParser env
     pure (foldr expandGroup body paramGroups)
   where
     expandGroup (SimpleParameters names) acc =
@@ -333,117 +386,157 @@ parseLambda = do
     expandGroup (TypedParameters vis names pType) acc =
         foldr (\name inner -> Lambda vis name (Just pType) inner) acc names
 
-parseLet :: Parser Expression
-parseLet = do
+parseLet :: FixityEnv -> Parser Expression
+parseLet env = do
     expectToken TokenKeywordLet "'let'"
     name <- parseIdentifier
-    maybeType <- optional (expectToken TokenColon "':'" *> expressionParser)
+    maybeType <- optional (expectToken TokenColon "':'" *> expressionParser env)
     expectToken TokenEquals "'='"
-    valExpr <- expressionParser
+    valExpr <- expressionParser env
     expectToken TokenKeywordIn "'in'"
-    bodyExpr <- expressionParser
+    bodyExpr <- expressionParser env
     pure (Let name maybeType valExpr bodyExpr)
 
-parseCaseBranch :: Parser CaseBranch
-parseCaseBranch = do
+parseCaseBranch :: FixityEnv -> Parser CaseBranch
+parseCaseBranch env = do
     con <- parseIdentifier
     bindings <- many parseIdentifier
     expectToken TokenArrow "'->'"
-    body <- expressionParser
+    body <- expressionParser env
     pure (CaseBranch con bindings body)
 
-parseCase :: Parser Expression
-parseCase = do
+parseCase :: FixityEnv -> Parser Expression
+parseCase env = do
     expectToken TokenKeywordCase "'case'"
-    target <- expressionParser
+    target <- expressionParser env
+    mMotive <- parseMotive
     expectToken TokenKeywordOf "'of'"
     nextTok <- peekToken
     branches <- case nextTok of
         Just TokenLeftBrace -> parseBraced
         _ -> parsePiped
-    pure (Case target branches)
+    pure (Case target mMotive branches)
   where
+    parseMotive :: Parser (Maybe (Identifier, Expression))
+    parseMotive = do
+        nextTok <- peekToken
+        case nextTok of
+            Just TokenKeywordAs -> do
+                _ <- consumeToken
+                mv <- parseIdentifier
+                expectToken TokenKeywordReturn "'return'"
+                mt <- expressionParser env
+                pure (Just (mv, mt))
+            _ -> pure Nothing
     parseBraced = do
         expectToken TokenLeftBrace "'{'"
-        bs <- many (parseCaseBranch <* optional (expectToken TokenSemicolon "';'"))
+        bs <- many (parseCaseBranch env <* optional (expectToken TokenSemicolon "';'"))
         expectToken TokenRightBrace "'}'"
         pure bs
     parsePiped = do
         _ <- optional (expectToken TokenPipe "'|'")
-        b1 <- parseCaseBranch
-        bs <- many (expectToken TokenPipe "'|'" *> parseCaseBranch)
+        b1 <- parseCaseBranch env
+        bs <- many (expectToken TokenPipe "'|'" *> parseCaseBranch env)
         pure (b1 : bs)
 
-expressionParser :: Parser Expression
-expressionParser = withSpan $ do
+expressionParser :: FixityEnv -> Parser Expression
+expressionParser env = withSpan $ do
     nextTok <- peekToken
     case nextTok of
-        Just TokenBackslash -> parseLambda
-        Just TokenKeywordLet -> parseLet
-        Just TokenKeywordCase -> parseCase
-        _ -> parseAnnotation
+        Just TokenBackslash -> parseLambda env
+        Just TokenKeywordLet -> parseLet env
+        Just TokenKeywordCase -> parseCase env
+        _ -> parseAnnotation env
 
-parseDataParameter :: Parser [(Visibility, Identifier, Expression)]
-parseDataParameter = parseExplicit <|> parseImplicit
+parseDataParameter :: FixityEnv -> Parser [(Visibility, Identifier, Expression)]
+parseDataParameter env = parseExplicit <|> parseImplicit
   where
     parseExplicit = do
         expectToken TokenLeftParen "'('"
         names <- some parseIdentifier
         expectToken TokenColon "':'"
-        ty <- expressionParser
+        ty <- expressionParser env
         expectToken TokenRightParen "')'"
         pure [(Explicit, n, ty) | n <- names]
     parseImplicit = do
         expectToken TokenLeftBrace "'{'"
         names <- some parseIdentifier
         expectToken TokenColon "':'"
-        ty <- expressionParser
+        ty <- expressionParser env
         expectToken TokenRightBrace "'}'"
         pure [(Implicit, n, ty) | n <- names]
 
-parseConstructorDecl :: Parser (Identifier, Expression)
-parseConstructorDecl = do
+parseConstructorDecl :: FixityEnv -> Parser (Identifier, Expression)
+parseConstructorDecl env = do
     cName <- parseIdentifier
     expectToken TokenColon "':'"
-    cType <- expressionParser
+    cType <- expressionParser env
     pure (cName, cType)
 
-parseDataDeclaration :: Parser Statement
-parseDataDeclaration = do
+parseFixityOp :: Parser Identifier
+parseFixityOp = parseParenOp <|> parseOperatorIdent
+  where
+    parseOperatorIdent = do
+        mPt <- peekPosToken
+        case mPt of
+            Just (PosToken _ (TokenOperator op)) -> do
+                _ <- consumeToken
+                pure op
+            _ -> empty
+
+parseFixityDeclaration :: FixityEnv -> Parser Statement
+parseFixityDeclaration _env = do
+    assoc <- (AssocLeft <$ expectToken TokenKeywordInfixL "'infixl'")
+        <|> (AssocRight <$ expectToken TokenKeywordInfixR "'infixr'")
+        <|> (AssocNone <$ expectToken TokenKeywordInfix "'infix'")
+    mPt <- peekPosToken
+    case mPt of
+        Just (PosToken _ (TokenNatural n)) -> do
+            _ <- consumeToken
+            let prec = fromInteger n
+            ops <- many parseFixityOp
+            pure (FixityDeclaration assoc prec ops)
+        _ -> Parser $ \_ -> Left (UnexpectedEndOfInput Nothing)
+
+parseDataDeclaration :: FixityEnv -> Parser Statement
+parseDataDeclaration env = do
     expectToken TokenKeywordData "'data'"
     name <- parseIdentifier
-    paramGroups <- many parseDataParameter
+    paramGroups <- many (parseDataParameter env)
     expectToken TokenColon "':'"
-    univ <- expressionParser
+    univ <- expressionParser env
     expectToken TokenKeywordWhere "'where'"
-    constrs <- parseBraced <|> many parseConstructorDecl
+    constrs <- parseBraced <|> many (parseConstructorDecl env)
     pure (DataDeclaration name (concat paramGroups) univ constrs)
   where
     parseBraced = do
         expectToken TokenLeftBrace "'{'"
-        cs <- many (parseConstructorDecl <* optional (expectToken TokenSemicolon "';'"))
+        cs <- many (parseConstructorDecl env <* optional (expectToken TokenSemicolon "';'"))
         expectToken TokenRightBrace "'}'"
         pure cs
 
-parseDefinition :: Parser Statement
-parseDefinition = do
+parseDefinition :: FixityEnv -> Parser Statement
+parseDefinition env = do
     expectToken TokenKeywordDef "'def'"
     name <- parseIdentifier
-    maybeType <- optional (expectToken TokenColon "':'" *> expressionParser)
+    maybeType <- optional (expectToken TokenColon "':'" *> expressionParser env)
     expectToken TokenEquals "'='"
-    bodyTerm <- expressionParser
+    bodyTerm <- expressionParser env
     pure (Definition name maybeType bodyTerm)
 
-parseEvaluation :: Parser Statement
-parseEvaluation = Evaluation <$> expressionParser
+parseEvaluation :: FixityEnv -> Parser Statement
+parseEvaluation env = Evaluation <$> expressionParser env
 
-statementParser :: Parser Statement
-statementParser = do
+statementParser :: FixityEnv -> Parser Statement
+statementParser env = do
     nextTok <- peekToken
     case nextTok of
-        Just TokenKeywordData -> parseDataDeclaration
-        Just TokenKeywordDef -> parseDefinition
-        _ -> parseEvaluation
+        Just TokenKeywordData -> parseDataDeclaration env
+        Just TokenKeywordDef -> parseDefinition env
+        Just TokenKeywordInfixL -> parseFixityDeclaration env
+        Just TokenKeywordInfixR -> parseFixityDeclaration env
+        Just TokenKeywordInfix -> parseFixityDeclaration env
+        _ -> parseEvaluation env
 
 runCompleteParser :: Parser a -> [PosToken] -> Either ParseError a
 runCompleteParser parser tokens =
@@ -453,32 +546,46 @@ runCompleteParser parser tokens =
         Left err -> Left err
 
 parseExpression :: Text -> Either ParseError Expression
-parseExpression input = do
+parseExpression = parseExpressionWith defaultFixityEnv
+
+parseExpressionWith :: FixityEnv -> Text -> Either ParseError Expression
+parseExpressionWith env input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
         Right toks -> Right toks
-    runCompleteParser expressionParser tokens
+    runCompleteParser (expressionParser env) tokens
 
 parseStatement :: Text -> Either ParseError Statement
-parseStatement input = do
+parseStatement = parseStatementWith defaultFixityEnv
+
+parseStatementWith :: FixityEnv -> Text -> Either ParseError Statement
+parseStatementWith env input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
         Right toks -> Right toks
-    runCompleteParser statementParser tokens
+    runCompleteParser (statementParser env) tokens
 
 parseProgram :: Text -> Either ParseError [Statement]
-parseProgram input = do
+parseProgram = parseProgramWith defaultFixityEnv
+
+parseProgramWith :: FixityEnv -> Text -> Either ParseError [Statement]
+parseProgramWith env input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
         Right toks -> Right toks
-    parseAll tokens
+    parseAll env tokens
   where
-    parseAll [] = Right []
-    parseAll toks@(PosToken pos t : _) = do
-        (stmt, rest) <- runParser statementParser toks
+    parseAll :: FixityEnv -> [PosToken] -> Either ParseError [Statement]
+    parseAll _ [] = Right []
+    parseAll e toks@(PosToken pos t : _) = do
+        (stmt, rest) <- runParser (statementParser e) toks
         if length rest == length toks
             then Left (UnexpectedToken t pos)
-            else (stmt :) <$> parseAll rest
+            else case stmt of
+                FixityDeclaration assoc prec ops ->
+                    let e' = foldr (\op ex -> Map.insert op (Fixity assoc prec) ex) e ops
+                     in (stmt :) <$> parseAll e' rest
+                _ -> (stmt :) <$> parseAll e rest
 
 renderParseError :: ParseError -> Text
 renderParseError = renderParseErrorWithSource Nothing Nothing
