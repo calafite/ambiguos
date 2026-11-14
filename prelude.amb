@@ -430,26 +430,30 @@ def odd : Nat -> Bool
 
 
 {- --------------------------------------------------------------------------
-   9. Church Lists & Higher-Order Combinators
+   9. Inductive Lists & Higher-Order Combinators
    -------------------------------------------------------------------------- -}
 
-def List : Type -> Type
-  = \A -> (R : Type) -> R -> (A -> R -> R) -> R
+infixr 5 ++
 
-def nil : {A : Type} -> List A
-  = \(R : Type) -> \(n : R) -> \(c : A -> R -> R) -> n
-
-def cons : {A : Type} -> A -> List A -> List A
-  = \x xs -> \(R : Type) -> \(n : R) -> \(c : A -> R -> R) -> c x (xs R n c)
+data List (A : Type) : Type where
+  { nil  : List A
+  ; cons : A -> List A -> List A
+  }
 
 def foldRight : {A B : Type} -> (A -> B -> B) -> B -> List A -> B
-  = \f initial xs -> xs B initial f
+  = \f initial xs -> case xs of
+      { nil        -> initial
+      ; cons x xs  -> f x (foldRight f initial xs)
+      }
 
 def foldr : {A B : Type} -> (A -> B -> B) -> B -> List A -> B
   = foldRight
 
 def foldLeft : {A B : Type} -> (B -> A -> B) -> B -> List A -> B
-  = \f initial xs -> xs (B -> B) (\acc -> acc) (\x rec -> \acc -> rec (f acc x)) initial
+  = \f initial xs -> case xs of
+      { nil        -> initial
+      ; cons x xs  -> foldLeft f (f initial x) xs
+      }
 
 def foldl : {A B : Type} -> (B -> A -> B) -> B -> List A -> B
   = foldLeft
@@ -458,11 +462,16 @@ def length : {A : Type} -> List A -> Nat
   = \xs -> foldRight (\_ -> \(accumulator : Nat) -> successor accumulator) 0 xs
 
 def map : {A B : Type} -> (A -> B) -> List A -> List B
-  = \f xs -> \(R : Type) -> \(n : R) -> \(c : B -> R -> R) ->
-      xs R n (\(x : A) -> \(recursiveResult : R) -> c (f x) recursiveResult)
+  = \f xs -> case xs of
+      { nil        -> nil
+      ; cons x xs  -> cons (f x) (map f xs)
+      }
 
 def append : {A : Type} -> List A -> List A -> List A
-  = \xs ys -> xs (List A) ys (\(x : A) -> \(rec : List A) -> cons x rec)
+  = \xs ys -> case xs of
+      { nil        -> ys
+      ; cons x xs  -> cons x (append xs ys)
+      }
 
 def (++) : {A : Type} -> List A -> List A -> List A
   = append
@@ -474,10 +483,13 @@ def reverse : {A : Type} -> List A -> List A
   = \xs -> foldLeft (\acc x -> cons x acc) nil xs
 
 def filter : {A : Type} -> (A -> Bool) -> List A -> List A
-  = \predicate xs -> foldRight (\x acc -> case predicate x of
-      { true  -> cons x acc
-      ; false -> acc
-      }) nil xs
+  = \predicate xs -> case xs of
+      { nil        -> nil
+      ; cons x xs  -> case predicate x of
+          { true  -> cons x (filter predicate xs)
+          ; false -> filter predicate xs
+          }
+      }
 
 def all : {A : Type} -> (A -> Bool) -> List A -> Bool
   = \predicate xs -> foldRight (\x acc -> (predicate x) && acc) true xs
@@ -486,52 +498,58 @@ def any : {A : Type} -> (A -> Bool) -> List A -> Bool
   = \predicate xs -> foldRight (\x acc -> (predicate x) || acc) false xs
 
 def isNil : {A : Type} -> List A -> Bool
-  = \xs -> xs Bool true (\_ _ -> false)
+  = \xs -> case xs of
+      { nil        -> true
+      ; cons _ _   -> false
+      }
 
 def isCons : {A : Type} -> List A -> Bool
   = \xs -> not (isNil xs)
 
 def headMaybe : {A : Type} -> List A -> Maybe A
-  = \xs -> xs (Maybe A) nothing (\x _ -> just x)
+  = \xs -> case xs of
+      { nil        -> nothing
+      ; cons x _   -> just x
+      }
 
 def head : {A : Type} -> A -> List A -> A
   = \defaultValue xs -> fromMaybe defaultValue (headMaybe xs)
 
 def tail : {A : Type} -> List A -> List A
-  = \xs -> first (foldRight (\x p -> pair (second p) (cons x (second p))) (pair nil nil) xs)
+  = \xs -> case xs of
+      { nil        -> nil
+      ; cons _ xs  -> xs
+      }
 
 def replicate : {A : Type} -> Nat -> A -> List A
   = \count x -> natRec (\_ -> List A) nil (\_ -> \rec -> cons x rec) count
 
 def take : {A : Type} -> Nat -> List A -> List A
-  = \count xs ->
-      natRec (\_ -> List A -> List A)
-             (\_ -> nil)
-             (\_ -> \rec -> \list -> case headMaybe list of
-                 { nothing -> nil
-                 ; just h  -> cons h (rec (tail list))
-                 })
-             count
-             xs
+  = \count xs -> case count of
+      { zero        -> nil
+      ; successor k -> case xs of
+          { nil        -> nil
+          ; cons x xs  -> cons x (take k xs)
+          }
+      }
 
 def drop : {A : Type} -> Nat -> List A -> List A
-  = \count xs ->
-      natRec (\_ -> List A -> List A)
-             (\list -> list)
-             (\_ -> \rec -> \list -> rec (tail list))
-             count
-             xs
+  = \count xs -> case count of
+      { zero        -> xs
+      ; successor k -> case xs of
+          { nil        -> nil
+          ; cons _ xs  -> drop k xs
+          }
+      }
 
 def zipWith : {A B C : Type} -> (A -> B -> C) -> List A -> List B -> List C
-  = \f xs ys ->
-      xs (List B -> List C)
-         (\_ -> nil)
-         (\x rec remaining ->
-             case headMaybe remaining of
-               { nothing -> nil
-               ; just y  -> cons (f x y) (rec (tail remaining))
-               })
-         ys
+  = \f xs ys -> case xs of
+      { nil        -> nil
+      ; cons x xs  -> case ys of
+          { nil        -> nil
+          ; cons y ys  -> cons (f x y) (zipWith f xs ys)
+          }
+      }
 
 def zip : {A B : Type} -> List A -> List B -> List (Pair A B)
   = \xs ys -> zipWith (\a b -> pair a b) xs ys

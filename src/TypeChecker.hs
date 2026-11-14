@@ -977,11 +977,9 @@ checkTermination name body =
              in case h of
                     Variable ident | ident == nm ->
                         if any (\(_, a) -> case a of Variable v -> Set.member v small; _ -> False) spine
-                            then pure ()
+                            then mapM_ (checkCalls nm params small . snd) spine >> pure ()
                             else Left (NonTerminatingDefinition nm)
-                    _ -> pure ()
-            >> checkCalls nm params small f
-            >> checkCalls nm params small arg
+                    _ -> checkCalls nm params small f >> checkCalls nm params small arg
         Pi _ _ dom codom ->
             checkCalls nm params small dom >> checkCalls nm params small codom
         Let _ _ d b ->

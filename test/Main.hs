@@ -191,6 +191,7 @@ verifyStmts ctx (s : ss) =
             case checkDataDeclaration ctx name params univ constrs of
                 Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
                 Right ctx' -> do (ctx'', e, g) <- verifyStmts ctx' ss; pure (ctx'', e, g)
+        FixityDeclaration _ _ _ -> verifyStmts ctx ss
         Evaluation expr ->
             case synthesize ctx expr of
                 Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
