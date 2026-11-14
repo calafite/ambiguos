@@ -22,7 +22,7 @@ module TypeChecker (
     renderGoals,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Pattern (..), RecordField (..), RecordInfo (..), UniverseLevel (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), RecordField (..), RecordInfo (..), UniverseLevel (..), Visibility (..))
 import Control.Monad (filterM, foldM)
 import Control.Monad.State.Strict (StateT (..), evalStateT, gets, modify, runStateT)
 import Control.Monad.Trans (lift)
@@ -143,21 +143,39 @@ emptyContext :: Context
 emptyContext =
     Context
         { contextTypes =
-            Map.fromList
+            Map.union primitiveTypes (Map.fromList
                 [ (Identifier "zero", NatType)
                 , (Identifier "successor", Pi Explicit (Identifier "_") NatType NatType)
-                ]
+                ])
         , contextValues =
-            Map.fromList
+            Map.union primitiveValues (Map.fromList
                 [ (Identifier "zero", Zero)
                 , (Identifier "successor", Succ)
-                ]
+                ])
         , contextLocals = []
         , contextData = builtinData
         , contextFixities = defaultFixityEnv
         , contextRecords = Map.empty
         , contextInstances = Map.empty
         }
+
+primitiveBindings :: [(Identifier, PrimOp)]
+primitiveBindings =
+    [ (Identifier "primNatToInt", NatToInt)
+    , (Identifier "intToNat", IntToNat), (Identifier "intAbs", IntAbs), (Identifier "clampToNat", ClampToNat)
+    , (Identifier "primIntAdd", IntAdd), (Identifier "primIntSub", IntSub), (Identifier "primIntMul", IntMul)
+    , (Identifier "primIntDiv", IntDiv), (Identifier "primIntMod", IntMod), (Identifier "primIntNeg", IntNeg)
+    , (Identifier "primIntEq", IntEq), (Identifier "primIntLt", IntLt), (Identifier "primIntLe", IntLe)
+    , (Identifier "primFloatAdd", FloatAdd), (Identifier "primFloatSub", FloatSub), (Identifier "primFloatMul", FloatMul), (Identifier "primFloatDiv", FloatDiv), (Identifier "primFloatEq", FloatEq)
+    , (Identifier "primStringAppend", StringAppend), (Identifier "primStringEq", StringEq), (Identifier "primStringLength", StringLength)
+    , (Identifier "primCharEq", CharEq), (Identifier "primCharToInt", CharToInt), (Identifier "primIntToChar", IntToChar)
+    ]
+
+primitiveTypes :: Map Identifier Expression
+primitiveTypes = Map.fromList [(name, primitiveOpType operation) | (name, operation) <- primitiveBindings]
+
+primitiveValues :: Map Identifier Expression
+primitiveValues = Map.fromList [(name, PrimOp operation) | (name, operation) <- primitiveBindings]
 
 extendContextType :: Identifier -> Expression -> Context -> Context
 extendContextType identifier expressionType context =
@@ -851,6 +869,112 @@ compilePatternCase context target clauses = do
                  in [CaseBranch con args nested]
     pure (concatMap (uncurry compileTop) clauses)
 
+primitiveOpType :: PrimOp -> Expression
+primitiveOpType operation = case operation of
+    NatToInt -> unary NatType (PrimType PTInt)
+    IntToNat -> unary (PrimType PTInt) (maybeType NatType)
+    IntAbs -> unary (PrimType PTInt) NatType
+    ClampToNat -> unary (PrimType PTInt) NatType
+    IntNeg -> unary (PrimType PTInt) (PrimType PTInt)
+    FloatNeg -> unary (PrimType PTFloat) (PrimType PTFloat)
+    IntAdd -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntSub -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMul -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
+    IntDiv -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMod -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
+    IntEq -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLt -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLe -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool"))
+    FloatAdd -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatSub -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatMul -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatDiv -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat)
+    FloatEq -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool")); FloatLt -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool")); FloatLe -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool"))
+    StringAppend -> binary (PrimType PTString) (PrimType PTString) (PrimType PTString); StringEq -> binary (PrimType PTString) (PrimType PTString) (Variable (Identifier "Bool"))
+    CharEq -> binary (PrimType PTChar) (PrimType PTChar) (Variable (Identifier "Bool"))
+    IntToFloat -> unary (PrimType PTInt) (PrimType PTFloat); FloatToInt -> unary (PrimType PTFloat) (PrimType PTInt); FloatTruncate -> unary (PrimType PTFloat) (PrimType PTInt)
+    CharToInt -> unary (PrimType PTChar) (PrimType PTInt); IntToChar -> unary (PrimType PTInt) (PrimType PTChar)
+    StringLength -> unary (PrimType PTString) NatType; StringToList -> unary (PrimType PTString) (Variable (Identifier "List")); ListToString -> unary (Variable (Identifier "List")) (PrimType PTString)
+    IntToString -> unary (PrimType PTInt) (PrimType PTString); FloatToString -> unary (PrimType PTFloat) (PrimType PTString); CharToString -> unary (PrimType PTChar) (PrimType PTString)
+    FloatSqrt -> unary (PrimType PTFloat) (PrimType PTFloat); FloatSin -> unary (PrimType PTFloat) (PrimType PTFloat); FloatCos -> unary (PrimType PTFloat) (PrimType PTFloat); FloatExp -> unary (PrimType PTFloat) (PrimType PTFloat); FloatLog -> unary (PrimType PTFloat) (PrimType PTFloat)
+    StringIndex -> binary (PrimType PTString) NatType (Variable (Identifier "Maybe")); StringSlice -> binary (PrimType PTString) (PrimType PTInt) (PrimType PTString)
+  where
+    unary domain codomain = Pi Explicit (Identifier "_") domain codomain
+    binary left right codomain = Pi Explicit (Identifier "_") left (Pi Explicit (Identifier "_") right codomain)
+    maybeType element = Application Explicit (Variable (Identifier "Maybe")) element
+
+-- Numeric operators are kept as ordinary prelude names for Nat, but their
+-- saturated applications are elaborated here so the concrete primitive type
+-- of either operand can drive promotion before the old Nat definition is
+-- consulted.
+numericOperator :: Identifier -> Bool
+numericOperator name = name `elem`
+    map Identifier ["+" , "-", "*", "/", "==", "/=", "<", "<=", ">", ">="]
+
+numericKind :: Expression -> Maybe PrimType
+numericKind ty = case ty of
+    PrimType p -> Just p
+    _ -> Nothing
+
+numericPrimitive :: Identifier -> PrimType -> Maybe PrimOp
+numericPrimitive name kind = case (name, kind) of
+    (Identifier "+", PTInt) -> Just IntAdd
+    (Identifier "-", PTInt) -> Just IntSub
+    (Identifier "*", PTInt) -> Just IntMul
+    (Identifier "/", PTInt) -> Just IntDiv
+    (Identifier "==", PTInt) -> Just IntEq
+    (Identifier "<", PTInt) -> Just IntLt
+    (Identifier "<=", PTInt) -> Just IntLe
+    (Identifier ">", PTInt) -> Just IntLt
+    (Identifier ">=", PTInt) -> Just IntLe
+    (Identifier "/=", PTInt) -> Just IntEq
+    (Identifier "+", PTFloat) -> Just FloatAdd
+    (Identifier "-", PTFloat) -> Just FloatSub
+    (Identifier "*", PTFloat) -> Just FloatMul
+    (Identifier "/", PTFloat) -> Just FloatDiv
+    (Identifier "==", PTFloat) -> Just FloatEq
+    (Identifier "<", PTFloat) -> Just FloatLt
+    (Identifier "<=", PTFloat) -> Just FloatLe
+    (Identifier "/=", PTFloat) -> Just FloatEq
+    _ -> Nothing
+
+coerceNumeric :: PrimType -> Expression -> Expression -> Expression
+coerceNumeric target expr fromType = case (target, fromType) of
+    (PTInt, NatType) -> Application Explicit (PrimOp NatToInt) expr
+    (PTFloat, NatType) -> Application Explicit (PrimOp IntToFloat)
+        (Application Explicit (PrimOp NatToInt) expr)
+    (PTFloat, PrimType PTInt) -> Application Explicit (PrimOp IntToFloat) expr
+    _ -> expr
+
+numericBinary :: Context -> Identifier -> Expression -> Expression -> Elab (Expression, Expression)
+numericBinary context op left right = do
+    (elabLeft, leftType0) <- synthesizeElab context left
+    (elabRight, rightType0) <- synthesizeElab context right
+    leftType <- zonk leftType0
+    rightType <- zonk rightType0
+    let leftNat = leftType == NatType
+        rightNat = rightType == NatType
+        leftPrim = numericKind leftType
+        rightPrim = numericKind rightType
+        resultKind = case (leftPrim, rightPrim) of
+            (Just PTFloat, _) -> Just PTFloat
+            (_, Just PTFloat) -> Just PTFloat
+            (Just PTInt, _) -> Just PTInt
+            (_, Just PTInt) -> Just PTInt
+            _ | leftNat && rightNat -> Nothing
+            _ -> Nothing
+        comparison = op `elem` map Identifier ["==", "/=", "<", "<=", ">", ">="]
+    case resultKind of
+        Just kind ->
+            case numericPrimitive op kind of
+                Just primitive -> do
+                    let target = PrimType kind
+                        l' = coerceNumeric kind elabLeft leftType
+                        r' = coerceNumeric kind elabRight rightType
+                        resultType = if comparison then Variable (Identifier "Bool") else target
+                        (firstArg, secondArg) = if op `elem` map Identifier [">", ">="] then (r', l') else (l', r')
+                        core = Application Explicit (Application Explicit (PrimOp primitive) firstArg) secondArg
+                        result = if op == Identifier "/=" then Application Explicit (Variable (Identifier "not")) core else core
+                    pure (result, resultType)
+                Nothing -> throwError (TypeMismatch (PrimType kind) leftType)
+        Nothing
+            | leftNat && rightNat ->
+                pure (Application Explicit (Application Explicit (Variable op) elabLeft) elabRight,
+                      if comparison then Variable (Identifier "Bool") else NatType)
+            | otherwise -> throwError (TypeMismatch leftType rightType)
+
 peelConstructorArgs :: Context -> [Identifier] -> Expression -> Elab ([Expression], Expression)
 peelConstructorArgs _ [] ty = pure ([], ty)
 peelConstructorArgs ctx (v : vs) ty = do
@@ -900,6 +1024,13 @@ synthesizeElab context expression = case expression of
     Zero -> pure (Zero, NatType)
     Succ -> pure (Succ, succType)
     NatRec -> pure (NatRec, natRecType)
+    Literal (LitNat n) -> pure (Literal (LitNat n), NatType)
+    Literal (LitInt _) -> pure (expression, PrimType PTInt)
+    Literal (LitFloat _) -> pure (expression, PrimType PTFloat)
+    Literal (LitChar _) -> pure (expression, PrimType PTChar)
+    Literal (LitString _) -> pure (expression, PrimType PTString)
+    PrimType primitiveType -> pure (PrimType primitiveType, Universe (UFixed (-1)))
+    PrimOp operation -> pure (expression, primitiveOpType operation)
     MetaVar i -> do
         substMap <- gets metaSubst
         case Map.lookup i substMap of
@@ -973,6 +1104,17 @@ synthesizeElab context expression = case expression of
         let constructor = Variable (recordConName recInfo)
             applied = foldl (Application Explicit) constructor ordered
         synthesizeElab context applied
+    Application Explicit (Application Explicit (Variable op) left) right
+        | numericOperator op -> numericBinary context op left right
+    Application Explicit successorExpr argument
+        | isSuccessorExpression successorExpr -> do
+            (elabArg, argType0) <- synthesizeElab context argument
+            argType <- zonk argType0
+            let argWhnf = evaluateWeakHeadNormalForm (contextValues context) argType
+            case argWhnf of
+                NatType -> pure (Application Explicit Succ elabArg, NatType)
+                PrimType PTInt -> pure (intSuccessorExpression elabArg, PrimType PTInt)
+                _ -> throwError (TypeMismatch NatType argWhnf)
     Pi vis parameter domain codomain -> do
         (elabDomain, domainUniverse) <- synthesizeElab context domain
         levelI <- extractUniverseLevel context domainUniverse
@@ -1036,12 +1178,28 @@ synthesizeElab context expression = case expression of
 
 checkElab :: Context -> Expression -> Expression -> Elab Expression
 checkElab context expression expType = case expression of
-    Located sp inner -> localSpan sp (checkElab context inner expType)
+    -- Keep the term's source span installed until the complete check finishes.
+    -- In particular, this must cover the final unify in the fallback below;
+    -- synthesizeElab's own Located handler otherwise restores the enclosing
+    -- definition span before that unify can report an error.
+    Located sp inner -> do
+        previous <- gets activeSpan
+        modify (\s -> s{activeSpan = Just sp})
+        result <- checkElab context inner expType
+        modify (\s -> s{activeSpan = previous})
+        pure result
     _ -> do
         zonkedExpected <- zonk expType
         let env = contextValues context
             whnfExpected = evaluateWeakHeadNormalForm env zonkedExpected
         case (expression, whnfExpected) of
+            (Literal (LitNat n), NatType) -> pure (Literal (LitNat n))
+            (Literal (LitNat n), PrimType PTInt) -> pure (Literal (LitInt n))
+            (Literal (LitNat n), PrimType PTFloat) -> pure (Literal (LitFloat (fromIntegral n)))
+            (Literal (LitInt n), PrimType PTInt) -> pure (Literal (LitInt n))
+            (Literal (LitFloat n), PrimType PTFloat) -> pure (Literal (LitFloat n))
+            (Literal (LitChar c), PrimType PTChar) -> pure (Literal (LitChar c))
+            (Literal (LitString s), PrimType PTString) -> pure (Literal (LitString s))
             (Hole mName, _) -> do
                 mId <- freshMetaId
                 recordMeta mId mName context zonkedExpected
@@ -1056,6 +1214,15 @@ checkElab context expression expType = case expression of
                 (elabTarget, rawTargetType) <- synthesizeElab context target
                 compiled <- compilePatternCase context elabTarget branches
                 checkElab context (Case elabTarget mMotive compiled) expType
+            (Application Explicit successorExpr argument, PrimType PTInt)
+                | isSuccessorExpression successorExpr -> do
+                    (elabArg, argType) <- synthesizeElab context argument
+                    argZonked <- zonk argType
+                    let argWhnf = evaluateWeakHeadNormalForm env argZonked
+                    case argWhnf of
+                        PrimType PTInt -> pure (intSuccessorExpression elabArg)
+                        NatType -> pure (intSuccessorExpression (Application Explicit (PrimOp NatToInt) elabArg))
+                        _ -> throwError (TypeMismatch (PrimType PTInt) argWhnf)
             (Let param maybeDeclaredType defExpr body, _) -> do
                 (elabDef, defType) <- case maybeDeclaredType of
                     Just declaredType -> do
@@ -1125,8 +1292,28 @@ checkElab context expression expType = case expression of
                 throwError (ExpectedFunctionType notPiType)
             (otherExpression, _) -> do
                 (elabExpr, synthesizedType) <- synthesizeElab context otherExpression
-                unify context synthesizedType zonkedExpected
-                pure elabExpr
+                let actual = evaluateWeakHeadNormalForm env synthesizedType
+                    expected = evaluateWeakHeadNormalForm env zonkedExpected
+                    coerced = case (actual, expected) of
+                        (NatType, PrimType PTInt) -> Just (Application Explicit (PrimOp NatToInt) elabExpr)
+                        (PrimType PTInt, PrimType PTFloat) -> Just (Application Explicit (PrimOp IntToFloat) elabExpr)
+                        (NatType, PrimType PTFloat) -> Just (Application Explicit (PrimOp IntToFloat) (Application Explicit (PrimOp NatToInt) elabExpr))
+                        _ -> Nothing
+                case coerced of
+                    Just term -> pure term
+                    Nothing -> unify context synthesizedType zonkedExpected >> pure elabExpr
+  where
+isSuccessorExpression :: Expression -> Bool
+isSuccessorExpression Succ = True
+isSuccessorExpression (Located _ Succ) = True
+isSuccessorExpression (Variable (Identifier "successor")) = True
+isSuccessorExpression _ = False
+
+intSuccessorExpression :: Expression -> Expression
+intSuccessorExpression value =
+    Application Explicit
+        (Application Explicit (PrimOp IntAdd) value)
+        (Literal (LitInt 1))
 
 -- | Peel Pi binders from a data's declared universe until reaching `Universe lvl`,
 -- returning the index binders and the universe level.

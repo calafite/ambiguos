@@ -553,3 +553,40 @@ def zipWith : {A B C : Type} -> (A -> B -> C) -> List A -> List B -> List C
 
 def zip : {A B : Type} -> List A -> List B -> List (Pair A B)
   = \xs ys -> zipWith (\a b -> pair a b) xs ys
+
+{- --------------------------------------------------------------------------
+   10. Machine primitive wrappers
+   -------------------------------------------------------------------------- -}
+
+def intAdd : Int -> Int -> Int
+  = primIntAdd
+
+def intSub : Int -> Int -> Int
+  = primIntSub
+
+def intMul : Int -> Int -> Int
+  = primIntMul
+
+def intDiv : Int -> Int -> Int
+  = primIntDiv
+
+def intAbs : Int -> Int
+  = \x -> x
+
+def floatAdd : Float -> Float -> Float
+  = primFloatAdd
+
+def floatSub : Float -> Float -> Float
+  = primFloatSub
+
+def floatMul : Float -> Float -> Float
+  = primFloatMul
+
+def floatDiv : Float -> Float -> Float
+  = primFloatDiv
+
+def stringAppend : String -> String -> String
+  = primStringAppend
+
+def stringEmpty : String
+  = ""

@@ -173,28 +173,34 @@ cleanSource = Text.pack . go (0 :: Int) . Text.unpack
 
 isInputComplete :: Text -> Bool
 isInputComplete txt =
-    let (delims, commentDepth) = checkDelimiters (Text.unpack txt) [] (0 :: Int)
+    let (delims, commentDepth, quote) = checkDelimiters (Text.unpack txt) [] (0 :: Int) Nothing False
         stripped = Text.stripEnd (cleanSource txt)
         dangling = any (`Text.isSuffixOf` stripped) ["=", "\\", "->", "|", "where", "let", "in", "of", ","]
-     in null delims && commentDepth == 0 && not dangling
+     in null delims && commentDepth == 0 && quote == Nothing && not dangling
   where
-    checkDelimiters [] stack depth = (stack, depth)
-    checkDelimiters ('-' : '-' : rest) stack depth
-        | depth == 0 = checkDelimiters (dropWhile (/= '\n') rest) stack depth
-    checkDelimiters ('{' : '-' : rest) stack depth =
-        checkDelimiters rest stack (depth + 1)
-    checkDelimiters ('-' : '}' : rest) stack depth =
-        checkDelimiters rest stack (max 0 (depth - 1))
-    checkDelimiters (c : rest) stack depth
-        | depth > 0 = checkDelimiters rest stack depth
-        | c == '(' = checkDelimiters rest (')' : stack) depth
-        | c == '[' = checkDelimiters rest (']' : stack) depth
-        | c == '{' = checkDelimiters rest ('}' : stack) depth
+    checkDelimiters [] stack depth quote _ = (stack, depth, quote)
+    checkDelimiters (c : rest) stack depth (Just q) escaped
+        | escaped = checkDelimiters rest stack depth (Just q) False
+        | c == '\\' = checkDelimiters rest stack depth (Just q) True
+        | c == q = checkDelimiters rest stack depth Nothing False
+        | otherwise = checkDelimiters rest stack depth (Just q) False
+    checkDelimiters ('-' : '-' : rest) stack depth Nothing _
+        | depth == 0 = checkDelimiters (dropWhile (/= '\n') rest) stack depth Nothing False
+    checkDelimiters ('{' : '-' : rest) stack depth Nothing _ =
+        checkDelimiters rest stack (depth + 1) Nothing False
+    checkDelimiters ('-' : '}' : rest) stack depth Nothing _ =
+        checkDelimiters rest stack (max 0 (depth - 1)) Nothing False
+    checkDelimiters (c : rest) stack depth Nothing _
+        | depth > 0 = checkDelimiters rest stack depth Nothing False
+        | c == '(' = checkDelimiters rest (')' : stack) depth Nothing False
+        | c == '[' = checkDelimiters rest (']' : stack) depth Nothing False
+        | c == '{' = checkDelimiters rest ('}' : stack) depth Nothing False
+        | c == '"' || c == '\'' = checkDelimiters rest stack depth (Just c) False
         | c `elem` [')', ']', '}'] =
             case stack of
-                (top : xs) | top == c -> checkDelimiters rest xs depth
-                _ -> checkDelimiters rest stack depth
-        | otherwise = checkDelimiters rest stack depth
+                (top : xs) | top == c -> checkDelimiters rest xs depth Nothing False
+                _ -> checkDelimiters rest stack depth Nothing False
+        | otherwise = checkDelimiters rest stack depth Nothing False
 
 readMultiLine :: Text -> InputT IO (Maybe Text)
 readMultiLine current

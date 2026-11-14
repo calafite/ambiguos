@@ -14,7 +14,7 @@ module Parser (
     renderParseErrorWithSource,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Pattern (..), RecordField (..), Statement (..), UniverseLevel (..), Associativity (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), RecordField (..), Statement (..), UniverseLevel (..), Associativity (..), Visibility (..))
 import Control.Applicative (Alternative (..), optional)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -227,10 +227,17 @@ parseAtomicExpression env = do
         Just (PosToken _ TokenKeywordVoid) -> VoidType <$ consumeToken
         Just (PosToken _ TokenKeywordAbort) -> Abort <$ consumeToken
         Just (PosToken _ TokenKeywordNat) -> NatType <$ consumeToken
+        Just (PosToken _ TokenKeywordInt) -> PrimType PTInt <$ consumeToken
+        Just (PosToken _ TokenKeywordFloat) -> PrimType PTFloat <$ consumeToken
+        Just (PosToken _ TokenKeywordChar) -> PrimType PTChar <$ consumeToken
+        Just (PosToken _ TokenKeywordString) -> PrimType PTString <$ consumeToken
         Just (PosToken _ TokenKeywordZero) -> Zero <$ consumeToken
         Just (PosToken _ TokenKeywordSucc) -> Succ <$ consumeToken
         Just (PosToken _ TokenKeywordNatRec) -> NatRec <$ consumeToken
-        Just (PosToken _ (TokenNatural n)) -> desugarNatural n <$ consumeToken
+        Just (PosToken _ (TokenNatural n)) -> Literal (LitNat n) <$ consumeToken
+        Just (PosToken _ (TokenFloat n)) -> Literal (LitFloat n) <$ consumeToken
+        Just (PosToken _ (TokenChar c)) -> Literal (LitChar c) <$ consumeToken
+        Just (PosToken _ (TokenString s)) -> Literal (LitString s) <$ consumeToken
         Just (PosToken _ (TokenHole mIdent)) -> Hole mIdent <$ consumeToken
         Just (PosToken _ (TokenIdentifier ident)) ->
             parseRecordLiteralAtomic env <|> (Variable ident <$ consumeToken)
@@ -241,8 +248,19 @@ parseAtomicExpression env = do
             case nextTok of
                 Just (TokenOperator op) -> do
                     _ <- consumeToken
-                    expectToken TokenRightParen "')'"
-                    pure (Variable op)
+                    afterOp <- peekToken
+                    case afterOp of
+                        Just TokenRightParen -> do
+                            _ <- consumeToken
+                            pure (Variable op)
+                        _ | op == Identifier "-" -> do
+                            operand <- parsePrefix env
+                            expectToken TokenRightParen "')'"
+                            let operation = case operand of
+                                    Literal (LitFloat _) -> FloatNeg
+                                    _ -> IntNeg
+                            pure (Application Explicit (PrimOp operation) operand)
+                        _ -> Parser $ \_ -> Left (UnexpectedToken (maybe TokenRightParen id afterOp) (SourcePos 0 0))
                 _ -> do
                     expr <- expressionParser env
                     expectToken TokenRightParen "')'"
@@ -269,6 +287,19 @@ parseAppArgument env = parseInstanceOverride <|> parseImplicitOverride <|> parse
         expr <- parseAtomicExpression e
         pure (Explicit, expr)
 
+parsePrefix :: FixityEnv -> Parser Expression
+parsePrefix env = do
+    mToken <- peekToken
+    case mToken of
+        Just (TokenOperator (Identifier "-")) -> do
+            _ <- consumeToken
+            operand <- parsePrefix env
+            let operation = case operand of
+                    Literal (LitFloat _) -> FloatNeg
+                    _ -> IntNeg
+            pure (Application Explicit (PrimOp operation) operand)
+        _ -> parseAtomicExpression env
+
 parseRecordLiteralFields :: FixityEnv -> Parser [(Identifier, Expression)]
 parseRecordLiteralFields env = do
     first <- parseOne
@@ -291,7 +322,7 @@ parseRecordLiteralAtomic env = do
 
 parseApplication :: FixityEnv -> Parser Expression
 parseApplication env = do
-    headExpr <- parseAtomicExpression env
+    headExpr <- parsePrefix env
     argExprs <- many (parseAppArgument env)
     pure (foldl (\acc (vis, arg) -> Application vis acc arg) headExpr argExprs)
 
@@ -828,6 +859,9 @@ renderParseErrorWithSource mFile mSource err = case err of
             let pos = case lexErr of
                     UnexpectedCharacter p _ -> p
                     UnterminatedBlockComment p -> p
+                    UnterminatedString p -> p
+                    InvalidEscape p _ -> p
+                    InvalidCharLiteral p -> p
                 msg = renderLexError lexErr
              in formatSourceSnippet mFile src (SourceSpan pos pos) msg
         Nothing -> renderLexError lexErr

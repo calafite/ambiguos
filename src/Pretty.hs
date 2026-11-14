@@ -10,7 +10,7 @@ module Pretty (
     parenRight,
 ) where
 
-import AST (Associativity (..), CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Pattern (..), UniverseLevel (..), Visibility (..))
+import AST (Associativity (..), CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), UniverseLevel (..), Visibility (..))
 import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -87,6 +87,9 @@ prettyWithConfig config currentPrecedence expression =
                 Zero -> "zero"
                 Succ -> "successor"
                 NatRec -> "natRec"
+                Literal literal -> prettyLiteral literal
+                PrimType primitiveType -> prettyPrimType primitiveType
+                PrimOp operation -> prettyPrimOp operation
                 Hole Nothing -> "?"
                 Hole (Just (Identifier name)) -> "?" <> name
                 MetaVar i -> "?" <> Text.pack (show i)
@@ -199,6 +202,33 @@ prettyPattern pattern = case pattern of
     PatWild -> "_"
     PatLit n -> Text.pack (show n)
     PatCon name args -> Text.unwords (prettyIdentifier name : map (\p -> "(" <> prettyPattern p <> ")") args)
+
+prettyLiteral :: Literal -> Text
+prettyLiteral literal = case literal of
+    LitNat n -> Text.pack (show n)
+    LitInt n -> Text.pack (show n)
+    LitFloat n -> Text.pack (show n)
+    LitChar c -> Text.pack (show c)
+    LitString s -> Text.pack (show (Text.unpack s))
+
+prettyPrimType :: PrimType -> Text
+prettyPrimType PTInt = "Int"
+prettyPrimType PTFloat = "Float"
+prettyPrimType PTChar = "Char"
+prettyPrimType PTString = "String"
+
+prettyPrimOp :: PrimOp -> Text
+prettyPrimOp operation = "prim" <> case operation of
+    NatToInt -> "NatToInt"
+    IntAdd -> "IntAdd"; IntSub -> "IntSub"; IntMul -> "IntMul"; IntDiv -> "IntDiv"; IntMod -> "IntMod"; IntNeg -> "IntNeg"
+    IntEq -> "IntEq"; IntLt -> "IntLt"; IntLe -> "IntLe"
+    FloatAdd -> "FloatAdd"; FloatSub -> "FloatSub"; FloatMul -> "FloatMul"; FloatDiv -> "FloatDiv"; FloatNeg -> "FloatNeg"
+    FloatEq -> "FloatEq"; FloatLt -> "FloatLt"; FloatLe -> "FloatLe"; FloatSqrt -> "FloatSqrt"; FloatSin -> "FloatSin"; FloatCos -> "FloatCos"; FloatExp -> "FloatExp"; FloatLog -> "FloatLog"
+    IntToFloat -> "IntToFloat"; FloatToInt -> "FloatToInt"; FloatTruncate -> "FloatTruncate"
+    IntToNat -> "IntToNat"; IntAbs -> "IntAbs"; ClampToNat -> "ClampToNat"
+    CharEq -> "CharEq"; CharToInt -> "CharToInt"; IntToChar -> "IntToChar"
+    StringAppend -> "StringAppend"; StringLength -> "StringLength"; StringEq -> "StringEq"; StringIndex -> "StringIndex"; StringSlice -> "StringSlice"
+    StringToList -> "StringToList"; ListToString -> "ListToString"; IntToString -> "IntToString"; FloatToString -> "FloatToString"; CharToString -> "CharToString"
 
 isSymbolic :: Identifier -> Bool
 isSymbolic (Identifier name) =

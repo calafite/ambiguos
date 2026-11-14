@@ -14,7 +14,10 @@ module Evaluation (
     areDefinitionallyEqual,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), UniverseLevel (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), PrimOp (..), PrimType (..), UniverseLevel (..), Visibility (..))
+import Data.List (foldl')
+import GHC.Float (isNaN)
+import qualified Data.Text
 import qualified Data.Map.Lazy as MapLazy
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -45,6 +48,9 @@ data Value
     | VZero
     | VSucc !Value
     | VVoidType
+    | VPrimType !PrimType
+    | VLit !Literal
+    | VPrimOp !PrimOp ![Value]
     | VHole !(Maybe Identifier)
     | VMetaVar !Int
     | VPrimIdentity ![Value]
@@ -67,6 +73,7 @@ data Neutral
     | NNatRec !Value !Value !Value !Neutral
     | NAbort !Value !Neutral
     | NStuck !Value
+    | NPrimOp !PrimOp ![Value]
     deriving (Eq, Show)
 
 emptyEnvironment :: Environment
@@ -129,6 +136,9 @@ evaluate env expression = case expression of
     RecordLiteral name fields ->
         let constructor = lookupVar (Identifier ("mk" <> unIdentifier name)) env
          in foldl (vApp Explicit) constructor (map (evaluate env . snd) fields)
+    Literal literal -> VLit literal
+    PrimType primitiveType -> VPrimType primitiveType
+    PrimOp operation -> VPrimOp operation []
     Case target _ branches ->
         evalCase env (evaluate env target) branches
     Identity ->
@@ -167,6 +177,13 @@ evalCase env targetVal branches = case targetVal of
         case matchBranch (Identifier "zero") [] branches of
             Just v -> v
             Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
+    VLit (LitNat n)
+        | n == 0 -> evalCase env VZero branches
+        | n > 0 -> case matchBranch (Identifier "successor") [VLit (LitNat (n - 1))] branches of
+            Just v -> v
+            Nothing -> case matchBranch (Identifier "succ") [VLit (LitNat (n - 1))] branches of
+                Just v -> v
+                Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
     VSucc k ->
         case matchBranch (Identifier "successor") [k] branches of
             Just v -> v
@@ -194,7 +211,14 @@ vApp vis fn arg = case fn of
     VCon con args ->
         VCon con (args ++ [(vis, arg)])
     VPrimSucc ->
-        VSucc arg
+        case arg of
+            VLit (LitNat n) -> VLit (LitNat (n + 1))
+            _ -> VSucc arg
+    VPrimOp operation args ->
+        let newArgs = args ++ [arg]
+         in if primitiveArity operation == length newArgs
+                then applyPrimOp operation newArgs
+                else VPrimOp operation newArgs
     VPrimNatRec args ->
         let newArgs = args ++ [arg]
          in case newArgs of
@@ -233,10 +257,63 @@ evalNatRec p z s target = case target of
     VSucc k ->
         let recVal = evalNatRec p z s k
          in vApp Explicit (vApp Explicit s k) recVal
+    VLit (LitNat n) | n >= 0 ->
+        foldl' (\acc k -> vApp Explicit (vApp Explicit s (VLit (LitNat k))) acc) z [0 .. n - 1]
     VNeutral neu ->
         VNeutral (NNatRec p z s neu)
     other ->
         VNeutral (NNatRec p z s (NStuck other))
+
+primitiveArity :: PrimOp -> Int
+primitiveArity operation = case operation of
+    NatToInt -> 1; IntToNat -> 1; IntAbs -> 1; ClampToNat -> 1
+    IntNeg -> 1; FloatNeg -> 1; FloatSqrt -> 1; FloatSin -> 1; FloatCos -> 1; FloatExp -> 1; FloatLog -> 1
+    IntToFloat -> 1; FloatToInt -> 1; FloatTruncate -> 1; CharToInt -> 1; IntToChar -> 1
+    StringLength -> 1; StringToList -> 1; ListToString -> 1; IntToString -> 1; FloatToString -> 1; CharToString -> 1
+    _ -> 2
+
+applyPrimOp :: PrimOp -> [Value] -> Value
+applyPrimOp operation args = case (operation, args) of
+    (NatToInt, [VLit (LitNat n)]) -> VLit (LitInt n)
+    (NatToInt, [VZero]) -> VLit (LitInt 0)
+    (NatToInt, [VSucc k]) ->
+        case applyPrimOp NatToInt [k] of
+            VLit (LitInt n) -> VLit (LitInt (n + 1))
+            other -> VNeutral (NPrimOp NatToInt [other])
+    (IntToNat, [VLit (LitInt n)])
+        | n >= 0 -> VCon (Identifier "just") [(Explicit, VLit (LitNat n))]
+        | otherwise -> VCon (Identifier "nothing") []
+    (IntAbs, [VLit (LitInt n)]) -> VLit (LitNat (abs n))
+    (ClampToNat, [VLit (LitInt n)]) -> VLit (LitNat (max 0 n))
+    (IntAdd, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a + b))
+    (IntSub, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a - b))
+    (IntMul, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a * b))
+    (IntDiv, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if b == 0 then 0 else a `div` b))
+    (IntMod, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if b == 0 then a else a `mod` b))
+    (IntNeg, [VLit (LitInt a)]) -> VLit (LitInt (-a))
+    (FloatAdd, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a + b))
+    (FloatSub, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a - b))
+    (FloatMul, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a * b))
+    (FloatDiv, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a / b))
+    (FloatNeg, [VLit (LitFloat a)]) -> VLit (LitFloat (-a))
+    (IntToFloat, [VLit (LitInt a)]) -> VLit (LitFloat (fromIntegral a))
+    (StringAppend, [VLit (LitString a), VLit (LitString b)]) -> VLit (LitString (a <> b))
+    (StringEq, [VLit (LitString a), VLit (LitString b)]) -> boolValue (a == b)
+    (CharEq, [VLit (LitChar a), VLit (LitChar b)]) -> boolValue (a == b)
+    (IntEq, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a == b)
+    (IntLt, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a < b)
+    (IntLe, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a <= b)
+    (FloatEq, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a == b)
+    (FloatLt, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a < b)
+    (FloatLe, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a <= b)
+    (StringLength, [VLit (LitString s)]) -> VLit (LitNat (fromIntegral (Data.Text.length s)))
+    (CharToInt, [VLit (LitChar c)]) -> VLit (LitInt (fromIntegral (fromEnum c)))
+    (IntToString, [VLit (LitInt n)]) -> VLit (LitString (Data.Text.pack (show n)))
+    (CharToString, [VLit (LitChar c)]) -> VLit (LitString (Data.Text.singleton c))
+    _ -> VNeutral (NPrimOp operation args)
+  where
+    boolValue True = VCon (Identifier "true") []
+    boolValue False = VCon (Identifier "false") []
 
 -- | Primitive eliminator for Identity (Martin-Löf J).
 evalJ :: Value -> Value -> Value -> Value -> Value -> Value -> Value
@@ -269,6 +346,9 @@ quote usedVars val = case val of
         foldl (\acc (vis, a) -> Application vis acc (quote usedVars a)) (Variable con) args
     VVoidType ->
         VoidType
+    VPrimType primitiveType -> PrimType primitiveType
+    VLit literal -> Literal literal
+    VPrimOp operation args -> foldl (Application Explicit) (PrimOp operation) (map (quote usedVars) args)
     VId a x y ->
         foldl
             (Application Explicit)
@@ -373,6 +453,7 @@ quoteNeutral usedVars neu = case neu of
             ]
     NStuck v ->
         quote usedVars v
+    NPrimOp operation args -> foldl (Application Explicit) (PrimOp operation) (map (quote usedVars) args)
 
 -- | Evaluates an expression to weak head normal form.
 evaluateWeakHeadNormalForm :: Map Identifier Expression -> Expression -> Expression
@@ -418,6 +499,14 @@ equalVal usedVars v1 v2 = case (v1, v2) of
             && and [vis1 == vis2 && equalVal usedVars a1 a2 | ((vis1, a1), (vis2, a2)) <- zip args1 args2]
     (VVoidType, VVoidType) ->
         True
+    (VPrimType t1, VPrimType t2) -> t1 == t2
+    (VLit (LitFloat a), VLit (LitFloat b)) -> (isNaN a && isNaN b) || a == b
+    (VLit l1, VLit l2) -> l1 == l2
+    (VLit (LitNat n), VZero) -> n == 0
+    (VZero, VLit (LitNat n)) -> n == 0
+    (VLit (LitNat n), VSucc k) | n > 0 -> equalVal usedVars (VLit (LitNat (n - 1))) k
+    (VSucc k, VLit (LitNat n)) | n > 0 -> equalVal usedVars k (VLit (LitNat (n - 1)))
+    (VPrimOp o1 a1, VPrimOp o2 a2) -> o1 == o2 && equalValList usedVars a1 a2
     (VId a1 x1 y1, VId a2 x2 y2) ->
         equalVal usedVars a1 a2 && equalVal usedVars x1 x2 && equalVal usedVars y1 y2
     (VRefl a1 x1, VRefl a2 x2) ->
@@ -520,4 +609,6 @@ equalNeutral usedVars neu1 neu2 = case (neu1, neu2) of
         equalVal usedVars a1 a2 && equalNeutral usedVars v1 v2
     (NStuck s1, NStuck s2) ->
         equalVal usedVars s1 s2
+    (NPrimOp o1 a1, NPrimOp o2 a2) ->
+        o1 == o2 && length a1 == length a2 && and (zipWith (equalVal usedVars) a1 a2)
     _ -> False

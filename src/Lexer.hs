@@ -17,7 +17,7 @@ import AST (Identifier (..))
 import Automata.DFA (compileNFAToDFA, matchPrefixDFA)
 import Automata.NFA (compileRegexToNFA)
 import Automata.Types (DFA, Regex (..), literalString, matchAny)
-import Data.Char (isAlphaNum, isSpace)
+import Data.Char (chr, isAlphaNum, isDigit, isHexDigit, isSpace, digitToInt)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Diagnostics (SourcePos (..))
@@ -64,7 +64,14 @@ data Token
     | TokenKeywordRecord
     | TokenKeywordClass
     | TokenKeywordInstance
+    | TokenKeywordInt
+    | TokenKeywordFloat
+    | TokenKeywordChar
+    | TokenKeywordString
     | TokenNatural Integer
+    | TokenFloat Double
+    | TokenChar Char
+    | TokenString Text
     | TokenBackslash
     | TokenArrow
     | TokenColon
@@ -92,6 +99,9 @@ data PosToken = PosToken
 data LexError
     = UnexpectedCharacter !SourcePos !Char
     | UnterminatedBlockComment !SourcePos
+    | UnterminatedString !SourcePos
+    | InvalidEscape !SourcePos !Char
+    | InvalidCharLiteral !SourcePos
     deriving (Eq, Show)
 
 prettyToken :: Token -> Text
@@ -126,7 +136,14 @@ prettyToken tok = case tok of
     TokenKeywordRecord -> "'record'"
     TokenKeywordClass -> "'class'"
     TokenKeywordInstance -> "'instance'"
+    TokenKeywordInt -> "'Int'"
+    TokenKeywordFloat -> "'Float'"
+    TokenKeywordChar -> "'Char'"
+    TokenKeywordString -> "'String'"
     TokenNatural n -> Text.pack (show n)
+    TokenFloat n -> Text.pack (show n)
+    TokenChar c -> "'" <> Text.singleton c <> "'"
+    TokenString s -> "\"" <> s <> "\""
     TokenBackslash -> "'\\'"
     TokenArrow -> "'->'"
     TokenColon -> "':'"
@@ -195,6 +212,17 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
         | Just (arrowStr, restAfter) <- matchPrefixDFA dfaArrow remaining =
             let pos' = advancePosString pos arrowStr
              in (PosToken pos TokenArrow :) <$> scanLoop pos' restAfter '-'
+        | headChar == '"' = do
+            (value, pos', restAfter) <- scanQuoted pos '"' rest
+            (PosToken pos (TokenString (Text.pack value)) :) <$> scanLoop pos' restAfter '"'
+        | headChar == '\'' = do
+            (value, pos', restAfter) <- scanQuoted pos '\'' rest
+            case value of
+                [c] -> (PosToken pos (TokenChar c) :) <$> scanLoop pos' restAfter '\''
+                _ -> Left (InvalidCharLiteral pos)
+        | Just (floatValue, rawFloat, restAfter) <- scanFloat remaining =
+            let pos' = advancePosString pos rawFloat
+             in (PosToken pos (TokenFloat floatValue) :) <$> scanLoop pos' restAfter (last rawFloat)
         | Just (numStr, restAfter) <- matchPrefixDFA dfaNatural remaining =
             let n = read numStr :: Integer
                 pos' = advancePosString pos numStr
@@ -261,6 +289,10 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
         "record" -> TokenKeywordRecord
         "class" -> TokenKeywordClass
         "instance" -> TokenKeywordInstance
+        "Int" -> TokenKeywordInt
+        "Float" -> TokenKeywordFloat
+        "Char" -> TokenKeywordChar
+        "String" -> TokenKeywordString
         "module" -> TokenKeywordModule
         "import" -> TokenKeywordImport
         "qualified" -> TokenKeywordQualified
@@ -281,6 +313,58 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
     skipBlockComment pos depth (c : rest) =
         skipBlockComment (advancePosChar pos c) depth rest
 
+    scanFloat input =
+        let (whole, afterWhole) = span isDigit input
+            withFraction = case afterWhole of
+                '.' : afterDot ->
+                    let (fraction, afterFraction) = span isDigit afterDot
+                     in if null whole || null fraction then Nothing else Just (whole <> "." <> fraction, afterFraction)
+                _ -> Nothing
+            withExponent = case afterWhole of
+                e : afterE | e == 'e' || e == 'E' ->
+                    let (sign, afterSign) = case afterE of
+                            s : xs | s == '+' || s == '-' -> ([s], xs)
+                            _ -> ([], afterE)
+                        (digits, rest) = span isDigit afterSign
+                     in if null whole || null digits then Nothing else Just (whole <> [e] <> sign <> digits, rest)
+                _ -> Nothing
+            candidate = case withFraction of
+                Just (raw, rest) -> Just (raw, rest)
+                Nothing -> withExponent
+         in case candidate of
+                Just (raw, rest) -> Just (read raw, raw, rest)
+                Nothing -> Nothing
+
+    scanQuoted start quote input = go (advancePosChar start quote) input []
+      where
+        go pos [] _ = Left (UnterminatedString start)
+        go pos (c : cs) acc
+            | c == quote = Right (reverse acc, advancePosChar pos c, cs)
+            | c == '\\' = do
+                (decoded, pos', rest) <- scanEscape pos cs
+                go pos' rest (decoded : acc)
+            | c == '\n' = Left (UnterminatedString pos)
+            | otherwise = go (advancePosChar pos c) cs (c : acc)
+
+    scanEscape pos [] = Left (UnterminatedString pos)
+    scanEscape pos (c : cs) = case c of
+        'n' -> Right ('\n', advancePosString pos "\\n", cs)
+        't' -> Right ('\t', advancePosString pos "\\t", cs)
+        'r' -> Right ('\r', advancePosString pos "\\r", cs)
+        '\\' -> Right ('\\', advancePosString pos "\\\\", cs)
+        '"' -> Right ('"', advancePosString pos "\\\"", cs)
+        '\'' -> Right ('\'', advancePosString pos "\\'", cs)
+        '0' -> Right ('\0', advancePosString pos "\\0", cs)
+        'x' -> numericEscape pos 2 16 cs
+        'u' -> numericEscape pos 4 16 cs
+        other -> Left (InvalidEscape pos other)
+
+    numericEscape pos count base chars =
+        let (digits, rest) = splitAt count chars
+         in if length digits == count && all isHexDigit digits
+                then Right (chr (foldl (\n c -> n * base + digitToInt c) 0 digits), advancePosString pos ('\\' : take 1 chars <> digits), rest)
+                else Left (InvalidEscape pos (if null chars then '\\' else head chars))
+
 renderLexError :: LexError -> Text
 renderLexError err = case err of
     UnexpectedCharacter pos c ->
@@ -297,3 +381,9 @@ renderLexError err = case err of
             <> ", col "
             <> Text.pack (show (posColumn pos))
             <> ": Unterminated block comment '{- ... -}'"
+    UnterminatedString pos ->
+        "Lexical error at line " <> Text.pack (show (posLine pos)) <> ", col " <> Text.pack (show (posColumn pos)) <> ": Unterminated string or character literal"
+    InvalidEscape pos c ->
+        "Lexical error at line " <> Text.pack (show (posLine pos)) <> ", col " <> Text.pack (show (posColumn pos)) <> ": Invalid escape '\\" <> Text.singleton c <> "'"
+    InvalidCharLiteral pos ->
+        "Lexical error at line " <> Text.pack (show (posLine pos)) <> ", col " <> Text.pack (show (posColumn pos)) <> ": Invalid character literal"

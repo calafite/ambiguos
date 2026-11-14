@@ -32,6 +32,9 @@ freeVariables expression = case expression of
     RecordLiteral _ fields -> Set.unions (map (freeVariables . snd) fields)
     PatternCase target motive branches ->
         Set.unions (freeVariables target : maybe [] (\(_, t) -> [freeVariables t]) motive ++ [freeVariables body | (_, body) <- branches])
+    Literal _ -> Set.empty
+    PrimType _ -> Set.empty
+    PrimOp _ -> Set.empty
     Case target (Just (mv, mtype)) branches ->
         let targetVars = freeVariables target
             motiveVars = Set.delete mv (freeVariables mtype)
@@ -98,6 +101,9 @@ substitute targetVariable replacementExpression sourceExpression =
             PatternCase (substitute targetVariable replacementExpression target)
                 (fmap (\(v, t) -> (v, substitute targetVariable replacementExpression t)) motive)
                 [(p, substitute targetVariable replacementExpression e) | (p, e) <- branches]
+        Literal literal -> Literal literal
+        PrimType primitiveType -> PrimType primitiveType
+        PrimOp operation -> PrimOp operation
         Hole h -> Hole h
         MetaVar i -> MetaVar i
         Located sp e -> Located sp (substitute targetVariable replacementExpression e)
