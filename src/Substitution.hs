@@ -28,6 +28,10 @@ freeVariables expression = case expression of
     Hole _ -> Set.empty
     MetaVar _ -> Set.empty
     Located _ e -> freeVariables e
+    Projection term _ -> freeVariables term
+    RecordLiteral _ fields -> Set.unions (map (freeVariables . snd) fields)
+    PatternCase target motive branches ->
+        Set.unions (freeVariables target : maybe [] (\(_, t) -> [freeVariables t]) motive ++ [freeVariables body | (_, body) <- branches])
     Case target (Just (mv, mtype)) branches ->
         let targetVars = freeVariables target
             motiveVars = Set.delete mv (freeVariables mtype)
@@ -88,6 +92,12 @@ substitute targetVariable replacementExpression sourceExpression =
         Zero -> Zero
         Succ -> Succ
         NatRec -> NatRec
+        Projection term field -> Projection (substitute targetVariable replacementExpression term) field
+        RecordLiteral name fields -> RecordLiteral name [(f, substitute targetVariable replacementExpression e) | (f, e) <- fields]
+        PatternCase target motive branches ->
+            PatternCase (substitute targetVariable replacementExpression target)
+                (fmap (\(v, t) -> (v, substitute targetVariable replacementExpression t)) motive)
+                [(p, substitute targetVariable replacementExpression e) | (p, e) <- branches]
         Hole h -> Hole h
         MetaVar i -> MetaVar i
         Located sp e -> Located sp (substitute targetVariable replacementExpression e)
