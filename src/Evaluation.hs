@@ -124,6 +124,11 @@ evaluate env expression = case expression of
         VPi vis param (evaluate env dom) (Closure param codom env)
     Application vis fn arg ->
         vApp vis (evaluate env fn) (evaluate env arg)
+    Projection term field ->
+        vApp Explicit (lookupVar field env) (evaluate env term)
+    RecordLiteral name fields ->
+        let constructor = lookupVar (Identifier ("mk" <> unIdentifier name)) env
+         in foldl (vApp Explicit) constructor (map (evaluate env . snd) fields)
     Case target _ branches ->
         evalCase env (evaluate env target) branches
     Identity ->
