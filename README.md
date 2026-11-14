@@ -39,6 +39,9 @@ cabal run ambiguos
   length, map, append, (++), concat, reverse, filter, all, any, isNil
   isCons, headMaybe, head, tail, replicate, take, drop, zipWith, zip
 
+Numeric literals default to `Int`; `Nat` remains available explicitly for
+inductive definitions and proofs.
+
 Ambiguos interactive REPL ready.
 Type expressions or 'quit' to exit.
 ```
@@ -92,6 +95,7 @@ A -> B                           non-dependent function type
 
 f x                              explicit application
 f {x}                            implicit application override
+f {{dict}}                       explicit instance argument override
 ```
 
 ### Equality and Primitives
@@ -106,12 +110,21 @@ natRec P z s n                   primitive recursor for Nat
 ### Literals and Sugar
 
 ```amb
-0, 1, 2, ...                     desugars to zero / successor chains
-[x, y, z]                        desugars to cons x (cons y (cons z nil))
+0, 1, 2, ...                     machine-backed arbitrary-precision Int literals
+[x, y, z]                        list literal sugar
+(x, y), (x, y, z)                tuple sugar for right-nested Pair values
+(A, B)                           tuple type sugar for Pair A B
 _                                elaboration hole / placeholder
 term : Type                      explicit type annotation
 x + y                            infix operator application
+
+let (x, y) = pairExpr in body    tuple destructuring
+\(x, y) -> body                  tuple-pattern lambda
 ```
+
+Implicit arguments are hidden in normal output. Use `:set +implicits` in the
+REPL when inspecting elaborated terms. Primitive arithmetic is printed with
+its source operators (`a + b`, `(+) 10`) rather than internal primitive names.
 
 ---
 
@@ -147,6 +160,16 @@ def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
                x
 ```
 
+### Tuples and destructuring
+
+```amb
+def addPair : (Int, Int) -> Int
+  = \(x, y) -> x + y
+
+def total : Int
+  = let (x, y, z) = (10, 20, 30) in x + y + z
+```
+
 ### binders.amb / bindings.amb
 
 `bindings.amb` builds on `prelude.amb` and can be loaded after it with `:add bindings.amb` or `:load` it from a prelude context:
@@ -167,10 +190,16 @@ def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
 Verification proceeds in five distinct stages:
 
 1. **Automata-driven Lexer**: Keywords, operators, and identifiers are tokenized using compiled DFAs (`Automata.DFA`).
-2. **Recursive Descent Parser**: Builds surface AST expressions while desugaring numeric literals, list brackets, and telescopes (`Parser`). Every parsed expression is wrapped in source-span location info (`Located`) for rich diagnostics.
+2. **Recursive Descent Parser**: Builds surface AST expressions while recognizing primitive literals, tuples, list brackets, and telescopes (`Parser`). Every parsed expression is wrapped in source-span location info (`Located`) for rich diagnostics.
 3. **Elaboration & Metavariables**: Bidirectional checking (`synthesize` / `check`) instantiates implicit arguments and solves unification constraints (`TypeChecker`). Type errors carry source spans and an elaboration trace.
 4. **Weak Head Normalization**: Evaluates definitions, beta-reductions, $\iota$-reductions on `J`, and primitive recursion on `natRec` (`Evaluation`).
 5. **Definitional Equality**: Converts terms to normal form modulo alpha-equivalence to verify conversion rules and proof certificates (`Evaluation.equalNeutral` now correctly compares `case` branches, constructor tags, arities, bodies, and environments).
+
+Run the regression suite with:
+
+```sh
+cabal test --enable-tests
+```
 
 ---
 
