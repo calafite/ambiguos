@@ -51,6 +51,11 @@ data Token
     | TokenKeywordZero
     | TokenKeywordSucc
     | TokenKeywordNatRec
+    | TokenKeywordInfixL
+    | TokenKeywordInfixR
+    | TokenKeywordInfix
+    | TokenKeywordAs
+    | TokenKeywordReturn
     | TokenNatural Integer
     | TokenBackslash
     | TokenArrow
@@ -100,6 +105,11 @@ prettyToken tok = case tok of
     TokenKeywordZero -> "'zero'"
     TokenKeywordSucc -> "'successor'"
     TokenKeywordNatRec -> "'natRec'"
+    TokenKeywordInfixL -> "'infixl'"
+    TokenKeywordInfixR -> "'infixr'"
+    TokenKeywordInfix  -> "'infix'"
+    TokenKeywordAs     -> "'as'"
+    TokenKeywordReturn -> "'return'"
     TokenNatural n -> Text.pack (show n)
     TokenBackslash -> "'\\'"
     TokenArrow -> "'->'"
@@ -214,6 +224,11 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText)
         "successor" -> TokenKeywordSucc
         "succ" -> TokenKeywordSucc
         "natRec" -> TokenKeywordNatRec
+        "infixl" -> TokenKeywordInfixL
+        "infixr" -> TokenKeywordInfixR
+        "infix"  -> TokenKeywordInfix
+        "as"     -> TokenKeywordAs
+        "return" -> TokenKeywordReturn
         "_" -> TokenHole Nothing
         _
             | Text.isPrefixOf "_" text ->
