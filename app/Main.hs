@@ -3,7 +3,7 @@
 
 module Main (main) where
 
-import AST (Fixity (..), Identifier (..), Statement (..), Visibility (..))
+import AST (Fixity (..), Identifier (..), RecordField (..), Statement (..), Visibility (..))
 import qualified Control.Exception as Exception
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (unless)
@@ -16,6 +16,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Evaluation (normalize)
 import Parser (defaultFixityEnv, parseExpression, parseProgramWith, parseStatement, renderParseErrorWithSource)
+import qualified Module
 import Pretty (
     PrettyConfig (..),
     prettyExpression,
@@ -40,6 +41,9 @@ import TypeChecker (
     DataInfo (..),
     Goal (..),
     checkDataDeclaration,
+    checkRecordDeclaration,
+    checkClassDeclaration,
+    checkInstanceDeclaration,
     checkDefinition,
     emptyContext,
     lookupContext,
@@ -414,6 +418,25 @@ processStatement contextRef input
                         let conNames = Text.intercalate ", " (map (prettyIdentifier . fst) constrs)
                         outputStrLn (Text.unpack (green "✓" <> " Defined data " <> bold (prettyIdentifier name) <> " with: " <> cyan conNames))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
+            Right (RecordDeclaration name params univ fields conName) ->
+                case checkRecordDeclaration ctx name params univ fields conName of
+                    Left typeError ->
+                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
+                    Right updatedContext -> do
+                        outputStrLn (Text.unpack (green "✓" <> " Defined record " <> bold (prettyIdentifier name)))
+                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
+            Right (ClassDeclaration name params _ fields) ->
+                case checkClassDeclaration ctx name params fields of
+                    Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
+                    Right updatedContext -> do
+                        outputStrLn (Text.unpack (green "✓" <> " Defined class " <> bold (prettyIdentifier name)))
+                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
+            Right (InstanceDeclaration className headType fields) ->
+                case checkInstanceDeclaration ctx className headType fields of
+                    Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
+                    Right updatedContext -> do
+                        outputStrLn (Text.unpack (green "✓" <> " Defined instance for " <> bold (prettyIdentifier className)))
+                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
             Right (Definition name maybeType bodyTerm) ->
                 case checkDefinition ctx name maybeType bodyTerm of
                     Left typeError ->
@@ -435,6 +458,8 @@ processStatement contextRef input
                         }
                 liftIO (modifyIORef' contextRef (\s -> s{replContext = newCtx, replLastGoals = []}))
                 outputStrLn (Text.unpack (green "✓" <> " Declared fixity for " <> cyan (Text.intercalate ", " (map prettyIdentifier ops))))
+            Right (ModuleHeader _) -> pure ()
+            Right (ImportStmt _ _ _ _) -> pure ()
             Right (Evaluation expression) -> do
                 case synthesize ctx expression of
                     Left typeError ->
@@ -468,6 +493,14 @@ runShellCommand cmd = do
 
 loadFileFrom :: Context -> FilePath -> IO (Maybe Context)
 loadFileFrom initialContext filePath = do
+    moduleResult <- Module.loadModule filePath
+    case moduleResult of
+        Right loadedContext -> do
+            TextIO.putStrLn (green "✓" <> " Verified " <> bold (Text.pack filePath) <> " (module loader)")
+            pure (Just loadedContext)
+        Left _ -> loadFileFromLegacy initialContext filePath
+
+loadFileFromLegacy initialContext filePath = do
     fileContentResult <- Exception.try (TextIO.readFile filePath)
     case fileContentResult of
         Left ioException -> do
@@ -495,14 +528,24 @@ loadFileFrom initialContext filePath = do
 statementIdentifier :: Statement -> Identifier
 statementIdentifier (Definition name _ _) = name
 statementIdentifier (DataDeclaration name _ _ _) = name
+statementIdentifier (RecordDeclaration name _ _ _ _) = name
 statementIdentifier (FixityDeclaration _ _ _) = Identifier "<fixity>"
 statementIdentifier (Evaluation _) = Identifier "<expr>"
+statementIdentifier (ModuleHeader _) = Identifier "<module>"
+statementIdentifier (ImportStmt _ _ _ _) = Identifier "<import>"
+statementIdentifier (ClassDeclaration name _ _ _) = name
+statementIdentifier (InstanceDeclaration name _ _) = name
 
 statementIdentifiers :: Statement -> [Identifier]
 statementIdentifiers (Definition name _ _) = [name]
 statementIdentifiers (DataDeclaration name _ _ constrs) = name : map fst constrs
+statementIdentifiers (RecordDeclaration name _ _ fields _) = name : map recordFieldName fields
 statementIdentifiers (FixityDeclaration _ _ _) = []
 statementIdentifiers (Evaluation _) = []
+statementIdentifiers (ModuleHeader _) = []
+statementIdentifiers (ImportStmt _ _ _ _) = []
+statementIdentifiers (ClassDeclaration name _ _ _) = [name]
+statementIdentifiers (InstanceDeclaration name _ _) = [name]
 
 runStatements :: Context -> [Identifier] -> FilePath -> Text -> [Statement] -> IO (Maybe (Context, [Identifier]))
 runStatements currentContext accNames _ _ [] = pure (Just (currentContext, reverse accNames))
@@ -513,6 +556,10 @@ runStatements currentContext accNames filePath content (statement : remaining) =
             case checkDataDeclaration currentContext dName params univ constrs of
                 Left typeError ->
                     Left (red "✗ " <> "Type error in data '" <> bold (prettyIdentifier dName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
+                Right updatedContext -> Right updatedContext
+        RecordDeclaration rName params univ fields conName ->
+            case checkRecordDeclaration currentContext rName params univ fields conName of
+                Left typeError -> Left (red "✗ " <> "Type error in record '" <> bold (prettyIdentifier rName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
         Definition defName maybeType bodyTerm ->
             case checkDefinition currentContext defName maybeType bodyTerm of
@@ -549,6 +596,16 @@ runStatements currentContext accNames filePath content (statement : remaining) =
                     if null goals
                         then Right currentContext
                         else Left (red "✗ " <> "Expression contains unsolved goal(s):\n" <> renderGoals goals)
+        ModuleHeader _ -> Right currentContext
+        ImportStmt _ _ _ _ -> Right currentContext
+        ClassDeclaration name params _ fields ->
+            case checkClassDeclaration currentContext name params fields of
+                Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier name) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
+                Right updatedContext -> Right updatedContext
+        InstanceDeclaration className headType fields ->
+            case checkInstanceDeclaration currentContext className headType fields of
+                Left typeError -> Left (red "✗ " <> "Type error in instance '" <> bold (prettyIdentifier className) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
+                Right updatedContext -> Right updatedContext
     case execResult of
         Left (ex :: Exception.SomeException) -> do
             TextIO.putStrLn (red "✗ " <> "Internal runtime exception in '" <> bold (prettyIdentifier name) <> "': " <> Text.pack (show ex))
