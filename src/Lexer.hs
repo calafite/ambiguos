@@ -56,6 +56,14 @@ data Token
     | TokenKeywordInfix
     | TokenKeywordAs
     | TokenKeywordReturn
+    | TokenDot
+    | TokenKeywordModule
+    | TokenKeywordImport
+    | TokenKeywordQualified
+    | TokenKeywordHiding
+    | TokenKeywordRecord
+    | TokenKeywordClass
+    | TokenKeywordInstance
     | TokenNatural Integer
     | TokenBackslash
     | TokenArrow
@@ -110,6 +118,14 @@ prettyToken tok = case tok of
     TokenKeywordInfix  -> "'infix'"
     TokenKeywordAs     -> "'as'"
     TokenKeywordReturn -> "'return'"
+    TokenDot           -> "'.'"
+    TokenKeywordModule -> "'module'"
+    TokenKeywordImport -> "'import'"
+    TokenKeywordQualified -> "'qualified'"
+    TokenKeywordHiding -> "'hiding'"
+    TokenKeywordRecord -> "'record'"
+    TokenKeywordClass -> "'class'"
+    TokenKeywordInstance -> "'instance'"
     TokenNatural n -> Text.pack (show n)
     TokenBackslash -> "'\\'"
     TokenArrow -> "'->'"
@@ -151,38 +167,51 @@ dfaArrow = compileNFAToDFA (compileRegexToNFA (literalString "->"))
 opSymbols :: [Char]
 opSymbols = "+-*/<>=!&|$%^~."
 
-tokenize :: Text -> Either LexError [PosToken]
-tokenize sourceText = scanLoop initialPos (Text.unpack sourceText)
+-- | A `.` lexes as `TokenDot` (for `r.field` / `Module.name`) only when it is
+-- not surrounded by whitespace: prev non-space char must be identifier-like
+-- (letter/digit/`_`/`)``]`/`}`) and next char must be identifier-like.
+isDotOp :: Char -> Char -> Bool
+isDotOp prevNxt nextChar =
+    isDotPrev prevNxt && isIdentStart nextChar
   where
-    scanLoop _ [] = Right []
-    scanLoop pos remaining@(headChar : rest)
+    isDotPrev c = isAlphaNum c || c == '_' || c `elem` [')', ']', '}']
+    isIdentStart c = isAlphaNum c || c == '_'
+
+tokenize :: Text -> Either LexError [PosToken]
+tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
+  where
+    scanLoop _ [] _ = Right []
+    scanLoop pos remaining@(headChar : rest) prevNonSpace
         | isSpace headChar =
-            scanLoop (advancePosChar pos headChar) rest
+            scanLoop (advancePosChar pos headChar) rest ' '
         | take 2 remaining == "--" =
             let (comment, restAfter) = span (/= '\n') remaining
                 pos' = advancePosString pos comment
-             in scanLoop pos' restAfter
+             in scanLoop pos' restAfter prevNonSpace
         | take 2 remaining == "{-" =
             case skipBlockComment (advancePosString pos "{-") (1 :: Int) (drop 2 remaining) of
                 Left err -> Left err
-                Right (pos', afterBlock) -> scanLoop pos' afterBlock
+                Right (pos', afterBlock) -> scanLoop pos' afterBlock prevNonSpace
         | Just (arrowStr, restAfter) <- matchPrefixDFA dfaArrow remaining =
             let pos' = advancePosString pos arrowStr
-             in (PosToken pos TokenArrow :) <$> scanLoop pos' restAfter
+             in (PosToken pos TokenArrow :) <$> scanLoop pos' restAfter '-'
         | Just (numStr, restAfter) <- matchPrefixDFA dfaNatural remaining =
             let n = read numStr :: Integer
                 pos' = advancePosString pos numStr
-             in (PosToken pos (TokenNatural n) :) <$> scanLoop pos' restAfter
+             in (PosToken pos (TokenNatural n) :) <$> scanLoop pos' restAfter '-'
         | headChar == '?' =
             let (identChars, restAfter) = span (\c -> isAlphaNum c || c == '_') rest
                 mIdent = if null identChars then Nothing else Just (Identifier (Text.pack identChars))
                 consumed = headChar : identChars
                 pos' = advancePosString pos consumed
-             in (PosToken pos (TokenHole mIdent) :) <$> scanLoop pos' restAfter
+             in (PosToken pos (TokenHole mIdent) :) <$> scanLoop pos' restAfter '?'
+        | headChar == '.' && not (null rest) && isDotOp prevNonSpace (head rest) =
+            let pos' = advancePosChar pos headChar
+             in (PosToken pos TokenDot :) <$> scanLoop pos' rest '.'
         | Just (identStr, restAfter) <- matchPrefixDFA dfaIdentifier remaining =
             let token = classifyIdentifier (Text.pack identStr)
                 pos' = advancePosString pos identStr
-             in (PosToken pos token :) <$> scanLoop pos' restAfter
+             in (PosToken pos token :) <$> scanLoop pos' restAfter (last identStr)
         | headChar `elem` opSymbols =
             let (opStr, restAfter) = span (`elem` opSymbols) remaining
                 pos' = advancePosString pos opStr
@@ -190,19 +219,19 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText)
                     "=" -> TokenEquals
                     "|" -> TokenPipe
                     _ -> TokenOperator (Identifier (Text.pack opStr))
-             in (PosToken pos token :) <$> scanLoop pos' restAfter
+             in (PosToken pos token :) <$> scanLoop pos' restAfter (last opStr)
         | otherwise =
             case headChar of
-                '\\' -> (PosToken pos TokenBackslash :) <$> scanLoop (advancePosChar pos headChar) rest
-                ':' -> (PosToken pos TokenColon :) <$> scanLoop (advancePosChar pos headChar) rest
-                ';' -> (PosToken pos TokenSemicolon :) <$> scanLoop (advancePosChar pos headChar) rest
-                '(' -> (PosToken pos TokenLeftParen :) <$> scanLoop (advancePosChar pos headChar) rest
-                ')' -> (PosToken pos TokenRightParen :) <$> scanLoop (advancePosChar pos headChar) rest
-                '[' -> (PosToken pos TokenLeftBracket :) <$> scanLoop (advancePosChar pos headChar) rest
-                ']' -> (PosToken pos TokenRightBracket :) <$> scanLoop (advancePosChar pos headChar) rest
-                '{' -> (PosToken pos TokenLeftBrace :) <$> scanLoop (advancePosChar pos headChar) rest
-                '}' -> (PosToken pos TokenRightBrace :) <$> scanLoop (advancePosChar pos headChar) rest
-                ',' -> (PosToken pos TokenComma :) <$> scanLoop (advancePosChar pos headChar) rest
+                '\\' -> (PosToken pos TokenBackslash :) <$> scanLoop (advancePosChar pos headChar) rest '\\'
+                ':' -> (PosToken pos TokenColon :) <$> scanLoop (advancePosChar pos headChar) rest ':'
+                ';' -> (PosToken pos TokenSemicolon :) <$> scanLoop (advancePosChar pos headChar) rest ';'
+                '(' -> (PosToken pos TokenLeftParen :) <$> scanLoop (advancePosChar pos headChar) rest '('
+                ')' -> (PosToken pos TokenRightParen :) <$> scanLoop (advancePosChar pos headChar) rest ')'
+                '[' -> (PosToken pos TokenLeftBracket :) <$> scanLoop (advancePosChar pos headChar) rest '['
+                ']' -> (PosToken pos TokenRightBracket :) <$> scanLoop (advancePosChar pos headChar) rest ']'
+                '{' -> (PosToken pos TokenLeftBrace :) <$> scanLoop (advancePosChar pos headChar) rest '{'
+                '}' -> (PosToken pos TokenRightBrace :) <$> scanLoop (advancePosChar pos headChar) rest '}'
+                ',' -> (PosToken pos TokenComma :) <$> scanLoop (advancePosChar pos headChar) rest ','
                 c -> Left (UnexpectedCharacter pos c)
 
     classifyIdentifier text = case text of
@@ -229,6 +258,13 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText)
         "infix"  -> TokenKeywordInfix
         "as"     -> TokenKeywordAs
         "return" -> TokenKeywordReturn
+        "record" -> TokenKeywordRecord
+        "class" -> TokenKeywordClass
+        "instance" -> TokenKeywordInstance
+        "module" -> TokenKeywordModule
+        "import" -> TokenKeywordImport
+        "qualified" -> TokenKeywordQualified
+        "hiding" -> TokenKeywordHiding
         "_" -> TokenHole Nothing
         _
             | Text.isPrefixOf "_" text ->
