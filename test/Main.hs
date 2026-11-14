@@ -19,7 +19,7 @@ import System.Exit (exitFailure, exitSuccess)
 import TypeChecker (
     Context, Goal (..), TypeDiagnostic (..),
     check, checkDataDeclaration, checkDefinition, emptyContext, renderTypeDiagnostic,
-    synthesize,
+    synthesize, checkClassDeclaration, checkInstanceDeclaration,
   )
 
 --------------------------------------------------------------
@@ -183,6 +183,16 @@ verifyStmts :: Context -> [Statement] -> IO (Context, Int, Int)
 verifyStmts ctx [] = pure (ctx, 0, 0)
 verifyStmts ctx (s : ss) =
     case s of
+        ModuleHeader _ -> verifyStmts ctx ss
+        ImportStmt _ _ _ _ -> verifyStmts ctx ss
+        ClassDeclaration name params _ fields ->
+            case checkClassDeclaration ctx name params fields of
+                Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
+                Right ctx' -> verifyStmts ctx' ss
+        InstanceDeclaration name headType fields ->
+            case checkInstanceDeclaration ctx name headType fields of
+                Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
+                Right ctx' -> verifyStmts ctx' ss
         Definition name mty body ->
             case checkDefinition ctx name mty body of
                 Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
