@@ -261,10 +261,19 @@ parseAtomicExpression env = do
                                     _ -> IntNeg
                             pure (Application Explicit (PrimOp operation) operand)
                         _ -> Parser $ \_ -> Left (UnexpectedToken (maybe TokenRightParen id afterOp) (SourcePos 0 0))
-                _ -> do
-                    expr <- expressionParser env
-                    expectToken TokenRightParen "')'"
-                    pure expr
+                _ -> case nextTok of
+                    Just TokenRightParen -> consumeToken *> pure (Tuple [])
+                    _ -> do
+                        expr <- expressionParser env
+                        next <- peekToken
+                        case next of
+                            Just TokenComma -> do
+                                _ <- consumeToken
+                                second <- expressionParser env
+                                rest <- many (expectToken TokenComma "','" *> expressionParser env)
+                                expectToken TokenRightParen "')'"
+                                pure (Tuple (expr : second : rest))
+                            _ -> expectToken TokenRightParen "')'" *> pure expr
         Just (PosToken pos other) -> Parser $ \_ -> Left (UnexpectedToken other pos)
         Nothing -> Parser $ \_ -> Left (UnexpectedEndOfInput Nothing)
 
@@ -445,9 +454,10 @@ parseAnnotation env = do
 data ParameterGroup
     = SimpleParameters [Identifier]
     | TypedParameters Visibility [Identifier] Expression
+    | TupleParameters [Identifier]
 
 parseParameterGroup :: FixityEnv -> Parser ParameterGroup
-parseParameterGroup env = parseTypedInstance <|> parseInstanceNames <|> parseTypedParen <|> parseTypedBrace <|> parseSimple
+parseParameterGroup env = parseTypedInstance <|> parseInstanceNames <|> parseTupleParameters <|> parseTypedParen <|> parseTypedBrace <|> parseSimple
   where
     parseTypedInstance = do
         expectToken TokenLeftBrace "'{{'"
@@ -475,6 +485,14 @@ parseParameterGroup env = parseTypedInstance <|> parseInstanceNames <|> parseTyp
         expectToken TokenRightParen "')'"
         pure (TypedParameters Explicit names paramType)
 
+    parseTupleParameters = do
+        expectToken TokenLeftParen "'('"
+        first <- parseIdentifier
+        _ <- expectToken TokenComma "','"
+        rest <- some (parseIdentifier <* optional (expectToken TokenComma "','"))
+        expectToken TokenRightParen "')'"
+        pure (TupleParameters (first : rest))
+
     parseTypedBrace = do
         expectToken TokenLeftBrace "'{'"
         names <- some parseIdentifier
@@ -499,26 +517,54 @@ parseLambda env = do
         foldr (\name inner -> Lambda Explicit name Nothing inner) acc names
     expandGroup (TypedParameters vis names pType) acc =
         foldr (\name inner -> Lambda vis name (Just pType) inner) acc names
+    expandGroup (TupleParameters names) acc =
+        let binder = Identifier "tupleParam"
+            pattern = PatTuple (map PatVar names)
+         in Lambda Explicit binder Nothing (PatternCase (Variable binder) Nothing [(pattern, acc)])
 
 parseLet :: FixityEnv -> Parser Expression
 parseLet env = do
     expectToken TokenKeywordLet "'let'"
-    name <- parseIdentifier
-    maybeType <- optional (expectToken TokenColon "':'" *> expressionParser env)
-    expectToken TokenEquals "'='"
-    valExpr <- expressionParser env
-    expectToken TokenKeywordIn "'in'"
-    bodyExpr <- expressionParser env
-    pure (Let name maybeType valExpr bodyExpr)
+    tupleStart <- optional (expectToken TokenLeftParen "'('")
+    case tupleStart of
+        Just _ -> do
+            first <- parseIdentifier
+            _ <- expectToken TokenComma "','"
+            rest <- some (parseIdentifier <* optional (expectToken TokenComma "','"))
+            expectToken TokenRightParen "')'"
+            expectToken TokenEquals "'='"
+            valExpr <- expressionParser env
+            expectToken TokenKeywordIn "'in'"
+            bodyExpr <- expressionParser env
+            pure (PatternCase valExpr Nothing [(PatTuple (map PatVar (first : rest)), bodyExpr)])
+        Nothing -> do
+            name <- parseIdentifier
+            maybeType <- optional (expectToken TokenColon "':'" *> expressionParser env)
+            expectToken TokenEquals "'='"
+            valExpr <- expressionParser env
+            expectToken TokenKeywordIn "'in'"
+            bodyExpr <- expressionParser env
+            pure (Let name maybeType valExpr bodyExpr)
 
 parsePattern :: Parser Pattern
 parsePattern = parseParen <|> parseWild <|> parseNatural <|> parseNamed
   where
     parseParen = do
         expectToken TokenLeftParen "'('"
-        p <- parsePattern
-        expectToken TokenRightParen "')'"
-        pure p
+        next <- peekToken
+        case next of
+            Just TokenRightParen -> consumeToken *> pure (PatTuple [])
+            _ -> do
+                p <- parsePattern
+                next' <- peekToken
+                case next' of
+                    Just TokenComma -> do
+                        _ <- consumeToken
+                        p2 <- parsePattern
+                        rest <- many (expectToken TokenComma "','" *> parsePattern)
+                        expectToken TokenRightParen "')'"
+                        pure (PatTuple (p : p2 : rest))
+                    _ -> expectToken TokenRightParen "')'" *> pure p
     parseWild = do
         expectToken (TokenHole Nothing) "'_'"
         pure PatWild

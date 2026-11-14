@@ -111,6 +111,7 @@ data Pattern
     | PatWild
     | PatLit !Integer
     | PatCon !Identifier ![Pattern]
+    | PatTuple ![Pattern]
     deriving (Eq, Show)
 
 data Expression
@@ -140,6 +141,7 @@ data Expression
     | Located !SourceSpan !Expression
     | Projection !Expression !Identifier   -- ^ expr.field postfix projection
     | RecordLiteral !Identifier ![(Identifier, Expression)]
+    | Tuple ![Expression]
     deriving (Eq, Show)
 
 data Statement

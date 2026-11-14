@@ -877,10 +877,14 @@ compilePatternCase context target clauses = do
         literalPattern n
             | n <= 0 = PatCon (Identifier "zero") []
             | otherwise = PatCon (Identifier "successor") [literalPattern (n - 1)]
+        tuplePattern [] = PatCon (Identifier "unit") []
+        tuplePattern [p] = p
+        tuplePattern (p : ps) = PatCon (Identifier "pair") [p, tuplePattern ps]
         compileAt scrutinee pattern body = case pattern of
             PatVar name -> Let name Nothing scrutinee body
             PatWild -> body
             PatLit n -> compileAt scrutinee (literalPattern n) body
+            PatTuple ps -> compileAt scrutinee (tuplePattern ps) body
             PatCon con subpatterns ->
                 let args = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. length subpatterns - 1]]
                     nested = foldr (\(arg, subpattern) acc -> compileAt (Variable arg) subpattern acc) body (zip args subpatterns)
@@ -889,6 +893,7 @@ compilePatternCase context target clauses = do
             PatVar name -> expandWild (substitute name target body)
             PatWild -> expandWild body
             PatLit n -> compileTop (literalPattern n) body
+            PatTuple ps -> compileTop (tuplePattern ps) body
             PatCon con subpatterns ->
                 let args = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. length subpatterns - 1]]
                     nested = foldr (\(arg, subpattern) acc -> compileAt (Variable arg) subpattern acc) body (zip args subpatterns)
@@ -1021,6 +1026,27 @@ peelConstructorArgs ctx (v : vs) ty = do
         other ->
             throwError (ExpectedFunctionType other)
 
+tupleValue :: [Expression] -> Expression
+tupleValue [] = Variable (Identifier "unit")
+tupleValue [x] = x
+tupleValue (x : xs) = Application Explicit (Application Explicit (Variable (Identifier "pair")) x) (tupleValue xs)
+
+checkIsType :: Context -> Expression -> Elab (Expression, Expression)
+checkIsType context expression = case expression of
+    Tuple [] -> synthesizeElab context (Variable (Identifier "Unit"))
+    Tuple [x] -> checkIsType context x
+    Tuple (x : xs) -> do
+        (left, leftUniverse) <- checkIsType context x
+        (right, rightUniverse) <- checkIsType context (Tuple xs)
+        pure (Application Explicit (Application Explicit (Variable (Identifier "Pair")) left) right, maxUniverse leftUniverse rightUniverse)
+    _ -> do
+        (elab, universe) <- synthesizeElab context expression
+        _ <- extractUniverseLevel context universe
+        pure (elab, universe)
+  where
+    maxUniverse (Universe (UFixed a)) (Universe (UFixed b)) = Universe (UFixed (max a b))
+    maxUniverse _ _ = Universe (UFixed (-1))
+
 synthesizeElab :: Context -> Expression -> Elab (Expression, Expression)
 synthesizeElab context expression = case expression of
     Located sp inner -> localSpan sp (synthesizeElab context inner)
@@ -1060,6 +1086,8 @@ synthesizeElab context expression = case expression of
     Literal (LitFloat _) -> pure (expression, PrimType PTFloat)
     Literal (LitChar _) -> pure (expression, PrimType PTChar)
     Literal (LitString _) -> pure (expression, PrimType PTString)
+    Tuple [] -> synthesizeElab context (Variable (Identifier "unit"))
+    Tuple elements -> synthesizeElab context (tupleValue elements)
     PrimType primitiveType -> pure (PrimType primitiveType, Universe (UFixed (-1)))
     PrimOp operation -> pure (expression, primitiveOpType operation)
     MetaVar i -> do
@@ -1075,14 +1103,14 @@ synthesizeElab context expression = case expression of
         recordMeta mId mName context tMeta
         pure (MetaVar mId, tMeta)
     Annotation term annotationType -> do
-        (elabAnnType, annTypeUniverse) <- synthesizeElab context annotationType
+        (elabAnnType, annTypeUniverse) <- checkIsType context annotationType
         _ <- extractUniverseLevel context annTypeUniverse
         _ <- checkElab context term elabAnnType
         pure (term, elabAnnType)
     Let param maybeDeclaredType defExpr body -> do
         (elabDef, defType) <- case maybeDeclaredType of
             Just declaredType -> do
-                (elabDeclType, typeUniverse) <- synthesizeElab context declaredType
+                (elabDeclType, typeUniverse) <- checkIsType context declaredType
                 _ <- extractUniverseLevel context typeUniverse
                 zonkedDeclType <- zonk elabDeclType
                 elabVal <- checkElab context defExpr zonkedDeclType
@@ -1147,10 +1175,10 @@ synthesizeElab context expression = case expression of
                 PrimType PTInt -> pure (intSuccessorExpression elabArg, PrimType PTInt)
                 _ -> throwError (TypeMismatch NatType argWhnf)
     Pi vis parameter domain codomain -> do
-        (elabDomain, domainUniverse) <- synthesizeElab context domain
+        (elabDomain, domainUniverse) <- checkIsType context domain
         levelI <- extractUniverseLevel context domainUniverse
         let extendedContext = extendContextType parameter elabDomain context
-        (elabCodomain, codomainUniverse) <- synthesizeElab extendedContext codomain
+        (elabCodomain, codomainUniverse) <- checkIsType extendedContext codomain
         levelJ <- extractUniverseLevel extendedContext codomainUniverse
         let maxLevel = if levelI == -1 || levelJ == -1 then -1 else max levelI levelJ
         pure (Pi vis parameter elabDomain elabCodomain, Universe (UFixed maxLevel))
@@ -1224,6 +1252,9 @@ checkElab context expression expType = case expression of
         let env = contextEnv context
             whnfExpected = evaluateWeakHeadNormalForm env zonkedExpected
         case (expression, whnfExpected) of
+            (Tuple [], _) -> checkElab context (Variable (Identifier "unit")) whnfExpected
+            (Tuple elements, Universe _) -> fst <$> checkIsType context (Tuple elements)
+            (Tuple elements, _) -> checkElab context (tupleValue elements) whnfExpected
             (Literal (LitNat n), NatType) -> pure (Literal (LitNat n))
             (Literal (LitNat n), PrimType PTInt) -> pure (Literal (LitInt n))
             (Literal (LitNat n), PrimType PTFloat) -> pure (Literal (LitFloat (fromIntegral n)))
@@ -1262,7 +1293,7 @@ checkElab context expression expType = case expression of
             (Let param maybeDeclaredType defExpr body, _) -> do
                 (elabDef, defType) <- case maybeDeclaredType of
                     Just declaredType -> do
-                        (elabDeclType, typeUniverse) <- synthesizeElab context declaredType
+                        (elabDeclType, typeUniverse) <- checkIsType context declaredType
                         _ <- extractUniverseLevel context typeUniverse
                         zonkedDeclType <- zonk elabDeclType
                         elabVal <- checkElab context defExpr zonkedDeclType

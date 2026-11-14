@@ -30,6 +30,7 @@ freeVariables expression = case expression of
     Located _ e -> freeVariables e
     Projection term _ -> freeVariables term
     RecordLiteral _ fields -> Set.unions (map (freeVariables . snd) fields)
+    Tuple elements -> Set.unions (map freeVariables elements)
     PatternCase target motive branches ->
         Set.unions (freeVariables target : maybe [] (\(_, t) -> [freeVariables t]) motive ++ [freeVariables body | (_, body) <- branches])
     Literal _ -> Set.empty
@@ -97,6 +98,7 @@ substitute targetVariable replacementExpression sourceExpression =
         NatRec -> NatRec
         Projection term field -> Projection (substitute targetVariable replacementExpression term) field
         RecordLiteral name fields -> RecordLiteral name [(f, substitute targetVariable replacementExpression e) | (f, e) <- fields]
+        Tuple elements -> Tuple (map (substitute targetVariable replacementExpression) elements)
         PatternCase target motive branches ->
             PatternCase (substitute targetVariable replacementExpression target)
                 (fmap (\(v, t) -> (v, substitute targetVariable replacementExpression t)) motive)
@@ -265,6 +267,7 @@ alphaEquivalent leftExpression rightExpression =
             v1 == v2 && alphaEquivalent f1 f2 && alphaEquivalent a1 a2
         (Annotation t1 ty1, Annotation t2 ty2) ->
             alphaEquivalent t1 t2 && alphaEquivalent ty1 ty2
+        (Tuple es1, Tuple es2) -> length es1 == length es2 && and (zipWith alphaEquivalent es1 es2)
         (Lambda v1 param1 type1 body1, Lambda v2 param2 type2 body2) ->
             let typesMatch = case (type1, type2) of
                     (Nothing, Nothing) -> True

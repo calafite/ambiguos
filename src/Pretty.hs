@@ -1,360 +1,113 @@
 {-# LANGUAGE OverloadedStrings #-}
-
-module Pretty (
-    PrettyConfig (..),
-    prettyExpression,
-    prettyExpressionWith,
-    prettyIdentifier,
-    prettyWithPrecedence,
-    parenLeft,
-    parenRight,
-) where
-
-import AST (Associativity (..), CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), UniverseLevel (..), Visibility (..))
-import Control.Applicative ((<|>))
+module Pretty (PrettyConfig(..), prettyExpression, prettyExpressionWith, prettyIdentifier, prettyWithPrecedence, parenLeft, parenRight) where
+import AST (Associativity(..), CaseBranch(..), Expression(..), Fixity(..), Identifier(..), Literal(..), Pattern(..), PrimOp(..), PrimType(..), UniverseLevel(..), Visibility(..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Parser (FixityEnv, defaultFixityEnv, fixityOf)
 
-data Precedence
-    = TopLevelPrecedence
-    | AnnotationPrecedence
-    | LambdaPrecedence
-    | ArrowPrecedence
-    | ApplicationPrecedence
-    | AtomicPrecedence
-    deriving (Eq, Ord, Show)
-
+data Precedence = TopLevelPrecedence | AnnotationPrecedence | LambdaPrecedence | ArrowPrecedence | ApplicationPrecedence | AtomicPrecedence deriving (Eq, Ord, Show)
 precLevel :: Precedence -> Int
-precLevel TopLevelPrecedence = 0
-precLevel AnnotationPrecedence = 1
-precLevel LambdaPrecedence = 2
-precLevel ArrowPrecedence = 3
-precLevel ApplicationPrecedence = 7
-precLevel AtomicPrecedence = 10
-
--- | Configuration for pretty-printing expressions.
-data PrettyConfig = PrettyConfig
-    { prettyShowImplicits :: !Bool
-    , prettyFixities    :: !FixityEnv
-    } deriving (Eq, Show)
-
--- | Default configuration: implicit arguments are shown, default fixities.
+precLevel TopLevelPrecedence = 0; precLevel AnnotationPrecedence = 1; precLevel LambdaPrecedence = 2; precLevel ArrowPrecedence = 3; precLevel ApplicationPrecedence = 7; precLevel AtomicPrecedence = 10
+data PrettyConfig = PrettyConfig { prettyShowImplicits :: !Bool, prettyFixities :: !FixityEnv } deriving (Eq, Show)
 defaultPrettyConfig :: PrettyConfig
-defaultPrettyConfig = PrettyConfig True defaultFixityEnv
-
--- | Pretty-print an expression with the default configuration.
+defaultPrettyConfig = PrettyConfig False defaultFixityEnv
 prettyExpression :: Expression -> Text
 prettyExpression = prettyExpressionWith defaultPrettyConfig
-
--- | Pretty-print an expression with a custom configuration.
 prettyExpressionWith :: PrettyConfig -> Expression -> Text
-prettyExpressionWith config = prettyWithConfig config 0
-
--- | Pretty-print an expression at a given precedence with the default config.
+prettyExpressionWith c = prettyWithConfig c 0
 prettyWithPrecedence :: PrettyConfig -> Precedence -> Expression -> Text
-prettyWithPrecedence config = prettyWithConfig config . precLevel
+prettyWithPrecedence c = prettyWithConfig c . precLevel
 
--- | Internal pretty-printer working on a numeric precedence scale (0-10).
--- Higher numbers bind tighter. Operator precedences live in the same scale.
 prettyWithConfig :: PrettyConfig -> Int -> Expression -> Text
-prettyWithConfig config currentPrecedence expression =
-    case peanoToInteger expression of
-        Just n -> Text.pack (show n)
-        Nothing -> case peanoListToElements expression <|> churchListToElements expression of
-            Just elems ->
-                "[" <> Text.intercalate ", " (map (prettyWithConfig config 0) elems) <> "]"
-            Nothing -> case expression of
-                Located _ e ->
-                    prettyWithConfig config currentPrecedence e
-                Projection expr field ->
-                    let exprText = prettyWithConfig config currentPrecedence expr
-                     in exprText <> "." <> prettyIdentifier field
-                RecordLiteral name fields ->
-                    prettyIdentifier name <> " { " <> Text.intercalate ", " [prettyIdentifier f <> " = " <> prettyWithConfig config 0 e | (f, e) <- fields] <> " }"
-                PatternCase target _ branches ->
-                    "case " <> prettyWithConfig config 0 target <> " of { " <> Text.intercalate "; " [prettyPattern p <> " -> " <> prettyWithConfig config 0 e | (p, e) <- branches] <> " }"
-                Variable identifier ->
-                    prettyIdentifier identifier
-                Universe level ->
-                    prettyUniverseLevel level
-                Identity -> "Id"
-                Reflexivity -> "refl"
-                J -> "J"
-                VoidType -> "Void"
-                Abort -> "abort"
-                NatType -> "Nat"
-                Zero -> "zero"
-                Succ -> "successor"
-                NatRec -> "natRec"
-                Literal literal ->
-                    let rendered = prettyLiteral literal
-                     in parenthesizeIf (currentPrecedence >= precLevel ApplicationPrecedence && isNegativeLiteral literal) rendered
-                PrimType primitiveType -> prettyPrimType primitiveType
-                PrimOp operation -> prettyPrimOp operation
-                Hole Nothing -> "?"
-                Hole (Just (Identifier name)) -> "?" <> name
-                MetaVar i -> "?" <> Text.pack (show i)
-                Lambda Explicit parameter Nothing body ->
-                    let bodyText = prettyWithConfig config 0 body
-                        rendered = "\\" <> prettyIdentifier parameter <> " -> " <> bodyText
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Lambda Implicit parameter Nothing body ->
-                    let bodyText = prettyWithConfig config 0 body
-                        rendered = "\\{" <> prettyIdentifier parameter <> "} -> " <> bodyText
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Lambda Instance parameter Nothing body ->
-                    let rendered = "\\{{" <> prettyIdentifier parameter <> "}} -> " <> prettyWithConfig config 0 body
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Lambda Explicit parameter (Just parameterType) body ->
-                    let typeText = prettyWithConfig config 0 parameterType
-                        bodyText = prettyWithConfig config 0 body
-                        rendered = "\\(" <> prettyIdentifier parameter <> " : " <> typeText <> ") -> " <> bodyText
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Lambda Implicit parameter (Just parameterType) body ->
-                    let typeText = prettyWithConfig config 0 parameterType
-                        bodyText = prettyWithConfig config 0 body
-                        rendered = "\\{" <> prettyIdentifier parameter <> " : " <> typeText <> "} -> " <> bodyText
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Lambda Instance parameter (Just parameterType) body ->
-                    let rendered = "\\{{" <> prettyIdentifier parameter <> " : " <> prettyWithConfig config 0 parameterType <> "}} -> " <> prettyWithConfig config 0 body
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Annotation term annotationType ->
-                    let termText = prettyWithConfig config (precLevel ArrowPrecedence) term
-                        typeText = prettyWithConfig config 0 annotationType
-                        rendered = termText <> " : " <> typeText
-                     in parenthesizeIf (currentPrecedence > precLevel AnnotationPrecedence) rendered
-                Application Explicit function argument ->
-                    case function of
-                        Application Explicit (Variable op) a1
-                            | isSymbolic op ->
-                                prettyInfixApp config (prettyFixities config) op a1 argument currentPrecedence
-                        _ ->
-                            let functionText = prettyWithConfig config (precLevel ApplicationPrecedence) function
-                                argumentText = prettyWithConfig config (precLevel AtomicPrecedence) argument
-                             in parenthesizeIf (currentPrecedence > precLevel ApplicationPrecedence)
-                                    (functionText <> " " <> argumentText)
-                Application Implicit function argument ->
-                    if prettyShowImplicits config
-                        then
-                            let functionText = prettyWithConfig config (precLevel ApplicationPrecedence) function
-                                argumentText = prettyWithConfig config 0 argument
-                                rendered = functionText <> " {" <> argumentText <> "}"
-                             in parenthesizeIf (currentPrecedence > precLevel ApplicationPrecedence) rendered
-                        else prettyWithConfig config currentPrecedence function
-                Application Instance function argument ->
-                    let functionText = prettyWithConfig config (precLevel ApplicationPrecedence) function
-                        argumentText = prettyWithConfig config 0 argument
-                     in parenthesizeIf (currentPrecedence > precLevel ApplicationPrecedence) (functionText <> " {{" <> argumentText <> "}}")
-                Pi Explicit (Identifier "_") domain codomain ->
-                    let domainText = prettyWithConfig config (precLevel ApplicationPrecedence) domain
-                        codomainText = prettyWithConfig config (precLevel ArrowPrecedence) codomain
-                        rendered = domainText <> " -> " <> codomainText
-                     in parenthesizeIf (currentPrecedence > precLevel ArrowPrecedence) rendered
-                Pi Explicit parameter domain codomain ->
-                    let domainText = prettyWithConfig config 0 domain
-                        codomainText = prettyWithConfig config (precLevel ArrowPrecedence) codomain
-                        rendered = "(" <> prettyIdentifier parameter <> " : " <> domainText <> ") -> " <> codomainText
-                     in parenthesizeIf (currentPrecedence > precLevel ArrowPrecedence) rendered
-                Pi Implicit parameter domain codomain ->
-                    let domainText = prettyWithConfig config 0 domain
-                        codomainText = prettyWithConfig config (precLevel ArrowPrecedence) codomain
-                        rendered = "{" <> prettyIdentifier parameter <> " : " <> domainText <> "} -> " <> codomainText
-                     in parenthesizeIf (currentPrecedence > precLevel ArrowPrecedence) rendered
-                Pi Instance parameter domain codomain ->
-                    let domainText = prettyWithConfig config 0 domain
-                        codomainText = prettyWithConfig config (precLevel ArrowPrecedence) codomain
-                        rendered = "{{" <> prettyIdentifier parameter <> " : " <> domainText <> "}} -> " <> codomainText
-                     in parenthesizeIf (currentPrecedence > precLevel ArrowPrecedence) rendered
-                Let param Nothing defExpr body ->
-                    let defText = prettyWithConfig config 0 defExpr
-                        bodyText = prettyWithConfig config 0 body
-                        rendered = "let " <> prettyIdentifier param <> " = " <> defText <> " in " <> bodyText
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Let param (Just paramType) defExpr body ->
-                    let typeText = prettyWithConfig config 0 paramType
-                        defText = prettyWithConfig config 0 defExpr
-                        bodyText = prettyWithConfig config 0 body
-                        rendered = "let " <> prettyIdentifier param <> " : " <> typeText <> " = " <> defText <> " in " <> bodyText
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-                Case target mMotive branches ->
-                    let targetText = prettyWithConfig config 0 target
-                        motiveText = case mMotive of
-                            Just (mv, mt) -> " as " <> prettyIdentifier mv <> " return " <> prettyWithConfig config 0 mt
-                            Nothing -> ""
-                        formatBranch (CaseBranch con vars body) =
-                            let headStr = Text.unwords (prettyIdentifier con : map prettyIdentifier vars)
-                             in headStr <> " -> " <> prettyWithConfig config 0 body
-                        branchesText = Text.intercalate " ; " (map formatBranch branches)
-                        rendered = "case " <> targetText <> motiveText <> " of { " <> branchesText <> " }"
-                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
-
-parenthesizeIf :: Bool -> Text -> Text
-parenthesizeIf True text = "(" <> text <> ")"
-parenthesizeIf False text = text
-
-prettyIdentifier :: Identifier -> Text
-prettyIdentifier ident@(Identifier name)
-    | isSymbolic ident = "(" <> name <> ")"
-    | otherwise = name
-
-prettyPattern :: Pattern -> Text
-prettyPattern pattern = case pattern of
-    PatVar name -> prettyIdentifier name
-    PatWild -> "_"
-    PatLit n -> Text.pack (show n)
-    PatCon name args -> Text.unwords (prettyIdentifier name : map (\p -> "(" <> prettyPattern p <> ")") args)
-
-prettyLiteral :: Literal -> Text
-prettyLiteral literal = case literal of
-    LitNat n -> Text.pack (show n)
-    LitInt n -> Text.pack (show n)
-    LitFloat n -> Text.pack (show n)
-    LitChar c -> Text.pack (show c)
-    LitString s -> Text.pack (show (Text.unpack s))
-
-isNegativeLiteral :: Literal -> Bool
-isNegativeLiteral (LitInt n) = n < 0
-isNegativeLiteral _ = False
-
-prettyPrimType :: PrimType -> Text
-prettyPrimType PTInt = "Int"
-prettyPrimType PTFloat = "Float"
-prettyPrimType PTChar = "Char"
-prettyPrimType PTString = "String"
-
-prettyPrimOp :: PrimOp -> Text
-prettyPrimOp operation = "prim" <> case operation of
-    NatToInt -> "NatToInt"
-    IntAdd -> "IntAdd"; IntSub -> "IntSub"; IntMul -> "IntMul"; IntDiv -> "IntDiv"; IntMod -> "IntMod"; IntPow -> "IntPow"; IntNeg -> "IntNeg"
-    IntEq -> "IntEq"; IntNeq -> "IntNeq"; IntLt -> "IntLt"; IntLe -> "IntLe"; IntGt -> "IntGt"; IntGe -> "IntGe"
-    IntFold -> "IntFold"
-    FloatAdd -> "FloatAdd"; FloatSub -> "FloatSub"; FloatMul -> "FloatMul"; FloatDiv -> "FloatDiv"; FloatNeg -> "FloatNeg"
-    FloatEq -> "FloatEq"; FloatLt -> "FloatLt"; FloatLe -> "FloatLe"; FloatSqrt -> "FloatSqrt"; FloatSin -> "FloatSin"; FloatCos -> "FloatCos"; FloatExp -> "FloatExp"; FloatLog -> "FloatLog"
-    IntToFloat -> "IntToFloat"; FloatToInt -> "FloatToInt"; FloatTruncate -> "FloatTruncate"
-    IntToNat -> "IntToNat"; IntAbs -> "IntAbs"; ClampToNat -> "ClampToNat"
-    CharEq -> "CharEq"; CharToInt -> "CharToInt"; IntToChar -> "IntToChar"
-    StringAppend -> "StringAppend"; StringLength -> "StringLength"; StringEq -> "StringEq"; StringIndex -> "StringIndex"; StringSlice -> "StringSlice"
-    StringToList -> "StringToList"; ListToString -> "ListToString"; IntToString -> "IntToString"; FloatToString -> "FloatToString"; CharToString -> "CharToString"
-
-isSymbolic :: Identifier -> Bool
-isSymbolic (Identifier name) =
-    case Text.uncons name of
-        Just (c, _) -> c `elem` ("+-*/<>=!&|$%^~." :: String)
-        Nothing -> False
-
-prettyUniverseLevel :: UniverseLevel -> Text
-prettyUniverseLevel (UFixed (-1)) = "Type"
-prettyUniverseLevel (UFixed 0) = "Type 0"
-prettyUniverseLevel (UFixed n) = "Type " <> Text.pack (show n)
-prettyUniverseLevel (UVar u) = "Type ?" <> Text.pack (show u)
-prettyUniverseLevel (UMax l1 l2) = "Type (max " <> prettyUniverseLevel l1 <> " " <> prettyUniverseLevel l2 <> ")"
-prettyUniverseLevel (USucc l) = "Type (succ " <> prettyUniverseLevel l <> ")"
-
-peanoToInteger :: Expression -> Maybe Integer
-peanoToInteger Zero = Just 0
-peanoToInteger (Application _ Succ rest) = do
-    n <- peanoToInteger rest
-    pure (n + 1)
-peanoToInteger (Located _ e) = peanoToInteger e
-peanoToInteger _ = Nothing
-
-peanoListToElements :: Expression -> Maybe [Expression]
-peanoListToElements (Variable (Identifier "nil")) = Just []
-peanoListToElements (Application Implicit (Variable (Identifier "nil")) _) = Just []
-peanoListToElements (Application Explicit (Application Explicit (Application Implicit (Variable (Identifier "cons")) _) x) rest) = do
-    xs <- peanoListToElements rest
-    pure (x : xs)
-peanoListToElements (Application Explicit (Application Explicit (Variable (Identifier "cons")) x) rest) = do
-    xs <- peanoListToElements rest
-    pure (x : xs)
-peanoListToElements (Located _ e) = peanoListToElements e
-peanoListToElements _ = Nothing
-
-churchListToElements :: Expression -> Maybe [Expression]
-churchListToElements (Located _ e) = churchListToElements e
-churchListToElements (Lambda _ _ _ (Lambda _ n _ (Lambda _ c (Just (Pi _ _ _ _)) body))) =
-    decode body
+prettyWithConfig c p e
+    | Just n <- peanoToInteger e = Text.pack (show n)
+    | Just xs <- pairToElements e = tupleText c xs
+    | Just xs <- pairTypeToElements e = tupleText c xs
+    | Just xs <- peanoListToElements e = listText c xs
+    | otherwise = case e of
+        Tuple xs -> tupleText c xs
+        Located _ x -> prettyWithConfig c p x
+        Variable x | x == Identifier "unit" -> "()"
+        Variable x -> prettyIdentifier x
+        Universe x -> prettyUniverseLevel x
+        Identity -> "Id"; Reflexivity -> "refl"; J -> "J"; VoidType -> "Void"; Abort -> "abort"
+        NatType -> "Nat"; Zero -> "zero"; Succ -> "successor"; NatRec -> "natRec"
+        Literal x -> parenthesizeIf (p >= 7 && isNegativeLiteral x) (prettyLiteral x)
+        PrimType x -> prettyPrimType x
+        PrimOp x -> maybe (prettyPrimOp x) (\s -> "(" <> s <> ")") (primitiveSymbol x)
+        Hole Nothing -> "?"; Hole (Just (Identifier x)) -> "?" <> x; MetaVar i -> "?" <> Text.pack (show i)
+        Projection x f -> prettyWithConfig c p x <> "." <> prettyIdentifier f
+        RecordLiteral n fs -> prettyIdentifier n <> " { " <> Text.intercalate ", " [prettyIdentifier f <> " = " <> prettyWithConfig c 0 x | (f,x) <- fs] <> " }"
+        PatternCase t _ bs -> "case " <> prettyWithConfig c 0 t <> " of { " <> Text.intercalate "; " [prettyPattern q <> " -> " <> prettyWithConfig c 0 x | (q,x) <- bs] <> " }"
+        Annotation x t -> parenthesizeIf (p > 1) (prettyWithConfig c 3 x <> " : " <> prettyWithConfig c 0 t)
+        Lambda v n mt b -> parenthesizeIf (p > 2) (lambdaText c v n mt b)
+        Application Explicit (Application Explicit (PrimOp op) a) b | Just s <- primitiveSymbol op -> prettyInfixApp c (prettyFixities c) (Identifier s) a b p
+        Application Explicit (PrimOp op) a | Just s <- primitiveSymbol op -> parenthesizeIf (p > 7) ("(" <> s <> ") " <> prettyWithConfig c 10 a)
+        Application Explicit (Application Explicit (Variable op) a) b | isSymbolic op -> prettyInfixApp c (prettyFixities c) op a b p
+        Application Explicit f a -> parenthesizeIf (p > 7) (prettyWithConfig c 7 f <> " " <> prettyWithConfig c 10 a)
+        Application Implicit f a | prettyShowImplicits c -> parenthesizeIf (p > 7) (prettyWithConfig c 7 f <> " {" <> prettyWithConfig c 0 a <> "}")
+        Application Implicit f _ -> prettyWithConfig c p f
+        Application Instance f a -> parenthesizeIf (p > 7) (prettyWithConfig c 7 f <> " {{" <> prettyWithConfig c 0 a <> "}}")
+        Pi Explicit (Identifier "_") d r -> parenthesizeIf (p > 3) (prettyWithConfig c 7 d <> " -> " <> prettyWithConfig c 3 r)
+        Pi Explicit n d r -> parenthesizeIf (p > 3) ("(" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 d <> ") -> " <> prettyWithConfig c 3 r)
+        Pi Implicit n d r -> parenthesizeIf (p > 3) ("{" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 d <> "} -> " <> prettyWithConfig c 3 r)
+        Pi Instance n d r -> parenthesizeIf (p > 3) ("{{" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 d <> "}} -> " <> prettyWithConfig c 3 r)
+        Let n mt d b -> parenthesizeIf (p > 2) ("let " <> prettyIdentifier n <> maybe "" (\t -> " : " <> prettyWithConfig c 0 t) mt <> " = " <> prettyWithConfig c 0 d <> " in " <> prettyWithConfig c 0 b)
+        Case t mm bs -> parenthesizeIf (p > 2) ("case " <> prettyWithConfig c 0 t <> motive mm <> " of { " <> Text.intercalate " ; " (map branch bs) <> " }")
   where
+    motive Nothing = ""; motive (Just (n,t)) = " as " <> prettyIdentifier n <> " return " <> prettyWithConfig c 0 t
+    branch (CaseBranch n vs b) = Text.unwords (prettyIdentifier n : map prettyIdentifier vs) <> " -> " <> prettyWithConfig c 0 b
+
+lambdaText c v n mt b = "\\" <> binder <> " -> " <> prettyWithConfig c 0 b where
+    binder = case (v,mt) of
+        (Explicit,Nothing) -> prettyIdentifier n; (Explicit,Just t) -> "(" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 t <> ")"
+        (Implicit,Nothing) -> "{" <> prettyIdentifier n <> "}"; (Implicit,Just t) -> "{" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 t <> "}"
+        (Instance,Nothing) -> "{{" <> prettyIdentifier n <> "}}"; (Instance,Just t) -> "{{" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 t <> "}}"
+tupleText c xs = "(" <> Text.intercalate ", " (map (prettyWithConfig c 0) xs) <> ")"
+listText c xs = "[" <> Text.intercalate ", " (map (prettyWithConfig c 0) xs) <> "]"
+parenthesizeIf True x = "(" <> x <> ")"; parenthesizeIf False x = x
+prettyIdentifier i@(Identifier n) | isSymbolic i = "(" <> n <> ")" | otherwise = n
+prettyPattern PatWild = "_"; prettyPattern (PatVar n) = prettyIdentifier n; prettyPattern (PatLit n) = Text.pack (show n); prettyPattern (PatCon n xs) = Text.unwords (prettyIdentifier n : map (\x -> "(" <> prettyPattern x <> ")") xs); prettyPattern (PatTuple xs) = tupleTextPattern xs
+tupleTextPattern xs = "(" <> Text.intercalate ", " (map prettyPattern xs) <> ")"
+prettyLiteral (LitNat n) = Text.pack (show n); prettyLiteral (LitInt n) = Text.pack (show n); prettyLiteral (LitFloat n) = Text.pack (show n); prettyLiteral (LitChar x) = Text.pack (show x); prettyLiteral (LitString x) = Text.pack (show (Text.unpack x))
+isNegativeLiteral (LitInt n) = n < 0; isNegativeLiteral _ = False
+prettyPrimType PTInt = "Int"; prettyPrimType PTFloat = "Float"; prettyPrimType PTChar = "Char"; prettyPrimType PTString = "String"
+prettyUniverseLevel (UFixed (-1)) = "Type"; prettyUniverseLevel (UFixed n) = "Type " <> Text.pack (show n); prettyUniverseLevel (UVar n) = "Type ?" <> Text.pack (show n); prettyUniverseLevel (UMax a b) = "Type (max " <> prettyUniverseLevel a <> " " <> prettyUniverseLevel b <> ")"; prettyUniverseLevel (USucc a) = "Type (succ " <> prettyUniverseLevel a <> ")"
+prettyPrimOp op = "prim" <> Text.pack (drop 3 (show op))
+primitiveSymbol IntAdd = Just "+"; primitiveSymbol IntSub = Just "-"; primitiveSymbol IntMul = Just "*"; primitiveSymbol IntDiv = Just "/"; primitiveSymbol IntPow = Just "^"; primitiveSymbol IntEq = Just "=="; primitiveSymbol IntNeq = Just "/="; primitiveSymbol IntLt = Just "<"; primitiveSymbol IntLe = Just "<="; primitiveSymbol IntGt = Just ">"; primitiveSymbol IntGe = Just ">="; primitiveSymbol StringAppend = Just "++"; primitiveSymbol _ = Nothing
+isSymbolic (Identifier n) = case Text.uncons n of Just (x,_) -> x `elem` ("+-*/<>=!&|$%^~." :: String); Nothing -> False
+peanoToInteger Zero = Just 0; peanoToInteger (Application _ Succ x) = (+1) <$> peanoToInteger x; peanoToInteger (Located _ x) = peanoToInteger x; peanoToInteger _ = Nothing
+stripImplicit (Application Implicit x _) = stripImplicit x; stripImplicit x = x
+peanoListToElements x = case stripImplicit x of Variable (Identifier "nil") -> Just []; Application Explicit (Application Explicit h a) r | stripImplicit h == Variable (Identifier "cons") -> (a :) <$> peanoListToElements r; Located _ y -> peanoListToElements y; _ -> Nothing
+pairToElements x = case stripImplicit x of Application Explicit (Application Explicit h a) b | stripImplicit h == Variable (Identifier "pair") -> Just (a : maybe [b] id (pairToElements b)); _ -> Nothing
+pairTypeToElements x = case stripImplicit x of Application Explicit (Application Explicit h a) b | stripImplicit h == Variable (Identifier "Pair") -> Just (a : maybe [b] id (pairTypeToElements b)); _ -> Nothing
+churchListToElements (Located _ x) = churchListToElements x
+churchListToElements (Lambda _ _ _ (Lambda _ n _ (Lambda _ c (Just (Pi _ _ _ _)) body))) = decode body where
     decode (Variable v) | v == n = Just []
-    decode (Application _ (Application _ (Variable v) x) rest) | v == c = do
-        xs <- decode rest
-        pure (x : xs)
+    decode (Application _ (Application _ (Variable v) x) rest) | v == c = (x :) <$> decode rest
     decode _ = Nothing
 churchListToElements _ = Nothing
-
--- | Render an infix application `left op right` respecting operator fixity.
-prettyInfixApp ::
-    PrettyConfig ->
-    FixityEnv ->
-    Identifier ->
-    Expression ->
-    Expression ->
-    Int ->
-    Text
-prettyInfixApp config env op left right currentPrecedence =
-    let f = fixityOf env op
-        p = fixityPrec f
-        myAssoc = fixityAssoc f
-        (Identifier opName) = op
-        rendered =
-            infixLeft config env p myAssoc left
-                <> " "
-                <> opName
-                <> " "
-                <> infixRight config env p myAssoc right
-     in parenthesizeIf (currentPrecedence > p) rendered
-
-infixLeft ::
-    PrettyConfig ->
-    FixityEnv ->
-    Int ->
-    Associativity ->
-    Expression ->
-    Text
-infixLeft config env p myAssoc sub =
-    case stripLoc sub of
-        Application Explicit (Application Explicit (Variable op2) x) y ->
-            let f2 = fixityOf env op2
-                t = prettyInfixApp config env op2 x y p
-             in if parenLeft p myAssoc f2
-                    then "(" <> t <> ")"
-                    else t
-        _ -> prettyWithConfig config p sub
-
-infixRight ::
-    PrettyConfig ->
-    FixityEnv ->
-    Int ->
-    Associativity ->
-    Expression ->
-    Text
-infixRight config env p myAssoc sub =
-    case stripLoc sub of
-        Application Explicit (Application Explicit (Variable op2) x) y ->
-            let f2 = fixityOf env op2
-                t = prettyInfixApp config env op2 x y p
-             in if parenRight p myAssoc f2
-                    then "(" <> t <> ")"
-                    else t
-        _ -> prettyWithConfig config p sub
-
--- | Does the left operand of an infix operator (precedence `p`, associativity
--- `myAssoc`) need parentheses when it is itself an infix application with fixity `f2`?
-parenLeft :: Int -> Associativity -> Fixity -> Bool
-parenLeft p myAssoc (Fixity { fixityPrec = p2, fixityAssoc = a2 })
-    | p2 < p = True
-    | p2 == p = not (myAssoc == AssocLeft && a2 == AssocLeft)
-    | otherwise = False
-
--- | Does the right operand of an infix operator need parentheses?
-parenRight :: Int -> Associativity -> Fixity -> Bool
-parenRight p myAssoc (Fixity { fixityPrec = p2, fixityAssoc = a2 })
-    | p2 < p = True
-    | p2 == p = not (myAssoc == AssocRight && a2 == AssocRight)
-    | otherwise = False
-
-stripLoc :: Expression -> Expression
-stripLoc (Located _ e) = stripLoc e
-stripLoc (Projection e _) = stripLoc e
-stripLoc e = e
+prettyInfixApp c env op a b p = parenthesizeIf (p > q) (infixOperand c env q assoc True a <> " " <> n <> " " <> rightText) where
+    Fixity assoc q = fixityOf env op
+    Identifier n = op
+    rightText = case infixParts b of
+        Just _ -> "(" <> prettyWithConfig c q b <> ")"
+        _ -> infixOperand c env q assoc False b
+infixParts x = case stripExpr x of
+    Application Explicit f b -> case stripExpr f of
+        Application Explicit op a | Variable _ <- stripExpr op -> Just (a,b)
+        _ -> Nothing
+    _ -> Nothing
+stripExpr (Located _ x) = stripExpr x
+stripExpr x = x
+infixOperand c env q assoc left x = case x of
+    Application Explicit (Application Explicit (Variable op) a) b ->
+        let Fixity assoc2 q2 = fixityOf env op
+            rendered = prettyInfixApp c env op a b q
+            needs = if left
+                then q2 < q || (q2 == q && not (assoc == AssocLeft && assoc2 == AssocLeft))
+                else q2 <= q && not (assoc == AssocRight && assoc2 == AssocRight)
+         in if needs then "(" <> rendered <> ")" else rendered
+    _ -> prettyWithConfig c q x
+parenLeft p a (Fixity b q) = q < p || (q == p && not (a == AssocLeft && b == AssocLeft))
+parenRight p a (Fixity b q) = q < p || (q == p && not (a == AssocRight && b == AssocRight))

@@ -134,7 +134,7 @@ testPretty ref = do
     let hid = prettyExpressionWith (PrettyConfig False defaultFixityEnv) hidExpr
     assertEqual ref hid "identity x" "PrettyConfig False hides implicit {Nat}"
     let shown = prettyExpression hidExpr
-    assertEqual ref shown "identity {Nat} x" "default shows implicit {Nat}"
+    assertEqual ref shown "identity x" "default hides implicit {Nat}"
 
 --------------------------------------------------------------
 -- 3. Evaluation / NbE regressions

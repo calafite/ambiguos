@@ -69,7 +69,7 @@ data ReplState = ReplState
     }
 
 emptyReplState :: ReplState
-emptyReplState = ReplState emptyContext Nothing [] (PrettyConfig True defaultFixityEnv)
+emptyReplState = ReplState emptyContext Nothing [] (PrettyConfig False defaultFixityEnv)
 
 main :: IO ()
 main = do
@@ -85,7 +85,7 @@ main = do
                 Just contextWithFile -> do
                     TextIO.putStrLn ("\n" <> bold (magenta "Ambiguos") <> dim " interactive REPL ready.")
                     TextIO.putStrLn (dim "Type expressions or 'quit' to exit.\n")
-                    runReplWithHaskeline (ReplState contextWithFile (Just filePath) [] (PrettyConfig True defaultFixityEnv))
+                    runReplWithHaskeline (ReplState contextWithFile (Just filePath) [] (PrettyConfig False defaultFixityEnv))
                 Nothing ->
                     TextIO.putStrLn (red "✗ " <> "Verification aborted.")
         _ ->
