@@ -19,7 +19,8 @@ module TypeChecker (
     renderGoals,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Visibility (..))
+import Control.Monad (filterM)
 import Control.Monad.State.Strict (StateT (..), evalStateT, gets, modify, runStateT)
 import Control.Monad.Trans (lift)
 import Data.Map.Strict (Map)
@@ -28,6 +29,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Diagnostics (SourceSpan (..), formatSourceSnippet)
+import Parser (defaultFixityEnv)
 import Evaluation (areDefinitionallyEqual, evaluateWeakHeadNormalForm)
 import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
@@ -49,6 +51,7 @@ data MetaInfo = MetaInfo
 
 data DataInfo = DataInfo
     { dataParams :: ![(Visibility, Identifier, Expression)]
+    , dataIndices :: ![(Visibility, Identifier, Expression)]
     , dataUniverse :: !Expression
     , dataConstructors :: ![(Identifier, Expression)]
     }
@@ -73,7 +76,9 @@ data TypeError
     | ArityMismatch Identifier Int Int
     | OccursCheckFailed Int Expression
     | ScopeEscapeFailed Int Identifier Expression
-    |     UnsolvedMetavariable Int
+    | NonStrictlyPositive Identifier Identifier
+    | NonTerminatingDefinition Identifier
+    | UnsolvedMetavariable Int
     deriving (Eq, Show)
 
 data TypeDiagnostic = TypeDiagnostic
@@ -87,6 +92,7 @@ data Context = Context
     , contextValues :: Map Identifier Expression
     , contextLocals :: [Identifier]
     , contextData :: Map Identifier DataInfo
+    , contextFixities :: Map Identifier Fixity
     }
     deriving (Eq, Show)
 
@@ -97,6 +103,7 @@ builtinData =
             ( Identifier "Nat"
             , DataInfo
                 { dataParams = []
+                , dataIndices = []
                 , dataUniverse = Universe (-1)
                 , dataConstructors =
                     [ (Identifier "zero", NatType)
@@ -108,6 +115,7 @@ builtinData =
             ( Identifier "Void"
             , DataInfo
                 { dataParams = []
+                , dataIndices = []
                 , dataUniverse = Universe (-1)
                 , dataConstructors = []
                 }
@@ -129,6 +137,7 @@ emptyContext =
                 ]
         , contextLocals = []
         , contextData = builtinData
+        , contextFixities = defaultFixityEnv
         }
 
 extendContextType :: Identifier -> Expression -> Context -> Context
@@ -252,8 +261,10 @@ zonk expr = do
         Lambda vis p ty body -> Lambda vis p <$> traverse zonk ty <*> zonk body
         Pi vis p d c -> Pi vis p <$> zonk d <*> zonk c
         Let p ty d b -> Let p <$> traverse zonk ty <*> zonk d <*> zonk b
-        Case target branches -> Case <$> zonk target <*> traverse zonkBranch branches
+        Case target mMotive branches ->
+            Case <$> zonk target <*> traverse zonkMotive mMotive <*> traverse zonkBranch branches
           where
+            zonkMotive (mv, mt) = (,) mv <$> zonk mt
             zonkBranch (CaseBranch con vars body) = CaseBranch con vars <$> zonk body
         Annotation t ty -> Annotation <$> zonk t <*> zonk ty
         Located sp e -> Located sp <$> zonk e
@@ -266,7 +277,10 @@ occursIn i expr = case expr of
     Lambda _ _ ty body -> maybe False (occursIn i) ty || occursIn i body
     Pi _ _ d c -> occursIn i d || occursIn i c
     Let _ ty d b -> maybe False (occursIn i) ty || occursIn i d || occursIn i b
-    Case target branches -> occursIn i target || any (\(CaseBranch _ _ b) -> occursIn i b) branches
+    Case target mMotive branches ->
+        occursIn i target || any (\(CaseBranch _ _ b) -> occursIn i b) branches || case mMotive of
+            Just (_, mt) -> occursIn i mt
+            Nothing -> False
     Annotation t ty -> occursIn i t || occursIn i ty
     Located _ e -> occursIn i e
     _ -> False
@@ -355,7 +369,6 @@ unify ctx e1 e2 = do
             , isLinear spineVars ->
                 tryElab (solvePattern ctx j spineVars z1) (unfoldAndRetry z1 z2)
         (Universe i, [], Universe j, [])
-            | i == -1 || j == -1 -> pure ()
             | i <= j -> pure ()
             | otherwise -> throwError (TypeMismatch (Universe j) (Universe i))
         _ -> case (z1, z2) of
@@ -416,7 +429,6 @@ unify ctx e1 e2 = do
                 , isLinear spineVars ->
                     tryElab (solvePattern ctx j spineVars w1) fallbackDefEq
             (Universe i, [], Universe j, [])
-                | i == -1 || j == -1 -> pure ()
                 | i <= j -> pure ()
                 | otherwise -> throwError (TypeMismatch (Universe j) (Universe i))
             _ -> fallbackDefEq
@@ -516,8 +528,15 @@ natRecType =
     sType = Pi Explicit (Identifier "n") NatType (Pi Explicit (Identifier "_") pn psuccn)
     codomainType = Application Explicit (Variable (Identifier "P")) nVar
 
-checkCaseBranches :: Context -> Expression -> Expression -> Expression -> [CaseBranch] -> Elab [CaseBranch]
-checkCaseBranches context elabTarget whnfTargetType expType branches = do
+checkCaseBranches ::
+    Context ->
+    Expression ->
+    Expression ->
+    Expression ->
+    Maybe (Identifier, Expression) ->
+    [CaseBranch] ->
+    Elab [CaseBranch]
+checkCaseBranches context elabTarget whnfTargetType expType mMotive branches = do
     let (headExpr, typeArgs) = unfoldApp whnfTargetType
     dataTypeName <- case headExpr of
         Variable ident -> pure ident
@@ -527,48 +546,169 @@ checkCaseBranches context elabTarget whnfTargetType expType branches = do
     dataInfo <- case Map.lookup dataTypeName (contextData context) of
         Just info -> pure info
         Nothing -> throwError (CannotMatchOnNonDataType headExpr)
-    let expectedConstructors = map fst (dataConstructors dataInfo)
-        branchConstructors = map branchConstructor branches
-        missingConstructors = filter (`notElem` branchConstructors) expectedConstructors
+    let numParams = length (dataParams dataInfo)
+        (paramArgs, indexArgs) = splitAt numParams typeArgs
+        paramArgsExprs = map snd paramArgs
+        indexArgsExprs = map snd indexArgs
+        expectedConstructors = map fst (dataConstructors dataInfo)
+    -- Determine which expected constructors are non-absurd (can unify with
+    -- target indices). Only non-absurd constructors are required for
+    -- exhaustiveness; absurd branches (e.g. vnil against Vec A (succ k)) are
+    -- unreachable and need not be covered.
+    expectedNonAbsurd <-
+        filterM
+            ( \cName ->
+                isConNonAbsurd
+                    context
+                    dataInfo
+                    paramArgsExprs
+                    indexArgsExprs
+                    dataTypeName
+                    cName
+            )
+            expectedConstructors
+    let branchConstructors = map branchConstructor branches
+        missingConstructors =
+            filter (`notElem` branchConstructors) expectedNonAbsurd
     if not (null missingConstructors) && dataTypeName /= Identifier "Void"
         then throwError (NonExhaustivePatternMatch dataTypeName missingConstructors)
-        else traverse (checkBranch dataTypeName dataInfo typeArgs) branches
-  where
-    checkBranch typeName info tArgs (CaseBranch con vars body) = do
-        localConType <- case lookup con (dataConstructors info) of
-            Just ty -> pure ty
-            Nothing -> throwError (UnknownConstructor typeName con)
-        let paramNames = map (\(_, p, _) -> p) (dataParams info)
-            conSubst = foldr (\(p, (_, a)) acc -> substitute p a acc) localConType (zip paramNames tArgs)
-        (explicitArgTypes, _) <- peelConstructorArgs vars conSubst
-        let extContext = foldr (\(v, ty) ctx -> extendContextType v ty ctx) context (zip vars explicitArgTypes)
-            (refContext, branchExpected) = case elabTarget of
-                Variable targetVar ->
-                    let conApp =
-                            if typeName == Identifier "Nat"
-                                then
-                                    if con == Identifier "zero"
-                                        then Zero
-                                        else foldl (Application Explicit) Succ (map Variable vars)
-                                else foldl (Application Explicit) (foldl (Application Implicit) (Variable con) (map snd tArgs)) (map Variable vars)
-                     in (extendContextDefinition targetVar whnfTargetType conApp extContext, substitute targetVar conApp expType)
-                _ -> (extContext, expType)
-        elabBody <- checkElab refContext body branchExpected
-        pure (CaseBranch con vars elabBody)
+        else traverse
+            ( checkBranch
+                context
+                elabTarget
+                dataInfo
+                paramArgsExprs
+                indexArgsExprs
+                dataTypeName
+                whnfTargetType
+                mMotive
+                expType
+            )
+            branches
 
-    peelConstructorArgs [] ty = pure ([], ty)
-    peelConstructorArgs (v : vs) ty = do
-        let env = contextValues context
-            wTy = evaluateWeakHeadNormalForm env ty
-        case wTy of
-            Pi Explicit param dom codom -> do
-                (rest, finalCodom) <- peelConstructorArgs vs (substitute param (Variable v) codom)
-                pure (dom : rest, finalCodom)
-            Pi Implicit param _ codom -> do
-                m <- freshMeta context (Universe (-1))
-                peelConstructorArgs (v : vs) (substitute param m codom)
-            other ->
-                throwError (ExpectedFunctionType other)
+-- | Check whether a case branch's constructor indices unify with the target's
+-- indices. If they don't (e.g. `vnil` against `Vec A (successor k)`), the branch
+-- is absurd/unreachable and does not count for exhaustiveness.
+isConNonAbsurd ::
+    Context ->
+    DataInfo ->
+    [Expression] ->
+    [Expression] ->
+    Identifier ->
+    Identifier ->
+    Elab Bool
+isConNonAbsurd context dataInfo paramArgs indexArgs dataTypeName cName = do
+    localConType <-
+        case lookup cName (dataConstructors dataInfo) of
+            Just ty -> pure ty
+            Nothing -> throwError (UnknownConstructor dataTypeName cName)
+    conIndexArgs <- extractConIndexArgs context localConType paramArgs dataTypeName
+    case conIndexArgs of
+        Just cargs -> do
+            result <-
+                catchElab
+                    ( unifyIndexArgs context cargs indexArgs >> pure True
+                    )
+                    (const (pure False))
+            pure result
+        Nothing -> pure (False :: Bool)
+
+-- | Extract the index arguments from a constructor's elaborated type by peeling
+-- Pi binders until reaching the data type application.
+extractConIndexArgs ::
+    Context -> Expression -> [Expression] -> Identifier -> Elab (Maybe [Expression])
+extractConIndexArgs context expr paramArgs dataTypeName = do
+    let env = contextValues context
+        w = evaluateWeakHeadNormalForm env expr
+    case w of
+        Pi _ _ _ codom -> extractConIndexArgs context codom paramArgs dataTypeName
+        NatType | dataTypeName == Identifier "Nat" -> pure (Just [])
+        VoidType | dataTypeName == Identifier "Void" -> pure (Just [])
+        other ->
+            let (headExpr, allArgs) = unfoldApp other
+             in case headExpr of
+                    Variable dt
+                        | dt == dataTypeName ->
+                            let numParams = length paramArgs
+                                (_, cargs) = splitAt numParams allArgs
+                             in pure (Just (map snd cargs))
+                    _ -> pure Nothing
+
+-- | Unify each constructor index arg with the corresponding target index arg.
+unifyIndexArgs :: Context -> [Expression] -> [Expression] -> Elab ()
+unifyIndexArgs _ [] [] = pure ()
+unifyIndexArgs context (c : cs) (t : ts) = do
+    unify context c t
+    unifyIndexArgs context cs ts
+unifyIndexArgs _ _ _ = pure ()
+
+checkBranch ::
+    Context ->
+    Expression ->
+    DataInfo ->
+    [Expression] ->
+    [Expression] ->
+    Identifier ->
+    Expression ->
+    Maybe (Identifier, Expression) ->
+    Expression ->
+    CaseBranch ->
+    Elab CaseBranch
+checkBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTargetType mMotive expType (CaseBranch con vars body) = do
+    localConType <-
+        case lookup con (dataConstructors dataInfo) of
+            Just ty -> pure ty
+            Nothing -> throwError (UnknownConstructor dataTypeName con)
+    let paramNames = map (\(_, p, _) -> p) (dataParams dataInfo)
+        conSubst = foldr (\(p, a) acc -> substitute p a acc) localConType (zip paramNames paramArgs)
+    (explicitArgTypes, _) <- peelConstructorArgs context vars conSubst
+    let extContext =
+            foldr (\(v, ty) ctx -> extendContextType v ty ctx) context (zip vars explicitArgTypes)
+        conApp =
+            case dataTypeName of
+                Identifier "Nat" ->
+                    if con == Identifier "zero"
+                        then Zero
+                        else foldl (Application Explicit) Succ (map Variable vars)
+                _ ->
+                    foldl
+                        (Application Explicit)
+                        (foldl
+                            (Application Implicit)
+                            (Variable con)
+                            indexArgs
+                        )
+                        (map Variable vars)
+        (refContext, branchExpected) =
+            case (elabTarget, mMotive) of
+                (Variable targetVar, Just (mv, mtype)) ->
+                    ( extendContextDefinition targetVar whnfTargetType conApp extContext
+                    , substitute targetVar conApp (substitute mv conApp mtype)
+                    )
+                (Variable targetVar, Nothing) ->
+                    ( extendContextDefinition targetVar whnfTargetType conApp extContext
+                    , substitute targetVar conApp expType
+                    )
+                (_, Just (mv, mtype)) ->
+                    (extContext, substitute mv conApp mtype)
+                _ -> (extContext, expType)
+    elabBody <- checkElab refContext body branchExpected
+    pure (CaseBranch con vars elabBody)
+
+peelConstructorArgs :: Context -> [Identifier] -> Expression -> Elab ([Expression], Expression)
+peelConstructorArgs _ [] ty = pure ([], ty)
+peelConstructorArgs ctx (v : vs) ty = do
+    let env = contextValues ctx
+        wTy = evaluateWeakHeadNormalForm env ty
+    case wTy of
+        Pi Explicit param dom codom -> do
+            (rest, finalCodom) <- peelConstructorArgs ctx vs (substitute param (Variable v) codom)
+            pure (dom : rest, finalCodom)
+        Pi Implicit param _ codom -> do
+            m <- freshMeta ctx (Universe (-1))
+            peelConstructorArgs ctx (v : vs) (substitute param m codom)
+        other ->
+            throwError (ExpectedFunctionType other)
 
 synthesizeElab :: Context -> Expression -> Elab (Expression, Expression)
 synthesizeElab context expression = case expression of
@@ -576,7 +716,7 @@ synthesizeElab context expression = case expression of
     Variable identifier -> do
         rawType <- liftEither (lookupContext identifier context)
         instantiateLeadingImplicits context (Variable identifier) rawType
-    Universe n -> pure (Universe n, Universe (if n == -1 then -1 else n + 1))
+    Universe n -> pure (Universe n, Universe (if n == -1 then 0 else n + 1))
     Identity -> pure (Identity, identityType)
     Reflexivity -> pure (Reflexivity, reflexivityType)
     J -> pure (J, jType)
@@ -624,9 +764,9 @@ synthesizeElab context expression = case expression of
         zonkedBodyType <- zonk bodyType
         let finalType = substitute param zonkedDef zonkedBodyType
         pure (Let param (Just zonkedDefType) zonkedDef zonkedBody, finalType)
-    Case target branches -> do
+    Case target mMotive branches -> do
         retMeta <- freshMeta context (Universe (-1))
-        elabCase <- checkElab context (Case target branches) retMeta
+        elabCase <- checkElab context (Case target mMotive branches) retMeta
         zonkedRet <- zonk retMeta
         pure (elabCase, zonkedRet)
     Pi vis parameter domain codomain -> do
@@ -691,12 +831,12 @@ checkElab context expression expType = case expression of
                 mId <- freshMetaId
                 recordMeta mId mName context zonkedExpected
                 pure (MetaVar mId)
-            (Case target branches, _) -> do
+            (Case target mMotive branches, _) -> do
                 (elabTarget, rawTargetType) <- synthesizeElab context target
                 zonkedTargetType <- zonk rawTargetType
                 let whnfTargetType = evaluateWeakHeadNormalForm env zonkedTargetType
-                elabBranches <- checkCaseBranches context elabTarget whnfTargetType whnfExpected branches
-                pure (Case elabTarget elabBranches)
+                elabBranches <- checkCaseBranches context elabTarget whnfTargetType whnfExpected mMotive branches
+                pure (Case elabTarget mMotive elabBranches)
             (Let param maybeDeclaredType defExpr body, _) -> do
                 (elabDef, defType) <- case maybeDeclaredType of
                     Just declaredType -> do
@@ -769,6 +909,91 @@ checkElab context expression expType = case expression of
                 unify context synthesizedType zonkedExpected
                 pure elabExpr
 
+-- | Peel Pi binders from a data's declared universe until reaching `Universe lvl`,
+-- returning the index binders and the universe level.
+peelIndexTelescope :: Context -> Expression -> Elab ([(Visibility, Identifier, Expression)], Int)
+peelIndexTelescope ctx expr = go expr []
+  where
+    go e acc = do
+        let env = contextValues ctx
+            w = evaluateWeakHeadNormalForm env e
+        case w of
+            Pi vis p ty codom -> go codom ((vis, p, ty) : acc)
+            Universe lvl -> pure (reverse acc, lvl)
+            other -> throwError (ExpectedUniverse other)
+
+-- | Strict positivity check: a data type may not occur negatively (bare, as the
+-- domain of an arrow) in any of its constructor types. Occurrences applied to
+-- variables (parameters/indices) are permitted, since they describe the
+-- structural arguments being consumed.
+checkPositive :: Identifier -> Expression -> Elab ()
+checkPositive dataName expr = go False expr
+  where
+    go inDomain e = case e of
+        Pi _ _ dom codom ->
+            go True dom >> go inDomain codom
+        Variable ident
+            | ident == dataName && inDomain ->
+                throwError (NonStrictlyPositive dataName ident)
+        Application _ f a ->
+            case f of
+                Variable ident | ident == dataName -> go inDomain a
+                _ -> go inDomain f >> go inDomain a
+        Lambda _ _ _ body -> go inDomain body
+        Let _ _ d b -> go inDomain d >> go inDomain b
+        Case t _mMotive branches ->
+            go inDomain t >> mapM_ (go inDomain . branchBody) branches
+        Annotation t _ -> go inDomain t
+        _ -> pure ()
+
+-- | Structural termination check: every recursive call to `name` must apply at
+-- least one argument that is a structurally smaller variable (a constructor
+-- subterm obtained by pattern matching on a parameter). Variables bound by the
+-- function's own lambda parameters are tracked as `params`; variables bound by
+-- case patterns on a parameter are tracked as `small` (strictly smaller).
+checkTermination :: Identifier -> Expression -> Either TypeError ()
+checkTermination name body =
+    if Set.member name (freeVariables body)
+        then checkCalls name Set.empty Set.empty body
+        else pure ()
+  where
+    checkCalls :: Identifier -> Set.Set Identifier -> Set.Set Identifier -> Expression -> Either TypeError ()
+    checkCalls nm params small expr = case expr of
+        Lambda _ pname _ bdy ->
+            checkCalls nm (Set.insert pname params) small bdy
+        Case target _mMotive branches ->
+            let targetVar = case target of Variable v -> Just v; _ -> Nothing
+                small' = case targetVar of
+                    Just v
+                        | Set.member v params || Set.member v small ->
+                            Set.union small (Set.fromList (concatMap branchBindings branches))
+                    _ -> small
+             in mapM_ (checkBranch' nm params small') branches
+          where
+            checkBranch' n pp ss (CaseBranch _ vs bdy) =
+                checkCalls n pp (Set.union ss (Set.fromList vs)) bdy
+        Application _ f arg ->
+            let (h, spine) = unfoldApp expr
+             in case h of
+                    Variable ident | ident == nm ->
+                        if any (\(_, a) -> case a of Variable v -> Set.member v small; _ -> False) spine
+                            then pure ()
+                            else Left (NonTerminatingDefinition nm)
+                    _ -> pure ()
+            >> checkCalls nm params small f
+            >> checkCalls nm params small arg
+        Pi _ _ dom codom ->
+            checkCalls nm params small dom >> checkCalls nm params small codom
+        Let _ _ d b ->
+            checkCalls nm params small d >> checkCalls nm params small b
+        Annotation t _ -> checkCalls nm params small t
+        _ -> pure ()
+
+checkTerminationElab :: Identifier -> Expression -> Elab ()
+checkTerminationElab nm b = case checkTermination nm b of
+    Left err -> throwError err
+    Right () -> pure ()
+
 checkDataDeclaration ::
     Context ->
     Identifier ->
@@ -781,29 +1006,44 @@ checkDataDeclaration context dataName params univ constructors =
      in evalStateT
             ( localTrace traceMsg $
                 do
-                    (elabUniv, univLevel) <- synthesizeElab context univ
-                    lvl <- extractUniverseLevel context univLevel
-                    let typeConType = foldr (\(vis, p, ty) codom -> Pi vis p ty codom) (Universe lvl) params
+                    (elabUniv, _) <- synthesizeElab context univ
+                    (indices, lvl) <- peelIndexTelescope context elabUniv
+                    let allArgs = params ++ indices
+                        typeConType = foldr (\(vis, p, ty) codom -> Pi vis p ty codom) (Universe lvl) allArgs
                         contextWithType = extendContextType dataName typeConType context
-                        paramContext = foldr (\(_, p, ty) ctx -> extendContextType p ty ctx) contextWithType params
+                        paramContext =
+                            foldr
+                                (\(_, p, ty) ctx -> extendContextType p ty ctx)
+                                contextWithType
+                                allArgs
                     (localConstructors, fullConstructors) <-
                         unzip
                             <$> traverse
                                 ( \(cName, cType) ->
                                     localTrace
                                         ("while checking constructor '" <> prettyIdentifier cName <> "'")
-                                        (checkCon paramContext (cName, cType))
+                                        (checkCon paramContext allArgs (cName, cType))
                                 )
                                 constructors
-                    let dataInfo = DataInfo params elabUniv localConstructors
-                        finalContext = foldr addConstructor (contextWithType{contextData = Map.insert dataName dataInfo (contextData contextWithType)}) fullConstructors
+                    let dataInfo = DataInfo params indices elabUniv localConstructors
+                        finalContext =
+                            foldr
+                                addConstructor
+                                ( contextWithType
+                                    { contextData =
+                                        Map.insert dataName dataInfo (contextData contextWithType)
+                                    }
+                                )
+                                fullConstructors
                     pure finalContext
             )
             (ElabState 0 Map.empty Map.empty Nothing [])
   where
-    checkCon pCtx (cName, cType) = do
+    checkCon pCtx allArgs (cName, cType) = do
         (elabCType, _) <- synthesizeElab pCtx cType
-        let fullConType = foldr (\(_, p, ty) codom -> Pi Implicit p ty codom) elabCType params
+        _ <- checkPositive dataName elabCType
+        let fullConType =
+                foldr (\(_, p, ty) codom -> Pi Implicit p ty codom) elabCType allArgs
         pure ((cName, elabCType), (cName, fullConType))
     addConstructor (cName, cType) ctx =
         extendContextDefinition cName cType (Variable cName) ctx
@@ -850,14 +1090,22 @@ checkDefinition context name maybeDeclaredType bodyTerm =
                                 (elabDeclType, typeUniverse) <- synthesizeElab context declaredType
                                 _ <- extractUniverseLevel context typeUniverse
                                 zonkedDeclType <- zonk elabDeclType
-                                elabBody <- checkElab context bodyTerm zonkedDeclType
+                                -- The name is in scope for its own body (so it can
+                                -- refer to itself recursively), but only in
+                                -- contextTypes, not contextValues, so it stays
+                                -- neutral during typechecking and cannot diverge
+                                -- the elaboration.
+                                let recursiveContext = extendContextType name elabDeclType context
+                                elabBody <- checkElab recursiveContext bodyTerm zonkedDeclType
                                 zonkedBodyTerm <- zonk elabBody
+                                checkTerminationElab name zonkedBodyTerm
                                 zonkedFinalType <- zonk zonkedDeclType
                                 pure (zonkedBodyTerm, zonkedFinalType)
                             Nothing -> do
                                 (elabBody, rawType) <- synthesizeElab context bodyTerm
                                 zonkedType <- zonk rawType
                                 zonkedBodyTerm <- zonk elabBody
+                                checkTerminationElab name zonkedBodyTerm
                                 zonkedFinalType <- zonk zonkedType
                                 pure (zonkedBodyTerm, zonkedFinalType)
                     goals <- collectUnsolvedGoals
@@ -914,6 +1162,16 @@ renderTypeError typeError = case typeError of
             <> Text.intercalate ", " (map prettyIdentifier missing)
     UnknownConstructor (Identifier dName) (Identifier cName) ->
         "Constructor '" <> cName <> "' does not belong to data type '" <> dName <> "'"
+    NonStrictlyPositive (Identifier dName) (Identifier cName) ->
+        "Non-strictly positive occurrence of '"
+            <> dName
+            <> "' in constructor '"
+            <> cName
+            <> "'"
+    NonTerminatingDefinition (Identifier name) ->
+        "Non-terminating definition: recursive calls to '"
+            <> name
+            <> "' do not apply a structurally decreasing argument"
     ArityMismatch (Identifier cName) expected actual ->
         "Constructor '"
             <> cName
