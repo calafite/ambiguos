@@ -5,6 +5,9 @@ module AST (
     Fixity (..),
     UniverseLevel (..),
     CaseBranch (..),
+    RecordField (..),
+    RecordInfo (..),
+    Pattern (..),
     Expression (..),
     Statement (..),
 ) where
@@ -20,6 +23,7 @@ newtype Identifier = Identifier
 data Visibility
     = Explicit
     | Implicit
+    | Instance
     deriving (Eq, Ord, Show)
 
 data Associativity
@@ -53,6 +57,30 @@ data CaseBranch = CaseBranch
     }
     deriving (Eq, Show)
 
+-- | Record field declaration: a named field with its type.
+data RecordField = RecordField
+    { recordFieldName :: !Identifier
+    , recordFieldType :: !Expression
+    }
+    deriving (Eq, Show)
+
+-- | Record information stored in the context.
+data RecordInfo = RecordInfo
+    { recordName      :: !Identifier
+    , recordParams    :: ![(Visibility, Identifier, Expression)]
+    , recordUniverse  :: !Expression
+    , recordFields    :: ![RecordField]
+    , recordConName   :: !Identifier   -- ^ constructor name (default: mk<RecordName>)
+    }
+    deriving (Eq, Show)
+
+data Pattern
+    = PatVar !Identifier
+    | PatWild
+    | PatLit !Integer
+    | PatCon !Identifier ![Pattern]
+    deriving (Eq, Show)
+
 data Expression
     = Variable Identifier
     | Universe UniverseLevel
@@ -61,6 +89,7 @@ data Expression
     | Pi Visibility Identifier Expression Expression
     | Let Identifier (Maybe Expression) Expression Expression
     | Case Expression (Maybe (Identifier, Expression)) [CaseBranch]
+    | PatternCase Expression (Maybe (Identifier, Expression)) [(Pattern, Expression)]
     | Annotation Expression Expression
     | Identity
     | Reflexivity
@@ -74,6 +103,8 @@ data Expression
     | Hole (Maybe Identifier)
     | MetaVar Int
     | Located !SourceSpan !Expression
+    | Projection !Expression !Identifier   -- ^ expr.field postfix projection
+    | RecordLiteral !Identifier ![(Identifier, Expression)]
     deriving (Eq, Show)
 
 data Statement
@@ -81,4 +112,9 @@ data Statement
     | Evaluation Expression
     | DataDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [(Identifier, Expression)]
     | FixityDeclaration !Associativity !Int ![Identifier]
+    | RecordDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [RecordField] (Maybe Identifier)
+    | ModuleHeader [Identifier]
+    | ImportStmt !Bool ![Identifier] !(Maybe [Identifier]) !(Maybe Identifier)
+    | ClassDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [RecordField]
+    | InstanceDeclaration Identifier Expression [(Identifier, Expression)]
     deriving (Eq, Show)
