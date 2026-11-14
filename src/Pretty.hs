@@ -10,7 +10,7 @@ module Pretty (
     parenRight,
 ) where
 
-import AST (Associativity (..), CaseBranch (..), Expression (..), Fixity (..), Identifier (..), UniverseLevel (..), Visibility (..))
+import AST (Associativity (..), CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Pattern (..), UniverseLevel (..), Visibility (..))
 import Control.Applicative ((<|>))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -67,6 +67,13 @@ prettyWithConfig config currentPrecedence expression =
             Nothing -> case expression of
                 Located _ e ->
                     prettyWithConfig config currentPrecedence e
+                Projection expr field ->
+                    let exprText = prettyWithConfig config currentPrecedence expr
+                     in exprText <> "." <> prettyIdentifier field
+                RecordLiteral name fields ->
+                    prettyIdentifier name <> " { " <> Text.intercalate ", " [prettyIdentifier f <> " = " <> prettyWithConfig config 0 e | (f, e) <- fields] <> " }"
+                PatternCase target _ branches ->
+                    "case " <> prettyWithConfig config 0 target <> " of { " <> Text.intercalate "; " [prettyPattern p <> " -> " <> prettyWithConfig config 0 e | (p, e) <- branches] <> " }"
                 Variable identifier ->
                     prettyIdentifier identifier
                 Universe level ->
@@ -91,6 +98,9 @@ prettyWithConfig config currentPrecedence expression =
                     let bodyText = prettyWithConfig config 0 body
                         rendered = "\\{" <> prettyIdentifier parameter <> "} -> " <> bodyText
                      in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
+                Lambda Instance parameter Nothing body ->
+                    let rendered = "\\{{" <> prettyIdentifier parameter <> "}} -> " <> prettyWithConfig config 0 body
+                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
                 Lambda Explicit parameter (Just parameterType) body ->
                     let typeText = prettyWithConfig config 0 parameterType
                         bodyText = prettyWithConfig config 0 body
@@ -100,6 +110,9 @@ prettyWithConfig config currentPrecedence expression =
                     let typeText = prettyWithConfig config 0 parameterType
                         bodyText = prettyWithConfig config 0 body
                         rendered = "\\{" <> prettyIdentifier parameter <> " : " <> typeText <> "} -> " <> bodyText
+                     in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
+                Lambda Instance parameter (Just parameterType) body ->
+                    let rendered = "\\{{" <> prettyIdentifier parameter <> " : " <> prettyWithConfig config 0 parameterType <> "}} -> " <> prettyWithConfig config 0 body
                      in parenthesizeIf (currentPrecedence > precLevel LambdaPrecedence) rendered
                 Annotation term annotationType ->
                     let termText = prettyWithConfig config (precLevel ArrowPrecedence) term
@@ -124,6 +137,10 @@ prettyWithConfig config currentPrecedence expression =
                                 rendered = functionText <> " {" <> argumentText <> "}"
                              in parenthesizeIf (currentPrecedence > precLevel ApplicationPrecedence) rendered
                         else prettyWithConfig config currentPrecedence function
+                Application Instance function argument ->
+                    let functionText = prettyWithConfig config (precLevel ApplicationPrecedence) function
+                        argumentText = prettyWithConfig config 0 argument
+                     in parenthesizeIf (currentPrecedence > precLevel ApplicationPrecedence) (functionText <> " {{" <> argumentText <> "}}")
                 Pi Explicit (Identifier "_") domain codomain ->
                     let domainText = prettyWithConfig config (precLevel ApplicationPrecedence) domain
                         codomainText = prettyWithConfig config (precLevel ArrowPrecedence) codomain
@@ -138,6 +155,11 @@ prettyWithConfig config currentPrecedence expression =
                     let domainText = prettyWithConfig config 0 domain
                         codomainText = prettyWithConfig config (precLevel ArrowPrecedence) codomain
                         rendered = "{" <> prettyIdentifier parameter <> " : " <> domainText <> "} -> " <> codomainText
+                     in parenthesizeIf (currentPrecedence > precLevel ArrowPrecedence) rendered
+                Pi Instance parameter domain codomain ->
+                    let domainText = prettyWithConfig config 0 domain
+                        codomainText = prettyWithConfig config (precLevel ArrowPrecedence) codomain
+                        rendered = "{{" <> prettyIdentifier parameter <> " : " <> domainText <> "}} -> " <> codomainText
                      in parenthesizeIf (currentPrecedence > precLevel ArrowPrecedence) rendered
                 Let param Nothing defExpr body ->
                     let defText = prettyWithConfig config 0 defExpr
@@ -170,6 +192,13 @@ prettyIdentifier :: Identifier -> Text
 prettyIdentifier ident@(Identifier name)
     | isSymbolic ident = "(" <> name <> ")"
     | otherwise = name
+
+prettyPattern :: Pattern -> Text
+prettyPattern pattern = case pattern of
+    PatVar name -> prettyIdentifier name
+    PatWild -> "_"
+    PatLit n -> Text.pack (show n)
+    PatCon name args -> Text.unwords (prettyIdentifier name : map (\p -> "(" <> prettyPattern p <> ")") args)
 
 isSymbolic :: Identifier -> Bool
 isSymbolic (Identifier name) =
@@ -290,4 +319,5 @@ parenRight p myAssoc (Fixity { fixityPrec = p2, fixityAssoc = a2 })
 
 stripLoc :: Expression -> Expression
 stripLoc (Located _ e) = stripLoc e
+stripLoc (Projection e _) = stripLoc e
 stripLoc e = e
