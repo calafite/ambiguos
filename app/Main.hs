@@ -3,7 +3,7 @@
 
 module Main (main) where
 
-import AST (Identifier (..), Statement (..), Visibility (..))
+import AST (Fixity (..), Identifier (..), Statement (..), Visibility (..))
 import qualified Control.Exception as Exception
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (unless)
@@ -15,7 +15,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Evaluation (normalize)
-import Parser (parseExpression, parseProgram, parseStatement, renderParseErrorWithSource)
+import Parser (defaultFixityEnv, parseExpression, parseProgramWith, parseStatement, renderParseErrorWithSource)
 import Pretty (
     PrettyConfig (..),
     prettyExpression,
@@ -65,7 +65,7 @@ data ReplState = ReplState
     }
 
 emptyReplState :: ReplState
-emptyReplState = ReplState emptyContext Nothing [] (PrettyConfig True)
+emptyReplState = ReplState emptyContext Nothing [] (PrettyConfig True defaultFixityEnv)
 
 main :: IO ()
 main = do
@@ -81,7 +81,7 @@ main = do
                 Just contextWithFile -> do
                     TextIO.putStrLn ("\n" <> bold (magenta "Ambiguos") <> dim " interactive REPL ready.")
                     TextIO.putStrLn (dim "Type expressions or 'quit' to exit.\n")
-                    runReplWithHaskeline (ReplState contextWithFile (Just filePath) [] (PrettyConfig True))
+                    runReplWithHaskeline (ReplState contextWithFile (Just filePath) [] (PrettyConfig True defaultFixityEnv))
                 Nothing ->
                     TextIO.putStrLn (red "✗ " <> "Verification aborted.")
         _ ->
@@ -147,6 +147,9 @@ replCompletion contextRef = Haskeline.completeWord Nothing " \t(){}[];:" $ \word
             , "quit"
             , ":help"
             , ":?"
+            , "infixl"
+            , "infixr"
+            , "infix"
             ]
         allCandidates = map Text.unpack (userDefs ++ builtins)
     pure [simpleCompletion c | c <- allCandidates, List.isPrefixOf word c]
@@ -297,10 +300,10 @@ cmdGoals contextRef = do
 cmdSet :: IORef ReplState -> Text -> InputT IO ()
 cmdSet contextRef rest = case rest of
     "+implicits" -> do
-        liftIO (modifyIORef' contextRef (\s -> s{replPrettyConfig = PrettyConfig True}))
+        liftIO (modifyIORef' contextRef (\s -> s{replPrettyConfig = PrettyConfig True defaultFixityEnv}))
         outputStrLn "implicits: on"
     "-implicits" -> do
-        liftIO (modifyIORef' contextRef (\s -> s{replPrettyConfig = PrettyConfig False}))
+        liftIO (modifyIORef' contextRef (\s -> s{replPrettyConfig = PrettyConfig False defaultFixityEnv}))
         outputStrLn "implicits: off"
     _ -> outputStrLn "Unknown :set option. Use ':set +implicits' or ':set -implicits'."
 
@@ -422,6 +425,16 @@ processStatement contextRef input
                                 outputStrLn (Text.unpack (yellow "⚠" <> " Defined " <> bold (prettyIdentifier name) <> " with " <> bold (Text.pack (show (length goals))) <> " goal(s):"))
                                 outputStr (Text.unpack (renderGoals goals))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = goals}))
+            Right (FixityDeclaration assoc prec ops) -> do
+                let newCtx = ctx
+                        { contextFixities =
+                            foldr
+                                (\op ex -> Map.insert op (Fixity assoc prec) ex)
+                                (contextFixities ctx)
+                                ops
+                        }
+                liftIO (modifyIORef' contextRef (\s -> s{replContext = newCtx, replLastGoals = []}))
+                outputStrLn (Text.unpack (green "✓" <> " Declared fixity for " <> cyan (Text.intercalate ", " (map prettyIdentifier ops))))
             Right (Evaluation expression) -> do
                 case synthesize ctx expression of
                     Left typeError ->
@@ -462,7 +475,7 @@ loadFileFrom initialContext filePath = do
             TextIO.putStrLn (red "✗ " <> "Could not read file '" <> Text.pack filePath <> "': " <> Text.pack (show err))
             pure Nothing
         Right content ->
-            case parseProgram content of
+            case parseProgramWith defaultFixityEnv content of
                 Left parseError -> do
                     TextIO.putStrLn (red "✗ " <> renderParseErrorWithSource (Just filePath) (Just content) parseError)
                     pure Nothing
@@ -482,11 +495,13 @@ loadFileFrom initialContext filePath = do
 statementIdentifier :: Statement -> Identifier
 statementIdentifier (Definition name _ _) = name
 statementIdentifier (DataDeclaration name _ _ _) = name
+statementIdentifier (FixityDeclaration _ _ _) = Identifier "<fixity>"
 statementIdentifier (Evaluation _) = Identifier "<expr>"
 
 statementIdentifiers :: Statement -> [Identifier]
 statementIdentifiers (Definition name _ _) = [name]
 statementIdentifiers (DataDeclaration name _ _ constrs) = name : map fst constrs
+statementIdentifiers (FixityDeclaration _ _ _) = []
 statementIdentifiers (Evaluation _) = []
 
 runStatements :: Context -> [Identifier] -> FilePath -> Text -> [Statement] -> IO (Maybe (Context, [Identifier]))
@@ -516,6 +531,16 @@ runStatements currentContext accNames filePath content (statement : remaining) =
                                     <> " unsolved goal(s):\n"
                                     <> renderGoals goals
                                 )
+        FixityDeclaration assoc prec ops ->
+            Right
+                ( currentContext
+                    { contextFixities =
+                        foldr
+                            (\op ex -> Map.insert op (Fixity assoc prec) ex)
+                            (contextFixities currentContext)
+                            ops
+                    }
+                )
         Evaluation expression ->
             case synthesize currentContext expression of
                 Left typeError ->

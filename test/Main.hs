@@ -13,7 +13,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Diagnostics (SourcePos (..), SourceSpan (..), spanStart)
 import Evaluation (areDefinitionallyEqual)
-import Parser (ParseError (..), parseExpression, parseProgram, renderParseErrorWithSource)
+import Parser (ParseError (..), defaultFixityEnv, parseExpression, parseProgram, renderParseErrorWithSource)
 import Pretty (PrettyConfig (..), prettyExpression, prettyExpressionWith)
 import System.Exit (exitFailure, exitSuccess)
 import TypeChecker (
@@ -91,8 +91,8 @@ falseC = Identifier "false"
 caseBranches1 = [CaseBranch trueC [] (natLit 0), CaseBranch falseC [] (natLit 1)]
 caseBranches2 = [CaseBranch trueC [] (natLit 0), CaseBranch falseC [] (natLit 0)]
 
-caseNCase1 = Lambda Explicit bIdent (Just NatType) (Case (Variable bIdent) caseBranches1)
-caseNCase2 = Lambda Explicit bIdent (Just NatType) (Case (Variable bIdent) caseBranches2)
+caseNCase1 = Lambda Explicit bIdent (Just NatType) (Case (Variable bIdent) Nothing caseBranches1)
+caseNCase2 = Lambda Explicit bIdent (Just NatType) (Case (Variable bIdent) Nothing caseBranches2)
 
 --------------------------------------------------------------
 -- 1. Lexer & Parser
@@ -131,7 +131,7 @@ testPretty ref = do
     abc <- parseOk ref "(a + b) + c"
     assertEqual ref (prettyExpression abc) "a + b + c" "(a + b) + c is left assoc"
     hidExpr <- parseOk ref "identity {Nat} x"
-    let hid = prettyExpressionWith (PrettyConfig False) hidExpr
+    let hid = prettyExpressionWith (PrettyConfig False defaultFixityEnv) hidExpr
     assertEqual ref hid "identity x" "PrettyConfig False hides implicit {Nat}"
     let shown = prettyExpression hidExpr
     assertEqual ref shown "identity {Nat} x" "default shows implicit {Nat}"
@@ -146,7 +146,7 @@ testEvaluation ref = do
     assert ref (not neq) "NCase with different bodies is not definitionally equal"
     let eq = areDefinitionallyEqual Map.empty caseNCase1 caseNCase1
     assert ref eq "NCase identical is definitionally equal"
-    let caseAlpha = Lambda Explicit (Identifier "b2") (Just NatType) (Case (Variable (Identifier "b2")) caseBranches1)
+    let caseAlpha = Lambda Explicit (Identifier "b2") (Just NatType) (Case (Variable (Identifier "b2")) Nothing caseBranches1)
     let eqAlpha = areDefinitionallyEqual Map.empty caseNCase1 caseAlpha
     assert ref eqAlpha "alpha-equivalent NCase is definitionally equal"
     let beta1 =
