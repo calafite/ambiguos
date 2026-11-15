@@ -13,7 +13,8 @@ module Evaluation (
     areDefinitionallyEqual,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), PrimOp (..), PrimType (..), UniverseLevel (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), UniverseLevel (..), Visibility (..))
+import Control.Monad (zipWithM)
 import Data.List (foldl')
 import GHC.Float (isNaN)
 import qualified Data.Text
@@ -144,41 +145,31 @@ evaluate env expression = case expression of
         evaluate env e
 
 evalCase :: Environment -> Value -> [CaseBranch] -> Value
-evalCase env targetVal branches = case targetVal of
-    VCon con args ->
-        let explicitArgs = [v | (Explicit, v) <- args]
-         in case matchBranch con explicitArgs branches of
-                Just v -> v
-                Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
-    VZero ->
-        case matchBranch (Identifier "zero") [] branches of
-            Just v -> v
-            Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
-    VLit (LitNat n)
-        | n == 0 -> evalCase env VZero branches
-        | n > 0 -> case matchBranch (Identifier "successor") [VLit (LitNat (n - 1))] branches of
-            Just v -> v
-            Nothing -> case matchBranch (Identifier "succ") [VLit (LitNat (n - 1))] branches of
-                Just v -> v
-                Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
-    VSucc k ->
-        case matchBranch (Identifier "successor") [k] branches of
-            Just v -> v
-            Nothing ->
-                case matchBranch (Identifier "succ") [k] branches of
-                    Just v -> v
-                    Nothing -> VNeutral (NCase (NStuck targetVal) branches env)
-    VNeutral neu ->
-        VNeutral (NCase neu branches env)
-    other ->
-        VNeutral (NCase (NStuck other) branches env)
+evalCase env targetVal branches =
+    case matchBranches env targetVal branches of
+        Just res -> res
+        Nothing -> VNeutral (NCase (case targetVal of VNeutral neu -> neu; other -> NStuck other) branches env)
   where
-    matchBranch _ _ [] = Nothing
-    matchBranch con args (b : bs)
-        | branchConstructor b == con =
-            let newEnv = foldr (\(var, val) e -> Map.insert var val e) env (zip (branchBindings b) args)
-             in Just (evaluate newEnv (branchBody b))
-        | otherwise = matchBranch con args bs
+    matchBranches _ _ [] = Nothing
+    matchBranches e v (CaseBranch pat body : bs) =
+        case tryMatch pat v of
+            Just bindings -> Just (evaluate (foldr (uncurry Map.insert) e bindings) body)
+            Nothing -> matchBranches e v bs
+    tryMatch PatWild _ = Just []
+    tryMatch (PatVar x) v = Just [(x, v)]
+    tryMatch (PatLit lit) (VLit vlit) | lit == vlit = Just []
+    tryMatch (PatLit _) _ = Nothing
+    tryMatch (PatCon con pats) val =
+        case val of
+            VCon c args | c == con ->
+                let explicitArgs = [a | (Explicit, a) <- args]
+                 in if length explicitArgs == length pats then concat <$> zipWithM tryMatch pats explicitArgs else Nothing
+            VZero | con == Identifier "zero" && null pats -> Just []
+            VSucc k | con `elem` [Identifier "successor", Identifier "succ"], [p] <- pats -> tryMatch p k
+            VLit (LitNat n) | n == 0, con == Identifier "zero", null pats -> Just []
+            VLit (LitNat n) | n > 0, con `elem` [Identifier "successor", Identifier "succ"], [p] <- pats -> tryMatch p (VLit (LitNat (n - 1)))
+            _ -> Nothing
+    tryMatch _ _ = Nothing
 
 -- | Semantic function application.
 vApp :: Visibility -> Value -> Value -> Value
@@ -404,17 +395,21 @@ quoteNeutral usedVars neu = case neu of
     NApp fn vis arg ->
         Application vis (quoteNeutral usedVars fn) (quote usedVars arg)
     NCase target branches env ->
-        let quoteBranch (CaseBranch con vars body) =
-                let (freshes, newEnv, newUsed) =
-                        foldr
-                            ( \v (fs, e, u) ->
-                                let f = freshIdentifier v u
-                                 in (f : fs, Map.insert v (VNeutral (NVar f)) e, Set.insert f u)
-                            )
-                            ([], env, usedVars)
-                            vars
+        let quoteBranch (CaseBranch pat body) =
+                let (newPat, newEnv, newUsed) = quotePattern pat env usedVars
                     bVal = evaluate newEnv body
-                 in CaseBranch con freshes (quote newUsed bVal)
+                 in CaseBranch newPat (quote newUsed bVal)
+            quotePattern PatWild e u = (PatWild, e, u)
+            quotePattern (PatLit l) e u = (PatLit l, e, u)
+            quotePattern (PatCon c ps) e u =
+                let (qs, e', u') = foldl' (\(acc, en, used) p -> let (q, en', used') = quotePattern p en used in (acc ++ [q], en', used')) ([], e, u) ps
+                 in (PatCon c qs, e', u')
+            quotePattern (PatTuple ps) e u =
+                let (qs, e', u') = foldl' (\(acc, en, used) p -> let (q, en', used') = quotePattern p en used in (acc ++ [q], en', used')) ([], e, u) ps
+                 in (PatTuple qs, e', u')
+            quotePattern (PatVar v) e u =
+                let f = freshIdentifier v u
+                 in (PatVar f, Map.insert v (VNeutral (NVar f)) e, Set.insert f u)
          in Case (quoteNeutral usedVars target) Nothing (map quoteBranch branches)
     NJ a x p d y prf ->
         foldl
@@ -565,26 +560,8 @@ equalNeutral usedVars neu1 neu2 = case (neu1, neu2) of
             && length bs1 == length bs2
             && all branchEq (zip bs1 bs2)
       where
-        branchEq (CaseBranch c1 vs1 b1, CaseBranch c2 vs2 b2) =
-            c1 == c2
-                && length vs1 == length vs2
-                && let used' = foldr Set.insert usedVars (vs1 ++ vs2)
-                       (freshes, _) =
-                           foldr
-                               (\v (fs, u) -> let f = freshIdentifier v u in (f : fs, Set.insert f u))
-                               ([], used')
-                               vs1
-                       env1' =
-                           foldr
-                               (\(v, f) e -> Map.insert v (VNeutral (NVar f)) e)
-                               env1
-                               (zip vs1 freshes)
-                       env2' =
-                           foldr
-                               (\(v, f) e -> Map.insert v (VNeutral (NVar f)) e)
-                               env2
-                               (zip vs2 freshes)
-                    in equalVal used' (evaluate env1' b1) (evaluate env2' b2)
+        branchEq (CaseBranch p1 b1, CaseBranch p2 b2) =
+            p1 == p2 && equalVal usedVars (evaluate env1 b1) (evaluate env2 b2)
     (NNatRec p1 z1 s1 n1, NNatRec p2 z2 s2 n2) ->
         equalVal usedVars p1 p2
             && equalVal usedVars z1 z2
