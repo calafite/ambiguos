@@ -7,7 +7,7 @@ module Substitution (
     alphaEquivalent,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Pattern (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -39,13 +39,11 @@ freeVariables expression = case expression of
     Case target (Just (mv, mtype)) branches ->
         let targetVars = freeVariables target
             motiveVars = Set.delete mv (freeVariables mtype)
-            branchVars (CaseBranch _ vars body) =
-                foldr Set.delete (freeVariables body) vars
+            branchVars (CaseBranch pat body) = foldr Set.delete (freeVariables body) (patternBindings pat)
          in Set.unions (targetVars : motiveVars : map branchVars branches)
     Case target Nothing branches ->
         let targetVars = freeVariables target
-            branchVars (CaseBranch _ vars body) =
-                foldr Set.delete (freeVariables body) vars
+            branchVars (CaseBranch pat body) = foldr Set.delete (freeVariables body) (patternBindings pat)
          in Set.unions (targetVars : map branchVars branches)
     Let param maybeParamType defExpr body ->
         let typeFreeVars = maybe Set.empty freeVariables maybeParamType
@@ -79,6 +77,37 @@ freshIdentifier (Identifier baseName) usedIdentifiers =
         | Set.notMember candidate usedIdentifiers = candidate
         | otherwise = findUnused remaining
     findUnused [] = Identifier (baseName <> "_fresh")
+
+patternBindings :: Pattern -> [Identifier]
+patternBindings (PatVar v) = [v]
+patternBindings PatWild = []
+patternBindings (PatLit _) = []
+patternBindings (PatCon _ ps) = concatMap patternBindings ps
+patternBindings (PatTuple ps) = concatMap patternBindings ps
+
+alphaPattern :: Pattern -> Pattern -> Expression -> Expression -> Bool
+alphaPattern p1 p2 b1 b2 =
+    shape p1 p2
+        && length vs1 == length vs2
+        && let used = Set.unions [freeVariables b1, freeVariables b2]
+               fresh = map (\v -> freshIdentifier v used) vs1
+               renameAll body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs1 fresh)
+           in alphaEquivalent (renameAll b1) (renameAll (foldr (\(v, f) b -> substitute v (Variable f) b) b2 (zip vs2 fresh)))
+  where
+    vs1 = patternBindings p1
+    vs2 = patternBindings p2
+    shape (PatVar _) (PatVar _) = True
+    shape PatWild PatWild = True
+    shape (PatLit x) (PatLit y) = x == y
+    shape (PatCon c xs) (PatCon d ys) = c == d && length xs == length ys && and (zipWith (\a b -> shapeOnly a b) xs ys)
+    shape (PatTuple xs) (PatTuple ys) = length xs == length ys && and (zipWith shapeOnly xs ys)
+    shape _ _ = False
+    shapeOnly (PatVar _) (PatVar _) = True
+    shapeOnly PatWild PatWild = True
+    shapeOnly (PatLit x) (PatLit y) = x == y
+    shapeOnly (PatCon c xs) (PatCon d ys) = c == d && length xs == length ys && and (zipWith shapeOnly xs ys)
+    shapeOnly (PatTuple xs) (PatTuple ys) = length xs == length ys && and (zipWith shapeOnly xs ys)
+    shapeOnly _ _ = False
 
 substitute :: Identifier -> Expression -> Expression -> Expression
 substitute targetVariable replacementExpression sourceExpression =
@@ -115,20 +144,27 @@ substitute targetVariable replacementExpression sourceExpression =
                 (fmap (\(mv, mt) -> (mv, substitute targetVariable replacementExpression mt)) mMotive)
                 (map substBranch branches)
           where
-            substBranch (CaseBranch con vars body)
-                | elem targetVariable vars = CaseBranch con vars body
-                | any (`Set.member` replacementFreeVariables) vars =
-                    let (newVars, renamedBody) = renameVars vars body (Set.unions [replacementFreeVariables, freeVariables body, Set.singleton targetVariable])
-                     in CaseBranch con newVars (substitute targetVariable replacementExpression renamedBody)
+            substBranch (CaseBranch pat body)
+                | elem targetVariable bound = CaseBranch pat body
+                | any (`Set.member` replacementFreeVariables) bound =
+                    let (newPat, renamedBody) = renamePattern pat body (Set.unions [replacementFreeVariables, freeVariables body, Set.singleton targetVariable])
+                     in CaseBranch newPat (substitute targetVariable replacementExpression renamedBody)
                 | otherwise =
-                    CaseBranch con vars (substitute targetVariable replacementExpression body)
+                    CaseBranch pat (substitute targetVariable replacementExpression body)
+              where bound = patternBindings pat
 
-            renameVars [] b _ = ([], b)
-            renameVars (v : vs) b used =
-                let fresh = freshIdentifier v used
-                    b' = substitute v (Variable fresh) b
-                    (vs', b'') = renameVars vs b' (Set.insert fresh used)
-                 in (fresh : vs', b'')
+            renamePattern pat body used =
+                foldl renameOne (pat, body) (patternBindings pat)
+              where
+                renameOne (p, b) v =
+                    let fresh = freshIdentifier v used
+                     in (renamePat v fresh p, substitute v (Variable fresh) b)
+                renamePat v fresh (PatVar x) | x == v = PatVar fresh
+                renamePat _ _ (PatVar x) = PatVar x
+                renamePat _ _ PatWild = PatWild
+                renamePat _ _ (PatLit l) = PatLit l
+                renamePat v fresh (PatCon c ps) = PatCon c (map (renamePat v fresh) ps)
+                renamePat v fresh (PatTuple ps) = PatTuple (map (renamePat v fresh) ps)
         Let param maybeParamType defExpr body ->
             let substType = fmap (substitute targetVariable replacementExpression) maybeParamType
                 substDef = substitute targetVariable replacementExpression defExpr
@@ -230,23 +266,12 @@ alphaEquivalent leftExpression rightExpression =
                 && length bs1 == length bs2
                 && and (zipWith branchEq bs1 bs2)
           where
-            branchEq (CaseBranch c1 v1 b1) (CaseBranch c2 v2 b2) =
-                c1 == c2
-                    && length v1 == length v2
-                    && let used = Set.unions [freeVariables b1, freeVariables b2]
-                           freshNames = snd (foldr (\v (u, acc) -> let f = freshIdentifier v u in (Set.insert f u, f : acc)) (used, []) v1)
-                           substAll vs freshes body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs freshes)
-                        in alphaEquivalent (substAll v1 freshNames b1) (substAll v2 freshNames b2)
+            branchEq (CaseBranch p1 b1) (CaseBranch p2 b2) =
+                alphaPattern p1 p2 b1 b2
         (Case t1 Nothing bs1, Case t2 Nothing bs2) ->
             alphaEquivalent t1 t2 && length bs1 == length bs2 && and (zipWith branchEq bs1 bs2)
           where
-            branchEq (CaseBranch c1 v1 b1) (CaseBranch c2 v2 b2) =
-                c1 == c2
-                    && length v1 == length v2
-                    && let used = Set.unions [freeVariables b1, freeVariables b2]
-                           freshNames = snd (foldr (\v (u, acc) -> let f = freshIdentifier v u in (Set.insert f u, f : acc)) (used, []) v1)
-                           substAll vs freshes body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs freshes)
-                        in alphaEquivalent (substAll v1 freshNames b1) (substAll v2 freshNames b2)
+            branchEq (CaseBranch p1 b1) (CaseBranch p2 b2) = alphaPattern p1 p2 b1 b2
         (Case _ (Just _) _, Case _ Nothing _) -> False
         (Case _ Nothing _, Case _ (Just _) _) -> False
         (Let p1 ty1 d1 b1, Let p2 ty2 d2 b2) ->
