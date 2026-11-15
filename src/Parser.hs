@@ -571,7 +571,7 @@ parsePattern = parseParen <|> parseWild <|> parseNatural <|> parseNamed
     parseNatural = do
         pt <- consumeToken
         case tokenValue pt of
-            TokenNatural n -> pure (PatLit n)
+            TokenNatural n -> pure (PatLit (LitNat n))
             _ -> empty
     parseNamed = do
         name <- parseIdentifier
@@ -600,6 +600,48 @@ parsePatternBranch env = do
     body <- expressionParser env
     pure (pattern, body)
 
+-- Patterns used by the ordinary `case` form.  A leading identifier is kept as
+-- a constructor candidate; the type checker can reinterpret a nullary name as
+-- a variable when the scrutinee has a primitive type.
+parseCasePattern :: Parser Pattern
+parseCasePattern = do
+    mPt <- peekPosToken
+    case mPt of
+        Just (PosToken _ (TokenNatural n)) -> consumeToken *> pure (PatLit (LitNat n))
+        Just (PosToken _ (TokenFloat n)) -> consumeToken *> pure (PatLit (LitFloat n))
+        Just (PosToken _ (TokenChar c)) -> consumeToken *> pure (PatLit (LitChar c))
+        Just (PosToken _ (TokenString s)) -> consumeToken *> pure (PatLit (LitString s))
+        Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
+        Just (PosToken _ TokenKeywordZero) -> consumeToken *> pure (PatCon (Identifier "zero") [])
+        Just (PosToken _ TokenKeywordSucc) -> do
+            _ <- consumeToken
+            args <- many parseAtomicCasePattern
+            pure (PatCon (Identifier "successor") args)
+        Just (PosToken _ (TokenIdentifier con)) -> do
+            _ <- consumeToken
+            args <- many parseAtomicCasePattern
+            pure (PatCon con args)
+        Just (PosToken _ TokenLeftParen) -> do
+            expectToken TokenLeftParen "'('"
+            p <- parseCasePattern
+            expectToken TokenRightParen "')'"
+            pure p
+        _ -> empty
+  where
+    parseAtomicCasePattern = do
+        mPt <- peekPosToken
+        case mPt of
+            Just (PosToken _ (TokenIdentifier name)) -> consumeToken *> pure (PatVar name)
+            Just (PosToken _ (TokenNatural n)) -> consumeToken *> pure (PatLit (LitNat n))
+            Just (PosToken _ (TokenFloat n)) -> consumeToken *> pure (PatLit (LitFloat n))
+            Just (PosToken _ (TokenChar c)) -> consumeToken *> pure (PatLit (LitChar c))
+            Just (PosToken _ (TokenString s)) -> consumeToken *> pure (PatLit (LitString s))
+            Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
+            Just (PosToken _ TokenKeywordZero) -> consumeToken *> pure (PatCon (Identifier "zero") [])
+            Just (PosToken _ TokenKeywordSucc) -> consumeToken *> pure (PatCon (Identifier "successor") [])
+            Just (PosToken _ TokenLeftParen) -> parseCasePattern
+            _ -> empty
+
 parseCase :: FixityEnv -> Parser Expression
 parseCase env = do
     expectToken TokenKeywordCase "'case'"
@@ -610,16 +652,8 @@ parseCase env = do
     branches <- case nextTok of
         Just TokenLeftBrace -> parseBraced
         _ -> parsePiped
-    if all simpleBranch branches
-        then pure (Case target mMotive [CaseBranch con (map varName args) body | (PatCon con args, body) <- branches])
-        else pure (PatternCase target mMotive branches)
+    pure (Case target mMotive [CaseBranch pat body | (pat, body) <- branches])
   where
-    simpleBranch (PatCon _ args, _) = all isVar args
-    simpleBranch _ = False
-    isVar (PatVar _) = True
-    isVar _ = False
-    varName (PatVar name) = name
-    varName _ = Identifier "_"
     parseMotive :: Parser (Maybe (Identifier, Expression))
     parseMotive = do
         nextTok <- peekToken
@@ -633,14 +667,19 @@ parseCase env = do
             _ -> pure Nothing
     parseBraced = do
         expectToken TokenLeftBrace "'{'"
-        bs <- many (parsePatternBranch env <* optional (expectToken TokenSemicolon "';'"))
+        bs <- many (parseCasePatternBranch env <* optional (expectToken TokenSemicolon "';'"))
         expectToken TokenRightBrace "'}'"
         pure bs
     parsePiped = do
         _ <- optional (expectToken TokenPipe "'|'")
-        b1 <- parsePatternBranch env
-        bs <- many (expectToken TokenPipe "'|'" *> parsePatternBranch env)
+        b1 <- parseCasePatternBranch env
+        bs <- many (expectToken TokenPipe "'|'" *> parseCasePatternBranch env)
         pure (b1 : bs)
+    parseCasePatternBranch env = do
+        pat <- parseCasePattern
+        expectToken TokenArrow "'->'"
+        body <- expressionParser env
+        pure (pat, body)
 
 expressionParser :: FixityEnv -> Parser Expression
 expressionParser env = withSpan $ do

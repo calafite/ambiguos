@@ -56,7 +56,7 @@ prettyWithConfig c p e
         Case t mm bs -> parenthesizeIf (p > 2) ("case " <> prettyWithConfig c 0 t <> motive mm <> " of { " <> Text.intercalate " ; " (map branch bs) <> " }")
   where
     motive Nothing = ""; motive (Just (n,t)) = " as " <> prettyIdentifier n <> " return " <> prettyWithConfig c 0 t
-    branch (CaseBranch n vs b) = Text.unwords (prettyIdentifier n : map prettyIdentifier vs) <> " -> " <> prettyWithConfig c 0 b
+    branch (CaseBranch pat b) = prettyPattern pat <> " -> " <> prettyWithConfig c 0 b
 
 lambdaText c v n mt b = "\\" <> binder <> " -> " <> prettyWithConfig c 0 b where
     binder = case (v,mt) of
@@ -67,7 +67,7 @@ tupleText c xs = "(" <> Text.intercalate ", " (map (prettyWithConfig c 0) xs) <>
 listText c xs = "[" <> Text.intercalate ", " (map (prettyWithConfig c 0) xs) <> "]"
 parenthesizeIf True x = "(" <> x <> ")"; parenthesizeIf False x = x
 prettyIdentifier i@(Identifier n) | isSymbolic i = "(" <> n <> ")" | otherwise = n
-prettyPattern PatWild = "_"; prettyPattern (PatVar n) = prettyIdentifier n; prettyPattern (PatLit n) = Text.pack (show n); prettyPattern (PatCon n xs) = Text.unwords (prettyIdentifier n : map (\x -> "(" <> prettyPattern x <> ")") xs); prettyPattern (PatTuple xs) = tupleTextPattern xs
+prettyPattern PatWild = "_"; prettyPattern (PatVar n) = prettyIdentifier n; prettyPattern (PatLit n) = prettyLiteral n; prettyPattern (PatCon n xs) = Text.unwords (prettyIdentifier n : map (\x -> "(" <> prettyPattern x <> ")") xs); prettyPattern (PatTuple xs) = tupleTextPattern xs
 tupleTextPattern xs = "(" <> Text.intercalate ", " (map prettyPattern xs) <> ")"
 prettyLiteral (LitNat n) = Text.pack (show n); prettyLiteral (LitInt n) = Text.pack (show n); prettyLiteral (LitFloat n) = Text.pack (show n); prettyLiteral (LitChar x) = Text.pack (show x); prettyLiteral (LitString x) = Text.pack (show (Text.unpack x))
 isNegativeLiteral (LitInt n) = n < 0; isNegativeLiteral _ = False

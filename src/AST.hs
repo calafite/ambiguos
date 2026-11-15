@@ -83,8 +83,7 @@ data PrimOp
     deriving (Eq, Ord, Show)
 
 data CaseBranch = CaseBranch
-    { branchConstructor :: !Identifier
-    , branchBindings :: ![Identifier]
+    { branchPattern :: !Pattern
     , branchBody :: !Expression
     }
     deriving (Eq, Show)
@@ -109,7 +108,7 @@ data RecordInfo = RecordInfo
 data Pattern
     = PatVar !Identifier
     | PatWild
-    | PatLit !Integer
+    | PatLit !Literal
     | PatCon !Identifier ![Pattern]
     | PatTuple ![Pattern]
     deriving (Eq, Show)
