@@ -339,7 +339,7 @@ zonk expr = do
             Case <$> zonk target <*> traverse zonkMotive mMotive <*> traverse zonkBranch branches
           where
             zonkMotive (mv, mt) = (,) mv <$> zonk mt
-            zonkBranch (CaseBranch con vars body) = CaseBranch con vars <$> zonk body
+            zonkBranch (CaseBranch pat body) = CaseBranch pat <$> zonk body
         Annotation t ty -> Annotation <$> zonk t <*> zonk ty
         Located sp e -> Located sp <$> zonk e
         other -> pure other
@@ -352,7 +352,7 @@ occursIn i expr = case expr of
     Pi _ _ d c -> occursIn i d || occursIn i c
     Let _ ty d b -> maybe False (occursIn i) ty || occursIn i d || occursIn i b
     Case target mMotive branches ->
-        occursIn i target || any (\(CaseBranch _ _ b) -> occursIn i b) branches || case mMotive of
+        occursIn i target || any (\(CaseBranch _ b) -> occursIn i b) branches || case mMotive of
             Just (_, mt) -> occursIn i mt
             Nothing -> False
     Annotation t ty -> occursIn i t || occursIn i ty
@@ -696,6 +696,43 @@ checkCaseBranches ::
     [CaseBranch] ->
     Elab [CaseBranch]
 checkCaseBranches context elabTarget whnfTargetType expType mMotive branches = do
+    case whnfTargetType of
+        PrimType pt -> checkPrimitiveCaseBranches context pt expType branches
+        _ -> checkDataCaseBranches context elabTarget whnfTargetType expType mMotive branches
+
+checkPrimitiveCaseBranches :: Context -> PrimType -> Expression -> [CaseBranch] -> Elab [CaseBranch]
+checkPrimitiveCaseBranches context pt expType branches = do
+    let defaultSeen = any (\(CaseBranch pat _) -> case pat of { PatWild -> True; PatVar _ -> True; PatCon _ [] -> True; _ -> False }) branches
+    if not defaultSeen
+        then throwError (NonExhaustivePatternMatch (Identifier (Text.pack (show pt))) [Identifier "_"])
+        else traverse checkOne branches
+  where
+    checkOne branch@(CaseBranch pat body) = do
+        let (effectivePat, branchContext) = case pat of
+                PatCon n [] -> (PatVar n, extendContextType n (PrimType pt) context)
+                PatVar n -> (PatVar n, extendContextType n (PrimType pt) context)
+                PatWild -> (PatWild, context)
+                PatLit (LitNat n) | pt == PTInt -> (PatLit (LitInt n), context)
+                PatLit (LitNat n) | pt == PTFloat -> (PatLit (LitFloat (fromIntegral n)), context)
+                PatLit lit -> (PatLit lit, context)
+                _ -> (pat, context)
+        case effectivePat of
+            PatLit lit | literalPrimType lit /= Just pt -> throwError (TypeMismatch (PrimType pt) (literalType lit))
+            PatCon _ _ -> throwError (CannotMatchOnNonDataType (PrimType pt))
+            _ -> pure ()
+        CaseBranch effectivePat <$> checkElab branchContext body expType
+    literalType (LitNat _) = NatType
+    literalType (LitInt _) = PrimType PTInt
+    literalType (LitFloat _) = PrimType PTFloat
+    literalType (LitChar _) = PrimType PTChar
+    literalType (LitString _) = PrimType PTString
+    literalPrimType (LitNat _) = Just PTInt
+    literalPrimType (LitInt _) = Just PTInt
+    literalPrimType (LitFloat _) = Just PTFloat
+    literalPrimType (LitChar _) = Just PTChar
+    literalPrimType (LitString _) = Just PTString
+
+checkDataCaseBranches context elabTarget whnfTargetType expType mMotive branches = do
     let (headExpr, typeArgs) = unfoldApp whnfTargetType
     dataTypeName <- case headExpr of
         Variable ident -> pure ident
@@ -726,10 +763,11 @@ checkCaseBranches context elabTarget whnfTargetType expType mMotive branches = d
                     cName
             )
             expectedConstructors
-    let branchConstructors = map branchConstructor branches
+    let branchConstructors = [c | CaseBranch (PatCon c _) _ <- branches]
+        hasDefault = any (\(CaseBranch p _) -> case p of { PatWild -> True; PatVar _ -> True; _ -> False }) branches
         missingConstructors =
             filter (`notElem` branchConstructors) expectedNonAbsurd
-    if not (null missingConstructors) && dataTypeName /= Identifier "Void"
+    if not hasDefault && not (null missingConstructors) && dataTypeName /= Identifier "Void"
         then throwError (NonExhaustivePatternMatch dataTypeName missingConstructors)
         else traverse
             ( checkBranch
@@ -813,7 +851,23 @@ checkBranch ::
     Expression ->
     CaseBranch ->
     Elab CaseBranch
-checkBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTargetType mMotive expType (CaseBranch con vars body) = do
+checkBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTargetType mMotive expType (CaseBranch pat body) = do
+    let (con, vars) = case pat of
+            PatCon c ps -> (c, [case p of { PatVar v -> v; _ -> Identifier ("_pat" <> Text.pack (show i)) } | (i, p) <- zip [(0 :: Int) ..] ps])
+            PatVar c -> (c, [])
+            _ -> (Identifier "_", [])
+    if con == Identifier "_"
+        then do
+            let extContext = case pat of
+                    PatVar v -> extendContextType v whnfTargetType context
+                    _ -> context
+            elabBody <- checkElab extContext body expType
+            pure (CaseBranch pat elabBody)
+        else do
+            checked <- checkConstructorBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTargetType mMotive expType con vars body
+            pure checked { branchPattern = pat }
+
+checkConstructorBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTargetType mMotive expType con vars body = do
     localConType <-
         case lookup con (dataConstructors dataInfo) of
             Just ty -> pure ty
@@ -821,8 +875,10 @@ checkBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTar
     let paramNames = map (\(_, p, _) -> p) (dataParams dataInfo)
         conSubst = foldr (\(p, a) acc -> substitute p a acc) localConType (zip paramNames paramArgs)
     (explicitArgTypes, _) <- peelConstructorArgs context vars conSubst
+    fallbackArgTypes <- mapM (\_ -> freshMeta context (Universe (UFixed (-1)))) (drop (length explicitArgTypes) vars)
+    let allArgTypes = explicitArgTypes ++ fallbackArgTypes
     let extContext =
-            foldr (\(v, ty) ctx -> extendContextType v ty ctx) context (zip vars explicitArgTypes)
+            foldr (\(v, ty) ctx -> extendContextType v ty ctx) context (zip vars allArgTypes)
         conApp =
             case dataTypeName of
                 Identifier "Nat" ->
@@ -852,7 +908,7 @@ checkBranch context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTar
                     (extContext, substitute mv conApp mtype)
                 _ -> (extContext, expType)
     elabBody <- checkElab refContext body branchExpected
-    pure (CaseBranch con vars elabBody)
+    pure (CaseBranch (PatCon con (map PatVar vars)) elabBody)
 
 compilePatternCase :: Context -> Expression -> [(Pattern, Expression)] -> Elab [CaseBranch]
 compilePatternCase context target clauses = do
@@ -873,7 +929,7 @@ compilePatternCase context target clauses = do
             _ -> 0
         freshArgs name = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. constructorArity name - 1]]
         expandWild body =
-            [ CaseBranch con (freshArgs con) body | con <- constructors ]
+            [ CaseBranch (PatCon con (map PatVar (freshArgs con))) body | con <- constructors ]
         literalPattern n
             | n <= 0 = PatCon (Identifier "zero") []
             | otherwise = PatCon (Identifier "successor") [literalPattern (n - 1)]
@@ -883,21 +939,21 @@ compilePatternCase context target clauses = do
         compileAt scrutinee pattern body = case pattern of
             PatVar name -> Let name Nothing scrutinee body
             PatWild -> body
-            PatLit n -> compileAt scrutinee (literalPattern n) body
+            PatLit (LitNat n) -> compileAt scrutinee (literalPattern n) body
             PatTuple ps -> compileAt scrutinee (tuplePattern ps) body
             PatCon con subpatterns ->
                 let args = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. length subpatterns - 1]]
                     nested = foldr (\(arg, subpattern) acc -> compileAt (Variable arg) subpattern acc) body (zip args subpatterns)
-                 in Case scrutinee Nothing [CaseBranch con args nested]
+                 in Case scrutinee Nothing [CaseBranch (PatCon con (map PatVar args)) nested]
         compileTop pattern body = case pattern of
             PatVar name -> expandWild (substitute name target body)
             PatWild -> expandWild body
-            PatLit n -> compileTop (literalPattern n) body
+            PatLit (LitNat n) -> compileTop (literalPattern n) body
             PatTuple ps -> compileTop (tuplePattern ps) body
             PatCon con subpatterns ->
                 let args = [Identifier ("pat" <> Text.pack (show i)) | i <- [0 .. length subpatterns - 1]]
                     nested = foldr (\(arg, subpattern) acc -> compileAt (Variable arg) subpattern acc) body (zip args subpatterns)
-                 in [CaseBranch con args nested]
+                 in [CaseBranch (PatCon con (map PatVar args)) nested]
     pure (concatMap (uncurry compileTop) clauses)
 
 primitiveOpType :: PrimOp -> Expression
@@ -1439,12 +1495,17 @@ checkTermination name body =
                 small' = case targetVar of
                     Just v
                         | Set.member v params || Set.member v small ->
-                            Set.union small (Set.fromList (concatMap branchBindings branches))
+                            Set.union small (Set.fromList (concatMap (patternNames . branchPattern) branches))
                     _ -> small
              in mapM_ (checkBranch' nm params small') branches
           where
-            checkBranch' n pp ss (CaseBranch _ vs bdy) =
-                checkCalls n pp (Set.union ss (Set.fromList vs)) bdy
+            checkBranch' n pp ss (CaseBranch pat bdy) =
+                checkCalls n pp (Set.union ss (Set.fromList (patternNames pat))) bdy
+            patternNames (PatVar v) = [v]
+            patternNames PatWild = []
+            patternNames (PatLit _) = []
+            patternNames (PatCon _ ps) = concatMap patternNames ps
+            patternNames (PatTuple ps) = concatMap patternNames ps
         Application _ f arg ->
             let (h, spine) = unfoldApp expr
              in case h of
@@ -1564,7 +1625,7 @@ checkRecordDeclaration context recName params univ fields mConName =
                         conValue = foldl (Application Explicit) (Variable conName) (map Variable conVars)
                         projectionFor field =
                             let recVar = Identifier "record"
-                                branch = CaseBranch conName conVars (Variable (recordFieldName field))
+                                branch = CaseBranch (PatCon conName (map PatVar conVars)) (Variable (recordFieldName field))
                                 body = Lambda Explicit recVar Nothing (Case (Variable recVar) Nothing [branch])
                                 value = foldr (\(_, p, _) b -> Lambda Implicit p Nothing b) body allArgs
                                 ty = foldr (\(_, p, t) b -> Pi Implicit p t b)

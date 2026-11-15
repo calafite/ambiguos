@@ -2,7 +2,7 @@
 
 module Main (main) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), PrimType (..), Statement (..), UniverseLevel (..), Visibility (..))
+import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), Pattern (..), PrimType (..), Statement (..), UniverseLevel (..), Visibility (..))
 import Data.Either (isLeft)
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef')
 import Data.Maybe (isJust)
@@ -88,8 +88,8 @@ bIdent = Identifier "b"
 trueC = Identifier "true"
 falseC = Identifier "false"
 
-caseBranches1 = [CaseBranch trueC [] (natLit 0), CaseBranch falseC [] (natLit 1)]
-caseBranches2 = [CaseBranch trueC [] (natLit 0), CaseBranch falseC [] (natLit 0)]
+caseBranches1 = [CaseBranch (PatCon trueC []) (natLit 0), CaseBranch (PatCon falseC []) (natLit 1)]
+caseBranches2 = [CaseBranch (PatCon trueC []) (natLit 0), CaseBranch (PatCon falseC []) (natLit 0)]
 
 caseNCase1 = Lambda Explicit bIdent (Just NatType) (Case (Variable bIdent) Nothing caseBranches1)
 caseNCase2 = Lambda Explicit bIdent (Just NatType) (Case (Variable bIdent) Nothing caseBranches2)
