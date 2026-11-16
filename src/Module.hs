@@ -16,7 +16,7 @@ import qualified Data.Text as Text
 import Parser (parseProgramWith, defaultFixityEnv)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>), (<.>), takeExtension)
-import TypeChecker (Context (..), checkDataDeclaration, checkDefinition, checkRecordDeclaration, emptyContext)
+import TypeChecker (Context (..), checkClassDeclaration, checkClassDeclarationDetailed, checkDataDeclaration, checkDefinition, checkFunctionDefinition, checkInstanceDeclaration, checkInstanceDeclarationDetailed, checkRecordDeclaration, emptyContext)
 
 data ModuleError
     = ModuleNotFound [FilePath]
@@ -65,6 +65,11 @@ loadModuleWithPaths searchPaths entry = do
             DataDeclaration n ps u cs -> either (const Nothing) Just (checkDataDeclaration ctx n ps u cs)
             RecordDeclaration n ps u fs con -> either (const Nothing) Just (checkRecordDeclaration ctx n ps u fs con)
             Definition n ty body -> either (const Nothing) (Just . first3) (checkDefinition ctx n ty body)
+            FunctionDefinition n ty clauses -> either (const Nothing) (Just . first3) (checkFunctionDefinition ctx n ty clauses)
+            ClassDeclaration n ps _ fs -> either (const Nothing) Just (checkClassDeclaration ctx n ps fs)
+            ClassDeclarationDetailed n ps ms -> either (const Nothing) Just (checkClassDeclarationDetailed ctx n ps ms)
+            InstanceDeclaration n h fs -> either (const Nothing) Just (checkInstanceDeclaration ctx n h fs)
+            InstanceDeclarationDetailed n ps h cs -> either (const Nothing) Just (checkInstanceDeclarationDetailed ctx n ps h cs)
             _ -> Just ctx
         first3 (ctx, _, _) = ctx
 
@@ -77,6 +82,7 @@ loadModuleWithPaths searchPaths entry = do
         , contextFixities = Map.union (contextFixities a) (contextFixities b)
         , contextRecords = Map.union (contextRecords a) (contextRecords b)
         , contextInstances = Map.unionWith (++) (contextInstances a) (contextInstances b)
+        , contextClassDefaults = Map.union (contextClassDefaults a) (contextClassDefaults b)
         }
 
     resolve requested = do

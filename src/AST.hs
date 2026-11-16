@@ -10,7 +10,9 @@ module AST (
     CaseBranch (..),
     RecordField (..),
     RecordInfo (..),
+    ClassMethod (..),
     Pattern (..),
+    Clause (..),
     Expression (..),
     Statement (..),
 ) where
@@ -105,6 +107,13 @@ data RecordInfo = RecordInfo
     }
     deriving (Eq, Show)
 
+data ClassMethod = ClassMethod
+    { methodName :: !Identifier
+    , methodType :: !Expression
+    , methodDefault :: !(Maybe Expression)
+    }
+    deriving (Eq, Show)
+
 data Pattern
     = PatVar !Identifier
     | PatWild
@@ -143,8 +152,18 @@ data Expression
     | Tuple ![Expression]
     deriving (Eq, Show)
 
+data Clause = Clause
+    { clauseName     :: !Identifier
+    , clausePatterns :: ![Pattern]
+    , clauseBody     :: !Expression
+    }
+    deriving (Eq, Show)
+
 data Statement
     = Definition Identifier (Maybe Expression) Expression
+    | TypeSignature !Identifier !Expression
+    | FunctionClause !Clause
+    | FunctionDefinition !Identifier !(Maybe Expression) ![Clause]
     | Evaluation Expression
     | DataDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [(Identifier, Expression)]
     | FixityDeclaration !Associativity !Int ![Identifier]
@@ -153,4 +172,6 @@ data Statement
     | ImportStmt !Bool ![Identifier] !(Maybe [Identifier]) !(Maybe Identifier)
     | ClassDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [RecordField]
     | InstanceDeclaration Identifier Expression [(Identifier, Expression)]
+    | ClassDeclarationDetailed Identifier [(Visibility, Identifier, Expression)] [ClassMethod]
+    | InstanceDeclarationDetailed Identifier [(Visibility, Identifier, Expression)] Expression [Clause]
     deriving (Eq, Show)

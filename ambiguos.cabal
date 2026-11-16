@@ -31,6 +31,7 @@ library
                     , Substitution
                     , TypeChecker
                     , Module
+                    , PatternMatch
     build-depends:    base ^>=4.20.2.0
                     , text
                     , mtl

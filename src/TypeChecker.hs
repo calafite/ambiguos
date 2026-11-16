@@ -12,17 +12,20 @@ module TypeChecker (
     checkDataDeclaration,
     checkRecordDeclaration,
     checkClassDeclaration,
+    checkClassDeclarationDetailed,
     checkInstanceDeclaration,
+    checkInstanceDeclarationDetailed,
     synthesize,
     check,
     checkDefinition,
+    checkFunctionDefinition,
     lookupContext,
     renderTypeError,
     renderTypeDiagnostic,
     renderGoals,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Fixity (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), RecordField (..), RecordInfo (..), UniverseLevel (..), Visibility (..))
+import AST (CaseBranch (..), ClassMethod (..), Clause (..), Expression (..), Fixity (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), RecordField (..), RecordInfo (..), UniverseLevel (..), Visibility (..))
 import Control.Monad (filterM, foldM)
 import Control.Monad.State.Strict (StateT (..), evalStateT, gets, modify, runStateT)
 import Control.Monad.Trans (lift)
@@ -37,6 +40,7 @@ import Parser (defaultFixityEnv)
 import Evaluation (Environment, Value (..), areDefinitionallyEqual, emptyEnvironment, evaluate, evaluateWeakHeadNormalForm)
 import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
+import PatternMatch (compileClauses)
 
 data Goal = Goal
     { goalId :: !Int
@@ -111,6 +115,7 @@ data Context = Context
     , contextFixities :: Map Identifier Fixity
     , contextRecords :: Map Identifier RecordInfo
     , contextInstances :: Map Identifier [Identifier]
+    , contextClassDefaults :: Map Identifier [(Identifier, Expression)]
     }
     deriving (Eq, Show)
 
@@ -164,6 +169,7 @@ emptyContext =
         , contextFixities = defaultFixityEnv
         , contextRecords = Map.empty
         , contextInstances = Map.empty
+        , contextClassDefaults = Map.empty
         }
 
 primitiveBindings :: [(Identifier, PrimOp)]
@@ -420,8 +426,8 @@ extractUniverseLevel context expr = do
 
 unify :: Context -> Expression -> Expression -> Elab ()
 unify ctx e1 e2 = do
-    z1 <- zonk e1
-    z2 <- zonk e2
+    z1 <- zonk (stripLocated e1)
+    z2 <- zonk (stripLocated e2)
     let (h1, sp1) = unfoldApp z1
         (h2, sp2) = unfoldApp z2
     case (h1, sp1, h2, sp2) of
@@ -1009,6 +1015,10 @@ numericPrimitive name kind = case (name, kind) of
     (Identifier ">", PTInt) -> Just IntGt
     (Identifier ">=", PTInt) -> Just IntGe
     (Identifier "/=", PTInt) -> Just IntNeq
+    (Identifier "==", PTString) -> Just StringEq
+    (Identifier "/=", PTString) -> Just StringEq
+    (Identifier "==", PTChar) -> Just CharEq
+    (Identifier "/=", PTChar) -> Just CharEq
     (Identifier "+", PTFloat) -> Just FloatAdd
     (Identifier "-", PTFloat) -> Just FloatSub
     (Identifier "*", PTFloat) -> Just FloatMul
@@ -1042,6 +1052,8 @@ numericBinary context op left right = do
             (_, Just PTFloat) -> Just PTFloat
             (Just PTInt, _) -> Just PTInt
             (_, Just PTInt) -> Just PTInt
+            (Just PTString, Just PTString) -> Just PTString
+            (Just PTChar, Just PTChar) -> Just PTChar
             _ | leftNat && rightNat -> Nothing
             _ -> Nothing
         comparison = op `elem` map Identifier ["==", "/=", "<", "<=", ">", ">="]
@@ -1665,6 +1677,25 @@ checkClassDeclaration :: Context -> Identifier -> [(Visibility, Identifier, Expr
 checkClassDeclaration context name params fields =
     checkRecordDeclaration context name params (Universe (UFixed (-1))) fields Nothing
 
+checkClassDeclarationDetailed :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> [ClassMethod] -> Either TypeDiagnostic Context
+checkClassDeclarationDetailed context name params methods =
+    let fields = [RecordField (methodName m) (methodType m) | m <- methods]
+        defaults = [(methodName m, body) | m <- methods, Just body <- [methodDefault m]]
+     in do
+        updated <- checkClassDeclaration context name params fields
+        pure updated { contextClassDefaults = Map.insert name defaults (contextClassDefaults updated) }
+
+checkInstanceDeclarationDetailed :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> Expression -> [Clause] -> Either TypeDiagnostic Context
+checkInstanceDeclarationDetailed context className _params headType clauses = do
+    info <- case Map.lookup className (contextRecords context) of
+        Just x -> Right x
+        Nothing -> Left (TypeDiagnostic Nothing [] (UnboundVariable className))
+    field <- case recordFields info of
+        (f : _) -> Right f
+        [] -> Left (TypeDiagnostic Nothing [] (CannotSynthesizeType (Variable className)))
+    let methodBody = compileClauses Nothing clauses
+    checkInstanceDeclaration context className headType [(recordFieldName field, methodBody)]
+
 checkInstanceDeclaration :: Context -> Identifier -> Expression -> [(Identifier, Expression)] -> Either TypeDiagnostic Context
 checkInstanceDeclaration context className headType fields = do
     info <- case Map.lookup className (contextRecords context) of
@@ -1672,7 +1703,10 @@ checkInstanceDeclaration context className headType fields = do
         Nothing -> Left (TypeDiagnostic Nothing [] (UnboundVariable className))
     let instanceName = Identifier ("instance_" <> unIdentifier className <> "_" <> Text.pack (show headType))
         supplied = Map.fromList fields
-        ordered = traverse (\f -> maybe (Left (TypeDiagnostic Nothing [] (UnknownField (recordFieldName f) className))) Right (Map.lookup (recordFieldName f) supplied)) (recordFields info)
+        defaults = Map.fromList (Map.findWithDefault [] className (contextClassDefaults context))
+        ordered = traverse (\f -> case Map.lookup (recordFieldName f) supplied of
+                Just value -> Right value
+                Nothing -> maybe (Left (TypeDiagnostic Nothing [] (UnknownField (recordFieldName f) className))) Right (Map.lookup (recordFieldName f) defaults)) (recordFields info)
         instanceType = Application Explicit (Variable className) headType
     values <- ordered
     let dict = foldl (Application Explicit) (Variable (recordConName info)) values
@@ -1747,6 +1781,15 @@ checkDefinition context name maybeDeclaredType bodyTerm =
                     pure (updatedContext, finalType, goals)
             )
             (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
+
+checkFunctionDefinition :: Context -> Identifier -> Maybe Expression -> [Clause] -> Either TypeDiagnostic (Context, Expression, [Goal])
+checkFunctionDefinition context name maybeDeclaredType clauses =
+    case clauses of
+        [] -> Left (TypeDiagnostic Nothing [] (CannotSynthesizeType (Variable name)))
+        firstClause : _
+            | any ((/= length (clausePatterns firstClause)) . length . clausePatterns) clauses ->
+                Left (TypeDiagnostic Nothing [] (ArityMismatch name (length (clausePatterns firstClause)) (length (clausePatterns (head clauses)))))
+            | otherwise -> checkDefinition context name maybeDeclaredType (compileClauses maybeDeclaredType clauses)
 
 renderGoals :: [Goal] -> Text
 renderGoals goals = Text.concat (map formatGoal goals)
