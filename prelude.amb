@@ -3,6 +3,16 @@
    Calculus of Constructions with Martin-Löf Identity and Inductive Types
    ========================================================================== -}
 
+infixr 9 .
+infixr 8 ^
+infixl 7 * /
+infixl 6 + -
+infixr 5 ++ <>
+infix 4 == /= < <= > >=
+infixr 3 &&
+infixr 2 ||
+infixr 0 $
+
 
 {- --------------------------------------------------------------------------
    1. Function Combinators
@@ -58,6 +68,15 @@ def substitute : {A : Type} -> (P : A -> Type) -> {x y : A} -> Id A x y -> P x -
 def transport : {A : Type} -> (P : A -> Type) -> {x y : A} -> Id A x y -> P x -> P y
   = substitute
 
+def sym : {A : Type} -> {x y : A} -> Id A x y -> Id A y x = symmetry
+
+def trans : {A : Type} -> {x y z : A} -> Id A x y -> Id A y z -> Id A x z = transitivity
+
+def cong : {A B : Type} -> (f : A -> B) -> {x y : A} -> Id A x y -> Id B (f x) (f y) = congruence
+
+def cong2 : {A B C : Type} -> (f : A -> B -> C) -> {x1 x2 : A} -> {y1 y2 : B}
+     -> Id A x1 x2 -> Id B y1 y2 -> Id C (f x1 y1) (f x2 y2) = congruence2
+
 
 {- --------------------------------------------------------------------------
    3. Intuitionistic Logic & Void
@@ -100,9 +119,18 @@ data Bool : Type where
   ; false : Bool
   }
 
+data Dec (P : Type) : Type where
+  { yes : P -> Dec P
+  ; no  : (P -> Void) -> Dec P
+  }
+
 not : Bool -> Bool
 not true = false
 not false = true
+
+isYes : {P : Type} -> Dec P -> Bool
+isYes (yes _) = true
+isYes (no _) = false
 
 {- --------------------------------------------------------------------------
    Typeclasses
@@ -119,6 +147,14 @@ class Add (A : Type) where
 
 class Concat (A : Type) where
   { (++) : A -> A -> A
+  }
+
+class Semigroup (A : Type) where
+  { (<>) : A -> A -> A
+  }
+
+class Monoid (A : Type) where
+  { empty : A
   }
 
 and : Bool -> Bool -> Bool
@@ -457,6 +493,77 @@ map f (cons x xs) = cons (f x) (map f xs)
 append : List a -> List a -> List a
 append nil ys = ys
 append (cons x xs) ys = cons x (append xs ys)
+
+instance Semigroup (List Int) where
+  { (<>) = append
+  }
+
+instance Monoid (List Int) where
+  { empty = nil
+  }
+
+elem : Int -> List Int -> Bool
+elem target nil = false
+elem target (cons x xs) = case target == x of { true -> true ; false -> elem target xs }
+
+notElem : Int -> List Int -> Bool
+notElem target xs = not (elem target xs)
+
+lookup : String -> List (Pair String Int) -> Maybe Int
+lookup _ nil = nothing
+lookup target (cons entry rest) = case entry of { pair key value -> case target == key of { true -> just value ; false -> lookup target rest } }
+
+takeWhile : (a -> Bool) -> List a -> List a
+takeWhile _ nil = nil
+takeWhile predicate (cons x xs) = case predicate x of { true -> cons x (takeWhile predicate xs) ; false -> nil }
+
+dropWhile : (a -> Bool) -> List a -> List a
+dropWhile _ nil = nil
+dropWhile predicate (cons x xs) = case predicate x of { true -> dropWhile predicate xs ; false -> cons x xs }
+
+span : (a -> Bool) -> List a -> Pair (List a) (List a)
+span predicate xs = pair (takeWhile predicate xs) (dropWhile predicate xs)
+
+break : (a -> Bool) -> List a -> Pair (List a) (List a)
+break predicate = span (\x -> not (predicate x))
+
+def unzip : {A B : Type} -> List (Pair A B) -> Pair (List A) (List B)
+  = \xs -> case xs of
+      { nil -> pair nil nil
+      ; cons entry rest -> case entry of
+          { pair x y -> case unzip rest of
+              { pair xs ys -> pair (cons x xs) (cons y ys) }
+          }
+      }
+
+intersperse : a -> List a -> List a
+intersperse _ nil = nil
+intersperse separator (cons x xs) = cons x (case xs of { nil -> nil ; _ -> cons separator (intersperse separator xs) })
+
+intercalate : List a -> List (List a) -> List a
+intercalate separator = foldRight append nil . intersperse separator
+
+sum : List Int -> Int
+sum = foldLeft primIntAdd 0
+
+product : List Int -> Int
+product = foldLeft primIntMul 1
+
+range : Int -> Int -> List Int
+range start stop = primIntFold (stop - start) nil (\k rec -> append rec (cons (start + k - 1) nil))
+
+indexMaybe : List a -> Int -> Maybe a
+indexMaybe nil _ = nothing
+indexMaybe (cons x xs) index = case index <= 0 of { true -> just x ; false -> indexMaybe xs (index - 1) }
+
+def catMaybes : {A : Type} -> List (Maybe A) -> List A
+  = \xs -> case xs of
+      { nil -> nil
+      ; cons item rest -> case item of
+          { nothing -> catMaybes rest
+          ; just x -> cons x (catMaybes rest)
+          }
+      }
 
 instance Concat (List Int) where
   { (++) = append
