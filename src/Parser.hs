@@ -215,14 +215,10 @@ parseAtomicExpression env = do
         Just (PosToken _ TokenKeywordJ) -> J <$ consumeToken
         Just (PosToken _ TokenKeywordVoid) -> VoidType <$ consumeToken
         Just (PosToken _ TokenKeywordAbort) -> Abort <$ consumeToken
-        Just (PosToken _ TokenKeywordNat) -> NatType <$ consumeToken
         Just (PosToken _ TokenKeywordInt) -> PrimType PTInt <$ consumeToken
         Just (PosToken _ TokenKeywordFloat) -> PrimType PTFloat <$ consumeToken
         Just (PosToken _ TokenKeywordChar) -> PrimType PTChar <$ consumeToken
         Just (PosToken _ TokenKeywordString) -> PrimType PTString <$ consumeToken
-        Just (PosToken _ TokenKeywordZero) -> Zero <$ consumeToken
-        Just (PosToken _ TokenKeywordSucc) -> Succ <$ consumeToken
-        Just (PosToken _ TokenKeywordNatRec) -> NatRec <$ consumeToken
         Just (PosToken _ (TokenNatural n)) -> Literal (LitInt n) <$ consumeToken
         Just (PosToken _ (TokenFloat n)) -> Literal (LitFloat n) <$ consumeToken
         Just (PosToken _ (TokenChar c)) -> Literal (LitChar c) <$ consumeToken
@@ -547,11 +543,6 @@ parseCasePattern = parseListPattern <|> do
         Just (PosToken _ (TokenChar c)) -> consumeToken *> pure (PatLit (LitChar c))
         Just (PosToken _ (TokenString s)) -> consumeToken *> pure (PatLit (LitString s))
         Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
-        Just (PosToken _ TokenKeywordZero) -> consumeToken *> pure (PatCon (Identifier "zero") [])
-        Just (PosToken _ TokenKeywordSucc) -> do
-            _ <- consumeToken
-            args <- many parseAtomicCasePattern
-            pure (PatCon (Identifier "successor") args)
         Just (PosToken _ (TokenIdentifier con)) -> do
             _ <- consumeToken
             args <- many parseAtomicCasePattern
@@ -572,8 +563,11 @@ parseCasePattern = parseListPattern <|> do
             Just (PosToken _ (TokenChar c)) -> consumeToken *> pure (PatLit (LitChar c))
             Just (PosToken _ (TokenString s)) -> consumeToken *> pure (PatLit (LitString s))
             Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
-            Just (PosToken _ TokenKeywordZero) -> consumeToken *> pure (PatCon (Identifier "zero") [])
-            Just (PosToken _ TokenKeywordSucc) -> consumeToken *> pure (PatCon (Identifier "successor") [])
+            Just (PosToken _ (TokenIdentifier name)) -> consumeToken *> pure (PatVar name)
+            Just (PosToken _ (TokenNatural n)) -> consumeToken *> pure (PatLit (LitNat n))
+            Just (PosToken _ (TokenFloat n)) -> consumeToken *> pure (PatLit (LitFloat n))
+            Just (PosToken _ (TokenChar c)) -> consumeToken *> pure (PatLit (LitChar c))
+            Just (PosToken _ (TokenString s)) -> consumeToken *> pure (PatLit (LitString s))
             Just (PosToken _ TokenLeftParen) -> parseCasePattern
             _ -> empty
 
@@ -884,8 +878,6 @@ parseEquationLhs env = parseLhs [] []
         case next of
             Just (PosToken _ (TokenIdentifier n)) -> consumeToken *> pure (identifierPattern n)
             Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
-            Just (PosToken _ TokenKeywordZero) -> consumeToken *> pure (PatCon (Identifier "zero") [])
-            Just (PosToken _ TokenKeywordSucc) -> consumeToken *> pure (PatCon (Identifier "successor") [])
             Just (PosToken _ TokenLeftParen) -> parseCasePattern
             _ -> parseCasePattern
     normalize (PatCon n [])
@@ -971,9 +963,7 @@ statementParser env = do
             _ <- consumeToken
             next <- peekToken
             case next of
-                Just TokenKeywordDef -> parseDefinition env True
                 _ -> parseFunctionEquation env True
-        Just TokenKeywordDef -> parseDefinition env False
         Just TokenKeywordInfixL -> parseFixityDeclaration env
         Just TokenKeywordInfixR -> parseFixityDeclaration env
         Just TokenKeywordInfix -> parseFixityDeclaration env

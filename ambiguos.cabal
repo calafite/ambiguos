@@ -30,6 +30,16 @@ library
                     , Pretty
                     , Substitution
                     , TypeChecker
+                    , TypeChecker.Primitives
+                    , TypeChecker.Types
+                    , TypeChecker.Diagnostics
+                    , TypeChecker.Meta
+                    , TypeChecker.Universe
+                    , TypeChecker.Unify
+                    , TypeChecker.Termination
+                    , TypeChecker.PatternCheck
+                    , TypeChecker.Elaboration
+                    , TypeChecker.Declarations
                     , Module
                     , PatternMatch
     build-depends:    base ^>=4.20.2.0
@@ -55,6 +65,7 @@ executable ambiguos
     default-language: Haskell2010
 
 test-suite ambiguos-test
+    import:           warnings
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
     hs-source-dirs:   test
