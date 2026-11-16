@@ -14,6 +14,8 @@ import AST
     , CaseBranch (..)
     , Expression (..)
     , Fixity (..)
+    , Guard (..)
+    , GuardedRhs (..)
     , Identifier (..)
     , Literal (..)
     , Pattern (..)
@@ -79,10 +81,6 @@ prettyWithConfig c p e
         J -> "J"
         VoidType -> "Void"
         Abort -> "abort"
-        NatType -> "Nat"
-        Zero -> "zero"
-        Succ -> "successor"
-        NatRec -> "natRec"
         Literal x -> parenthesizeIf (p >= 7 && isNegativeLiteral x) (prettyLiteral x)
         PrimType x -> prettyPrimType x
         PrimOp x -> maybe (prettyPrimOp x) (\s -> "(" <> s <> ")") (primitiveSymbol x)
@@ -95,13 +93,13 @@ prettyWithConfig c p e
                 <> " { "
                 <> Text.intercalate ", " [prettyIdentifier f <> " = " <> prettyWithConfig c 0 x | (f, x) <- fs]
                 <> " }"
-        PatternCase t _ bs ->
+        Case t _ bs ->
             "case "
                 <> prettyWithConfig c 0 t
                 <> " of { "
-                <> Text.intercalate "; " [prettyPattern q <> " -> " <> prettyWithConfig c 0 x | (q, x) <- bs]
+                <> Text.intercalate "; " [prettyCaseBranch q | q <- bs]
                 <> " }"
-        Annotation x t -> parenthesizeIf (p > 1) (prettyWithConfig c 3 x <> " : " <> prettyWithConfig c 0 t)
+        Annotation x t -> parenthesizeIf (p > 1) (prettyWithConfig c 3 x <> " :: " <> prettyWithConfig c 0 t)
         Lambda v n mt b -> parenthesizeIf (p > 2) (lambdaText c v n mt b)
         Application Explicit (Application Explicit (PrimOp op) a) b
             | Just s <- primitiveSymbol op ->
@@ -124,20 +122,26 @@ prettyWithConfig c p e
         Pi Explicit (Identifier "_") d r ->
             parenthesizeIf (p > 3) (prettyWithConfig c 7 d <> " -> " <> prettyWithConfig c 3 r)
         Pi Explicit n d r ->
-            parenthesizeIf (p > 3) ("(" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 d <> ") -> " <> prettyWithConfig c 3 r)
+            parenthesizeIf (p > 3) ("(" <> prettyIdentifier n <> " :: " <> prettyWithConfig c 0 d <> ") -> " <> prettyWithConfig c 3 r)
         Pi Implicit n d r ->
-            parenthesizeIf (p > 3) ("{" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 d <> "} -> " <> prettyWithConfig c 3 r)
+            parenthesizeIf (p > 3) ("{" <> prettyIdentifier n <> " :: " <> prettyWithConfig c 0 d <> "} -> " <> prettyWithConfig c 3 r)
         Pi Instance n d r ->
-            parenthesizeIf (p > 3) ("{{" <> prettyIdentifier n <> " : " <> prettyWithConfig c 0 d <> "}} -> " <> prettyWithConfig c 3 r)
+            parenthesizeIf (p > 3) ("{{" <> prettyIdentifier n <> " :: " <> prettyWithConfig c 0 d <> "}} -> " <> prettyWithConfig c 3 r)
         Let n mt d b ->
-            parenthesizeIf (p > 2) ("let " <> prettyIdentifier n <> maybe "" (\t -> " : " <> prettyWithConfig c 0 t) mt <> " = " <> prettyWithConfig c 0 d <> " in " <> prettyWithConfig c 0 b)
+            parenthesizeIf (p > 2) ("let " <> prettyIdentifier n <> maybe "" (\t -> " :: " <> prettyWithConfig c 0 t) mt <> " = " <> prettyWithConfig c 0 d <> " in " <> prettyWithConfig c 0 b)
         Case t mm bs ->
             parenthesizeIf (p > 2) ("case " <> prettyWithConfig c 0 t <> motive mm <> " of { " <> Text.intercalate " ; " (map branch bs) <> " }")
   where
     motive Nothing = ""
     motive (Just (n, t)) = " as " <> prettyIdentifier n <> " return " <> prettyWithConfig c 0 t
 
-    branch (CaseBranch pat b) = prettyPattern pat <> " -> " <> prettyWithConfig c 0 b
+    branch (CaseBranch pat rhss _) =
+        prettyPattern pat <> " -> " <> Text.intercalate " | " [prettyGuardedRhs r | r <- rhss]
+    prettyGuardedRhs (GuardedRhs [] body) = prettyWithConfig c 0 body
+    prettyGuardedRhs (GuardedRhs guards body) =
+        Text.intercalate " && " [prettyGuard g | g <- guards] <> " -> " <> prettyWithConfig c 0 body
+    prettyGuard (BoolGuard e) = prettyWithConfig c 0 e
+    prettyGuard (PatGuard p e) = prettyPattern p <> " <- " <> prettyWithConfig c 0 e
 
 lambdaText :: PrettyConfig -> Visibility -> Identifier -> Maybe Expression -> Expression -> Text
 lambdaText c v n mt b = "\\" <> binder <> " -> " <> prettyWithConfig c 0 b
@@ -168,19 +172,31 @@ prettyIdentifier i@(Identifier n)
 prettyPattern :: Pattern -> Text
 prettyPattern PatWild = "_"
 prettyPattern (PatVar n) = prettyIdentifier n
+prettyPattern (PatAs n p) = prettyIdentifier n <> "@" <> prettyPattern p
 prettyPattern (PatLit n) = prettyLiteral n
+prettyPattern (PatCon (Identifier ":") [x, xs]) = prettyPattern x <> " : " <> prettyPattern xs
 prettyPattern (PatCon n xs) = Text.unwords (prettyIdentifier n : map (\x -> "(" <> prettyPattern x <> ")") xs)
 prettyPattern (PatTuple xs) = tupleTextPattern xs
+prettyPattern (PatList xs) = "[" <> Text.intercalate ", " (map prettyPattern xs) <> "]"
+
+prettyCaseBranch :: CaseBranch -> Text
+prettyCaseBranch (CaseBranch pat rhss _) =
+    prettyPattern pat <> " -> " <> Text.intercalate " | " [prettyGuardedRhs r | r <- rhss]
+  where
+    prettyGuardedRhs (GuardedRhs [] body) = prettyWithConfig (PrettyConfig False defaultFixityEnv) 0 body
+    prettyGuardedRhs (GuardedRhs guards body) =
+        Text.intercalate " && " [prettyGuard g | g <- guards] <> " -> " <> prettyWithConfig (PrettyConfig False defaultFixityEnv) 0 body
+    prettyGuard (BoolGuard e) = prettyWithConfig (PrettyConfig False defaultFixityEnv) 0 e
+    prettyGuard (PatGuard p e) = prettyPattern p <> " <- " <> prettyWithConfig (PrettyConfig False defaultFixityEnv) 0 e
 
 tupleTextPattern :: [Pattern] -> Text
 tupleTextPattern xs = "(" <> Text.intercalate ", " (map prettyPattern xs) <> ")"
 
 prettyLiteral :: Literal -> Text
-prettyLiteral (LitNat n) = Text.pack (show n)
 prettyLiteral (LitInt n) = Text.pack (show n)
 prettyLiteral (LitFloat n) = Text.pack (show n)
 prettyLiteral (LitChar x) = Text.pack (show x)
-prettyLiteral (LitString x) = Text.pack (show (Text.unpack x))
+prettyLiteral (LitString x) = "\"" <> x <> "\""
 
 isNegativeLiteral :: Literal -> Bool
 isNegativeLiteral (LitInt n) = n < 0
@@ -190,7 +206,6 @@ prettyPrimType :: PrimType -> Text
 prettyPrimType PTInt = "Int"
 prettyPrimType PTFloat = "Float"
 prettyPrimType PTChar = "Char"
-prettyPrimType PTString = "String"
 
 prettyUniverseLevel :: UniverseLevel -> Text
 prettyUniverseLevel (UFixed (-1)) = "Type"
@@ -223,9 +238,6 @@ isSymbolic (Identifier n) = case Text.uncons n of
     Nothing -> False
 
 peanoToInteger :: Expression -> Maybe Integer
-peanoToInteger Zero = Just 0
-peanoToInteger (Application _ Succ x) = (+1) <$> peanoToInteger x
-peanoToInteger (Located _ x) = peanoToInteger x
 peanoToInteger _ = Nothing
 
 stripImplicit :: Expression -> Expression
@@ -234,9 +246,9 @@ stripImplicit x = x
 
 peanoListToElements :: Expression -> Maybe [Expression]
 peanoListToElements x = case stripImplicit x of
-    Variable (Identifier "nil") -> Just []
+    Variable (Identifier "[]") -> Just []
     Application Explicit (Application Explicit h a) r
-        | stripImplicit h == Variable (Identifier "cons") -> (a :) <$> peanoListToElements r
+        | stripImplicit h == Variable (Identifier ":") -> (a :) <$> peanoListToElements r
     Located _ y -> peanoListToElements y
     _ -> Nothing
 

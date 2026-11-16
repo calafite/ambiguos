@@ -13,7 +13,6 @@ ambiguosCFG =
             Set.fromList
                 [ ProgramNT
                 , StatementNT
-                , DefinitionNT
                 , EvaluationNT
                 , ExpressionNT
                 , LambdaNT
@@ -51,15 +50,7 @@ ambiguosCFG =
         , cfgProductions =
             [ Production ProgramNT [NonTerminalSymbol StatementNT, NonTerminalSymbol ProgramNT]
             , Production ProgramNT []
-            , Production StatementNT [NonTerminalSymbol DefinitionNT]
             , Production StatementNT [NonTerminalSymbol EvaluationNT]
-            , Production
-                DefinitionNT
-                [ TerminalSymbol TokenKeywordDef
-                , NonTerminalSymbol AtomNT
-                , TerminalSymbol TokenEquals
-                , NonTerminalSymbol ExpressionNT
-                ]
             , Production EvaluationNT [NonTerminalSymbol ExpressionNT]
             , Production ExpressionNT [NonTerminalSymbol LambdaNT]
             , Production ExpressionNT [NonTerminalSymbol AnnotationNT]
@@ -74,7 +65,6 @@ ambiguosCFG =
             , Production ArrowNT [NonTerminalSymbol ApplicationNT]
             , Production ApplicationNT [NonTerminalSymbol AtomNT]
             , Production AtomNT [TerminalSymbol TokenKeywordType]
-            , Production AtomNT [TerminalSymbol TokenKeywordNat]
             , Production AtomNT [TerminalSymbol TokenLeftBracket, TerminalSymbol TokenRightBracket]
             , Production AtomNT [TerminalSymbol TokenLeftBrace, TerminalSymbol TokenRightBrace]
             ]

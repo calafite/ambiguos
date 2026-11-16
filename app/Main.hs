@@ -3,7 +3,7 @@
 
 module Main (main) where
 
-import AST (Clause (..), Fixity (..), Identifier (..), RecordField (..), Statement (..), Visibility (..))
+import AST (Clause (..), Expression (..), Fixity (..), Identifier (..), RecordField (..), Statement (..), Visibility (..))
 import qualified Control.Exception as Exception
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (unless)
@@ -43,12 +43,12 @@ import TypeChecker (
     checkDataDeclaration,
     checkRecordDeclaration,
     checkClassDeclaration,
-    checkClassDeclarationDetailed,
     checkInstanceDeclaration,
     checkInstanceDeclarationDetailed,
     checkDefinitionWithPartial,
     checkFunctionDefinitionWithPartial,
     emptyContext,
+    extendContextType,
     lookupContext,
     renderGoals,
     renderTypeDiagnostic,
@@ -439,26 +439,14 @@ processStatement contextRef input
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined record " <> bold (prettyIdentifier name)))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (ClassDeclaration name params _ fields) ->
+            Right (ClassDeclaration name params _ fields _) ->
                 case checkClassDeclaration ctx name params fields of
-                    Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right updatedContext -> do
-                        outputStrLn (Text.unpack (green "✓" <> " Defined class " <> bold (prettyIdentifier name)))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (ClassDeclarationDetailed name params methods) ->
-                case checkClassDeclarationDetailed ctx name params methods of
                     Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined class " <> bold (prettyIdentifier name)))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
             Right (InstanceDeclaration className headType fields) ->
                 case checkInstanceDeclaration ctx className headType fields of
-                    Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right updatedContext -> do
-                        outputStrLn (Text.unpack (green "✓" <> " Defined instance for " <> bold (prettyIdentifier className)))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (InstanceDeclarationDetailed className params headType clauses) ->
-                case checkInstanceDeclarationDetailed ctx className params headType clauses of
                     Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined instance for " <> bold (prettyIdentifier className)))
@@ -564,17 +552,15 @@ statementIdentifier :: Statement -> Identifier
 statementIdentifier (Definition _ name _ _) = name
 statementIdentifier (FunctionDefinition _ name _ _) = name
 statementIdentifier (TypeSignature name _) = name
-statementIdentifier (FunctionClause (Clause name _ _)) = name
+statementIdentifier (FunctionClause (Clause name _ _ _)) = name
 statementIdentifier (DataDeclaration name _ _ _) = name
 statementIdentifier (RecordDeclaration name _ _ _ _) = name
 statementIdentifier (FixityDeclaration _ _ _) = Identifier "<fixity>"
 statementIdentifier (Evaluation _) = Identifier "<expr>"
 statementIdentifier (ModuleHeader _) = Identifier "<module>"
 statementIdentifier (ImportStmt _ _ _ _) = Identifier "<import>"
-statementIdentifier (ClassDeclaration name _ _ _) = name
-statementIdentifier (InstanceDeclaration name _ _) = name
-statementIdentifier (ClassDeclarationDetailed name _ _) = name
-statementIdentifier (InstanceDeclarationDetailed name _ _ _) = name
+statementIdentifier (ClassDeclaration name _ _ _ _) = name
+statementIdentifier (InstanceDeclaration name _ _ _) = name
 
 statementIdentifiers :: Statement -> [Identifier]
 statementIdentifiers (Definition _ name _ _) = [name]
@@ -587,10 +573,8 @@ statementIdentifiers (FixityDeclaration _ _ _) = []
 statementIdentifiers (Evaluation _) = []
 statementIdentifiers (ModuleHeader _) = []
 statementIdentifiers (ImportStmt _ _ _ _) = []
-statementIdentifiers (ClassDeclaration name _ _ _) = [name]
-statementIdentifiers (InstanceDeclaration name _ _) = [name]
-statementIdentifiers (ClassDeclarationDetailed name _ _) = [name]
-statementIdentifiers (InstanceDeclarationDetailed name _ _ _) = [name]
+statementIdentifiers (ClassDeclaration name _ _ _ _) = [name]
+statementIdentifiers (InstanceDeclaration name _ _ _) = [name]
 
 runStatements :: Context -> [Identifier] -> FilePath -> Text -> [Statement] -> IO (Maybe (Context, [Identifier]))
 runStatements currentContext accNames _ _ [] = pure (Just (currentContext, reverse accNames))
@@ -629,6 +613,9 @@ runStatements currentContext accNames filePath content (statement : remaining) =
                 Right (updatedContext, _, goals) ->
                     if null goals then Right updatedContext else Left (red "✗ Definition contains unsolved goals:\n" <> renderGoals goals)
         TypeSignature _ _ -> Right currentContext
+        TypeAlias alias params body ->
+            let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body params
+             in Right (extendContextType alias aliasType currentContext)
         FunctionClause _ -> Right currentContext
         FixityDeclaration assoc prec ops ->
             Right
@@ -654,16 +641,8 @@ runStatements currentContext accNames filePath content (statement : remaining) =
             case checkClassDeclaration currentContext clsName params fields of
                 Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier clsName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
-        InstanceDeclaration className headType fields ->
-            case checkInstanceDeclaration currentContext className headType fields of
-                Left typeError -> Left (red "✗ " <> "Type error in instance '" <> bold (prettyIdentifier className) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right updatedContext -> Right updatedContext
-        ClassDeclarationDetailed className params methods ->
-            case checkClassDeclarationDetailed currentContext className params methods of
-                Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier className) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right updatedContext -> Right updatedContext
-        InstanceDeclarationDetailed className params headType clauses ->
-            case checkInstanceDeclarationDetailed currentContext className params headType clauses of
+        InstanceDeclaration className _params headType _methods ->
+            case checkInstanceDeclaration currentContext className headType [] of
                 Left typeError -> Left (red "✗ " <> "Type error in instance '" <> bold (prettyIdentifier className) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
     case execResult of
