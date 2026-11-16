@@ -35,7 +35,6 @@ advancePosString = foldl advancePosChar
 
 data Token
     = TokenKeywordType
-    | TokenKeywordDef
     | TokenKeywordPartial
     | TokenKeywordData
     | TokenKeywordWhere
@@ -43,21 +42,26 @@ data Token
     | TokenKeywordOf
     | TokenKeywordLet
     | TokenKeywordIn
+    | TokenKeywordIf
+    | TokenKeywordThen
+    | TokenKeywordElse
+    | TokenKeywordDo
+    | TokenKeywordOtherwise
     | TokenKeywordId
     | TokenKeywordRefl
     | TokenKeywordJ
     | TokenKeywordVoid
     | TokenKeywordAbort
-    | TokenKeywordNat
-    | TokenKeywordZero
-    | TokenKeywordSucc
-    | TokenKeywordNatRec
     | TokenKeywordInfixL
     | TokenKeywordInfixR
     | TokenKeywordInfix
     | TokenKeywordAs
     | TokenKeywordReturn
     | TokenDot
+    | TokenDoubleColon
+    | TokenFatArrow
+    | TokenAt
+    | TokenLeftArrow
     | TokenKeywordModule
     | TokenKeywordImport
     | TokenKeywordQualified
@@ -108,7 +112,6 @@ data LexError
 prettyToken :: Token -> Text
 prettyToken tok = case tok of
     TokenKeywordType -> "'Type'"
-    TokenKeywordDef -> "'def'"
     TokenKeywordPartial -> "'partial'"
     TokenKeywordData -> "'data'"
     TokenKeywordWhere -> "'where'"
@@ -116,21 +119,26 @@ prettyToken tok = case tok of
     TokenKeywordOf -> "'of'"
     TokenKeywordLet -> "'let'"
     TokenKeywordIn -> "'in'"
+    TokenKeywordIf -> "'if'"
+    TokenKeywordThen -> "'then'"
+    TokenKeywordElse -> "'else'"
+    TokenKeywordDo -> "'do'"
+    TokenKeywordOtherwise -> "'otherwise'"
     TokenKeywordId -> "'Id'"
     TokenKeywordRefl -> "'refl'"
     TokenKeywordJ -> "'J'"
     TokenKeywordVoid -> "'Void'"
     TokenKeywordAbort -> "'abort'"
-    TokenKeywordNat -> "'Nat'"
-    TokenKeywordZero -> "'zero'"
-    TokenKeywordSucc -> "'successor'"
-    TokenKeywordNatRec -> "'natRec'"
     TokenKeywordInfixL -> "'infixl'"
     TokenKeywordInfixR -> "'infixr'"
     TokenKeywordInfix  -> "'infix'"
     TokenKeywordAs     -> "'as'"
     TokenKeywordReturn -> "'return'"
     TokenDot           -> "'.'"
+    TokenDoubleColon   -> "'::'"
+    TokenFatArrow      -> "'=>'"
+    TokenAt            -> "'@'"
+    TokenLeftArrow     -> "'<-'"
     TokenKeywordModule -> "'module'"
     TokenKeywordImport -> "'import'"
     TokenKeywordQualified -> "'qualified'"
@@ -146,7 +154,7 @@ prettyToken tok = case tok of
     TokenFloat n -> Text.pack (show n)
     TokenChar c -> "'" <> Text.singleton c <> "'"
     TokenString s -> "\"" <> s <> "\""
-    TokenBackslash -> "'\\'"
+    TokenBackslash -> "'\\\\'"
     TokenArrow -> "'->'"
     TokenColon -> "':'"
     TokenEquals -> "'='"
@@ -214,6 +222,18 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
         | Just (arrowStr, restAfter) <- matchPrefixDFA dfaArrow remaining =
             let pos' = advancePosString pos arrowStr
              in (PosToken pos TokenArrow :) <$> scanLoop pos' restAfter '-'
+        | take 2 remaining == "::" =
+            let pos' = advancePosString pos "::"
+             in (PosToken pos TokenDoubleColon :) <$> scanLoop pos' (drop 2 remaining) ':'
+        | take 2 remaining == "=>" =
+            let pos' = advancePosString pos "=>"
+             in (PosToken pos TokenFatArrow :) <$> scanLoop pos' (drop 2 remaining) '>'
+        | take 2 remaining == "<-" =
+            let pos' = advancePosString pos "<-"
+             in (PosToken pos TokenLeftArrow :) <$> scanLoop pos' (drop 2 remaining) '-'
+        | headChar == '@' =
+            let pos' = advancePosChar pos headChar
+             in (PosToken pos TokenAt :) <$> scanLoop pos' rest '@'
         | headChar == '"' = do
             (value, pos', restAfter) <- scanQuoted pos '"' rest
             (PosToken pos (TokenString (Text.pack value)) :) <$> scanLoop pos' restAfter '"'
@@ -235,7 +255,7 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
                 consumed = headChar : identChars
                 pos' = advancePosString pos consumed
              in (PosToken pos (TokenHole mIdent) :) <$> scanLoop pos' restAfter '?'
-        | headChar == '.' && not (null rest) && isDotOp prevNonSpace (head rest) =
+        | headChar == '.', nextChar : _ <- rest, isDotOp prevNonSpace nextChar =
             let pos' = advancePosChar pos headChar
              in (PosToken pos TokenDot :) <$> scanLoop pos' rest '.'
         | Just (identStr, restAfter) <- matchPrefixDFA dfaIdentifier remaining =
@@ -266,7 +286,6 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
 
     classifyIdentifier text = case text of
         "Type" -> TokenKeywordType
-        "def" -> TokenKeywordDef
         "partial" -> TokenKeywordPartial
         "data" -> TokenKeywordData
         "where" -> TokenKeywordWhere
@@ -274,16 +293,16 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
         "of" -> TokenKeywordOf
         "let" -> TokenKeywordLet
         "in" -> TokenKeywordIn
+        "if" -> TokenKeywordIf
+        "then" -> TokenKeywordThen
+        "else" -> TokenKeywordElse
+        "do" -> TokenKeywordDo
+        "otherwise" -> TokenKeywordOtherwise
         "Id" -> TokenKeywordId
         "refl" -> TokenKeywordRefl
         "J" -> TokenKeywordJ
         "Void" -> TokenKeywordVoid
         "abort" -> TokenKeywordAbort
-        "Nat" -> TokenKeywordNat
-        "zero" -> TokenKeywordZero
-        "successor" -> TokenKeywordSucc
-        "succ" -> TokenKeywordSucc
-        "natRec" -> TokenKeywordNatRec
         "infixl" -> TokenKeywordInfixL
         "infixr" -> TokenKeywordInfixR
         "infix"  -> TokenKeywordInfix
@@ -340,7 +359,7 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
 
     scanQuoted start quote input = go (advancePosChar start quote) input []
       where
-        go pos [] _ = Left (UnterminatedString start)
+        go _ [] _ = Left (UnterminatedString start)
         go pos (c : cs) acc
             | c == quote = Right (reverse acc, advancePosChar pos c, cs)
             | c == '\\' = do
@@ -366,7 +385,7 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
         let (digits, rest) = splitAt count chars
          in if length digits == count && all isHexDigit digits
                 then Right (chr (foldl (\n c -> n * base + digitToInt c) 0 digits), advancePosString pos ('\\' : take 1 chars <> digits), rest)
-                else Left (InvalidEscape pos (if null chars then '\\' else head chars))
+                else Left (InvalidEscape pos (case chars of (c : _) -> c; [] -> '\\'))
 
 renderLexError :: LexError -> Text
 renderLexError err = case err of

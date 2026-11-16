@@ -155,15 +155,7 @@ parseIdentifier = parseNamed <|> parseParenOp
             Just (PosToken _ (TokenHole (Just (Identifier name)))) -> do
                 _ <- consumeToken
                 pure (Identifier ("_" <> name))
-            Just (PosToken _ TokenKeywordZero) -> do
-                _ <- consumeToken
-                pure (Identifier "zero")
-            Just (PosToken _ TokenKeywordSucc) -> do
-                _ <- consumeToken
-                pure (Identifier "successor")
             _ -> empty
-
-desugarNatural :: Integer -> Expression
 
 -- | Parse a parenthesized operator, e.g. `(+)`.
 parseParenOp :: Parser Identifier
@@ -179,10 +171,6 @@ parseParenOp = do
                     pure ident
                 other -> Parser $ \_ -> Left (ExpectedToken "operator" other (tokenPos pt))
         _ -> empty
-desugarNatural n
-    | n <= 0 = Zero
-    | otherwise = Application Explicit Succ (desugarNatural (n - 1))
-
 desugarList :: [Expression] -> Expression
 desugarList [] = Variable (Identifier "nil")
 desugarList (x : xs) =
@@ -547,60 +535,6 @@ parseLet env = do
             bodyExpr <- expressionParser env
             pure (Let name maybeType valExpr bodyExpr)
 
-parsePattern :: Parser Pattern
-parsePattern = parseParen <|> parseWild <|> parseNatural <|> parseNamed
-  where
-    parseParen = do
-        expectToken TokenLeftParen "'('"
-        next <- peekToken
-        case next of
-            Just TokenRightParen -> consumeToken *> pure (PatTuple [])
-            _ -> do
-                p <- parsePattern
-                next' <- peekToken
-                case next' of
-                    Just TokenComma -> do
-                        _ <- consumeToken
-                        p2 <- parsePattern
-                        rest <- many (expectToken TokenComma "','" *> parsePattern)
-                        expectToken TokenRightParen "')'"
-                        pure (PatTuple (p : p2 : rest))
-                    _ -> expectToken TokenRightParen "')'" *> pure p
-    parseWild = do
-        expectToken (TokenHole Nothing) "'_'"
-        pure PatWild
-    parseNatural = do
-        pt <- consumeToken
-        case tokenValue pt of
-            TokenNatural n -> pure (PatLit (LitNat n))
-            _ -> empty
-    parseNamed = do
-        name <- parseIdentifier
-        args <- many parsePatternArg
-        -- In a case-clause head an identifier denotes a constructor; variable
-        -- binders are represented by wildcard/nested argument positions.
-        pure (PatCon name args)
-    parsePatternArg = do
-        next <- peekToken
-        case next of
-            Just (TokenIdentifier _) -> do
-                name <- parseIdentifier
-                let raw = unIdentifier name
-                pure (if raw `elem` ["nil", "true", "false", "pair", "sigma", "nothing", "just", "left", "right", "dependentPair"] then PatCon name [] else PatVar name)
-            Just TokenKeywordZero -> PatCon (Identifier "zero") [] <$ consumeToken
-            Just TokenKeywordSucc -> PatCon (Identifier "successor") [] <$ consumeToken
-            Just (TokenNatural _) -> parsePattern
-            Just (TokenHole Nothing) -> PatWild <$ consumeToken
-            Just TokenLeftParen -> parsePattern
-            _ -> empty
-
-parsePatternBranch :: FixityEnv -> Parser (Pattern, Expression)
-parsePatternBranch env = do
-    pattern <- parsePattern
-    expectToken TokenArrow "'->'"
-    body <- expressionParser env
-    pure (pattern, body)
-
 -- Patterns used by the ordinary `case` form.  A leading identifier is kept as
 -- a constructor candidate; the type checker can reinterpret a nullary name as
 -- a variable when the scrutinee has a primitive type.
@@ -682,15 +616,15 @@ parseCase env = do
             _ -> pure Nothing
     parseBraced = do
         expectToken TokenLeftBrace "'{'"
-        bs <- many (parseCasePatternBranch env <* optional (expectToken TokenSemicolon "';'"))
+        bs <- many (parseCasePatternBranch <* optional (expectToken TokenSemicolon "';'"))
         expectToken TokenRightBrace "'}'"
         pure bs
     parsePiped = do
         _ <- optional (expectToken TokenPipe "'|'")
-        b1 <- parseCasePatternBranch env
-        bs <- many (expectToken TokenPipe "'|'" *> parseCasePatternBranch env)
+        b1 <- parseCasePatternBranch
+        bs <- many (expectToken TokenPipe "'|'" *> parseCasePatternBranch)
         pure (b1 : bs)
-    parseCasePatternBranch env = do
+    parseCasePatternBranch = do
         pat <- parseCasePattern
         expectToken TokenArrow "'->'"
         body <- expressionParser env
@@ -803,15 +737,18 @@ parseClassDeclaration env = parseLegacy <|> parseDetailed
         expectToken TokenLeftBrace "'{'"
         methods <- parseMethods
         expectToken TokenRightBrace "'}'"
-        pure (ClassDeclaration name (concat params) (Universe (UFixed (-1)))
-            [RecordField (methodName m) (methodType m) | m <- methods])
+        pure $
+            if any (\m -> case methodDefault m of Just _ -> True; Nothing -> False) methods
+                then ClassDeclarationDetailed name (concat params) methods
+                else ClassDeclaration name (concat params) (Universe (UFixed (-1)))
+                    [RecordField (methodName m) (methodType m) | m <- methods]
     parseMethods = do
         method <- do
-            methodName <- parseIdentifier
+            mName <- parseIdentifier
             expectToken TokenColon "':'"
-            methodType <- expressionParser env
+            mType <- expressionParser env
             defaultBody <- optional (expectToken TokenEquals "'='" *> expressionParser env)
-            pure (ClassMethod methodName methodType defaultBody)
+            pure (ClassMethod mName mType defaultBody)
         rest <- many (optional (expectToken TokenSemicolon "';'") *> parseMethods)
         pure (method : concat rest)
     parseLegacy = do
@@ -993,7 +930,7 @@ parseFunctionEquation env isPartial = do
                         Nothing -> pure (TypeSignature name signature)
                         Just () -> Definition isPartial name (Just signature) <$> parseLineExpression env
         _ -> do
-            (patterns, mTypedTypes) <- parseLhs [] []
+            (patterns, mTypedTypes) <- parseEquationLhs env
             mResultType <- optional (expectToken TokenColon "':'" *> expressionParser env)
             expectToken TokenEquals "'='"
             body <- parseLineExpression env
@@ -1004,41 +941,6 @@ parseFunctionEquation env isPartial = do
             pure (case declaredType of
                 Just ty -> FunctionDefinition isPartial name (Just ty) [clause]
                 Nothing -> FunctionClause clause)
-  where
-    parseLhs pats typed = do
-        next <- peekToken
-        case next of
-            Just TokenEquals -> pure (pats, typed)
-            Just TokenColon -> pure (pats, typed)
-            _ -> do
-                (newPats, newTyped) <- parseTypedGroup <|> do
-                    p <- equationPattern
-                    pure ([p], [])
-                parseLhs (pats ++ newPats) (typed ++ newTyped)
-    equationPattern = normalize <$> parseEquationPattern
-    parseEquationPattern = do
-        next <- peekPosToken
-        case next of
-            Just (PosToken _ (TokenIdentifier n)) -> consumeToken *> pure (identifierPattern n)
-            Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
-            Just (PosToken _ TokenKeywordZero) -> consumeToken *> pure (PatCon (Identifier "zero") [])
-            Just (PosToken _ TokenKeywordSucc) -> consumeToken *> pure (PatCon (Identifier "successor") [])
-            Just (PosToken _ TokenLeftParen) -> parseCasePattern
-            _ -> parseCasePattern
-    normalize (PatCon n [])
-        | unIdentifier n `notElem` ["nil", "true", "false", "zero", "successor", "nothing"] = PatVar n
-    normalize (PatCon n ps) = PatCon n (map normalize ps)
-    normalize p = p
-    identifierPattern n
-        | unIdentifier n `elem` ["nil", "true", "false", "zero", "successor", "nothing"] = PatCon n []
-        | otherwise = PatVar n
-    parseTypedGroup = do
-        expectToken TokenLeftParen "'('"
-        names <- some parseIdentifier
-        expectToken TokenColon "':'"
-        ty <- expressionParser env
-        expectToken TokenRightParen "')'"
-        pure ([PatVar n | n <- names], [(n, ty) | n <- names])
 
 parseLineExpression :: FixityEnv -> Parser Expression
 parseLineExpression env = Parser $ \tokens -> case tokens of

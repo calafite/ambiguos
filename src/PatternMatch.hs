@@ -5,9 +5,6 @@ import AST (CaseBranch (..), Clause (..), Expression (..), Identifier (..), Patt
 import Substitution (substitute)
 import qualified Data.Text as Text
 
--- A small pattern-matrix compiler.  It keeps constructor patterns in `Case`
--- branches and substitutes only variable patterns, leaving the existing case
--- checker and evaluator as the single implementation of matching.
 compileClauses :: Maybe Expression -> [Clause] -> Expression
 compileClauses _ [] = Hole Nothing
 compileClauses maybeType clauses =
@@ -57,12 +54,12 @@ compileMatrix (arg : args) rows
 
     makeBranch p =
         let childArgs = constructorArguments p
-            branchPattern = branchShape p childArgs
+            pat = branchShape p childArgs
             branchRows = [ (rest, body')
                          | (ps, body) <- rows
                          , Just (rest, body') <- [specialize p ps body arg]
                          ]
-         in CaseBranch branchPattern (compileMatrix (childArgs ++ args) branchRows)
+         in CaseBranch pat (compileMatrix (childArgs ++ args) branchRows)
 
     fallbackBranch =
         if any (isFallback . headOrWild . fst) rows
@@ -90,18 +87,20 @@ compileMatrix (arg : args) rows
 
     constructorArguments (PatCon _ ps) = zipWith argumentName [0 :: Int ..] ps
     constructorArguments _ = []
-    argumentName i (PatVar v) = v
+    argumentName _ (PatVar v) = v
     argumentName i _ = Identifier ("pat" <> Text.pack (show i))
-    branchShape (PatCon con ps) names = PatCon con (map PatVar names)
+    branchShape (PatCon con _) names = PatCon con (map PatVar names)
     branchShape pattern _ = pattern
 
     bindAt scrutinee (PatVar v) body = substitute v (Variable scrutinee) body
     bindAt _ _ body = body
 
+isVariablePattern :: Pattern -> Bool
 isVariablePattern (PatVar _) = True
 isVariablePattern PatWild = True
 isVariablePattern _ = False
 
+isFallback :: Pattern -> Bool
 isFallback (PatVar _) = True
 isFallback PatWild = True
 isFallback _ = False

@@ -9,7 +9,6 @@ module Module
 import AST (Statement (..))
 import AST (Identifier (..))
 import Control.Monad (foldM)
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text.IO as TextIO
 import qualified Data.Text as Text
@@ -53,7 +52,7 @@ loadModuleWithPaths searchPaths entry = do
                                         Nothing -> pure (Left (ModuleTypeError path), c)
                                         Just ctx -> pure (Right ctx, Map.insert path ctx c)
 
-    loadImport _ stack (Left err, c) _ = pure (Left err, c)
+    loadImport _ _ (Left err, c) _ = pure (Left err, c)
     loadImport _ stack (Right base, c) (ImportStmt _ path _ _) = do
         (result, c') <- load stack c (modulePath path)
         pure (fmap (mergeContexts base) result, c')

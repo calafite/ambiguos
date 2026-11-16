@@ -24,21 +24,21 @@ ambiguosCFG =
                 ]
         , cfgTerminals =
             Set.fromList
-                [ TokenKeywordDef
-                , TokenKeywordType
+                [ TokenKeywordType
                 , TokenKeywordId
                 , TokenKeywordRefl
                 , TokenKeywordJ
                 , TokenKeywordVoid
                 , TokenKeywordAbort
-                , TokenKeywordNat
-                , TokenKeywordZero
-                , TokenKeywordSucc
-                , TokenKeywordNatRec
+                , TokenKeywordInt
+                , TokenKeywordFloat
+                , TokenKeywordChar
+                , TokenKeywordString
                 , TokenNatural 0
                 , TokenBackslash
                 , TokenArrow
                 , TokenColon
+                , TokenDoubleColon
                 , TokenEquals
                 , TokenLeftParen
                 , TokenRightParen

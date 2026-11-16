@@ -15,8 +15,6 @@ module Evaluation (
 
 import AST (CaseBranch (..), Expression (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), UniverseLevel (..), Visibility (..))
 import Control.Monad (zipWithM)
-import Data.List (foldl')
-import GHC.Float (isNaN)
 import qualified Data.Text
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -141,6 +139,14 @@ evaluate env expression = case expression of
         VNeutral (NHole h)
     MetaVar i ->
         VNeutral (NMetaVar i)
+    Tuple [] ->
+        evaluate env (Variable (Identifier "unit"))
+    Tuple [x] ->
+        evaluate env x
+    Tuple (x : xs) ->
+        vApp Explicit (vApp Explicit (lookupVar (Identifier "pair") env) (evaluate env x)) (evaluate env (Tuple xs))
+    PatternCase target _ branches ->
+        evalCase env (evaluate env target) [CaseBranch pat body | (pat, body) <- branches]
     Located _ e ->
         evaluate env e
 
