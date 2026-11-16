@@ -329,9 +329,8 @@ def bindMaybe : {A B : Type} -> Maybe A -> (A -> Maybe B) -> Maybe B
       ; just x  -> f x
       }
 
-
 {- --------------------------------------------------------------------------
-   8. Peano Natural Numbers & Arithmetic Operations
+   8. Peano Natural Numbers (compatibility for indexed/dependent code)
    -------------------------------------------------------------------------- -}
 
 def natPredecessor : Nat -> Nat
@@ -393,6 +392,7 @@ def compareNat : Nat -> Nat -> Ordering
           ; false -> greater
           }
       }
+
 
 def min : Int -> Int -> Int
   = \x y -> case x <= y of
@@ -479,7 +479,7 @@ def foldl : {A B : Type} -> (B -> A -> B) -> B -> List A -> B
   = foldLeft
 
 def length : {A : Type} -> List A -> Int
-  = \xs -> foldRight (\_ -> \(accumulator : Int) -> successor accumulator) 0 xs
+  = \xs -> foldRight (\_ -> \(accumulator : Int) -> accumulator + 1) 0 xs
 
 def map : {A B : Type} -> (A -> B) -> List A -> List B
   = \f xs -> case xs of
@@ -543,39 +543,24 @@ def tail : {A : Type} -> List A -> List A
       }
 
 def replicate : {A : Type} -> Int -> A -> List A
-  = \count x -> case intToNat count of
-      { nothing -> nil
-      ; just n  -> natRec (\_ -> List A) nil (\_ -> \rec -> cons x rec) n
-      }
-
-def natTake : {A : Type} -> Nat -> List A -> List A
-  = \count xs -> case count of
-      { zero -> nil
-      ; successor k -> case xs of
-          { nil -> nil
-          ; cons x rest -> cons x (natTake k rest)
-          }
-      }
-
-def natDrop : {A : Type} -> Nat -> List A -> List A
-  = \count xs -> case count of
-      { zero -> xs
-      ; successor k -> case xs of
-          { nil -> nil
-          ; cons _ rest -> natDrop k rest
-          }
-      }
+  = \count x -> primIntFold count nil (\_ -> \rec -> cons x rec)
 
 def take : {A : Type} -> Int -> List A -> List A
-  = \count xs -> case intToNat count of
-      { nothing -> nil
-      ; just n  -> natTake n xs
+  = \count xs -> case count <= 0 of
+      { true -> nil
+      ; false -> case xs of
+          { nil -> nil
+          ; cons x rest -> cons x (take (count - 1) rest)
+          }
       }
 
 def drop : {A : Type} -> Int -> List A -> List A
-  = \count xs -> case intToNat count of
-      { nothing -> xs
-      ; just n  -> natDrop n xs
+  = \count xs -> case count <= 0 of
+      { true -> xs
+      ; false -> case xs of
+          { nil -> nil
+          ; cons _ rest -> drop (count - 1) rest
+          }
       }
 
 def zipWith : {A B C : Type} -> (A -> B -> C) -> List A -> List B -> List C

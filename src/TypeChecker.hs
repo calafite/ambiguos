@@ -177,7 +177,6 @@ emptyContext =
 primitiveBindings :: [(Identifier, PrimOp)]
 primitiveBindings =
     [ (Identifier "primNatToInt", NatToInt)
-    , (Identifier "intToNat", IntToNat), (Identifier "intAbs", IntAbs), (Identifier "clampToNat", ClampToNat)
     , (Identifier "primIntAdd", IntAdd), (Identifier "primIntSub", IntSub), (Identifier "primIntMul", IntMul), (Identifier "primIntPow", IntPow)
     , (Identifier "primIntDiv", IntDiv), (Identifier "primIntMod", IntMod), (Identifier "primIntNeg", IntNeg)
     , (Identifier "primIntEq", IntEq), (Identifier "primIntNeq", IntNeq), (Identifier "primIntLt", IntLt), (Identifier "primIntLe", IntLe), (Identifier "primIntGt", IntGt), (Identifier "primIntGe", IntGe), (Identifier "primBoolEq", BoolEq)
@@ -967,9 +966,6 @@ compilePatternCase context target clauses = do
 primitiveOpType :: PrimOp -> Expression
 primitiveOpType operation = case operation of
     NatToInt -> unary NatType (PrimType PTInt)
-    IntToNat -> unary (PrimType PTInt) (maybeType NatType)
-    IntAbs -> unary (PrimType PTInt) NatType
-    ClampToNat -> unary (PrimType PTInt) NatType
     IntNeg -> unary (PrimType PTInt) (PrimType PTInt)
     FloatNeg -> unary (PrimType PTFloat) (PrimType PTFloat)
     IntAdd -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntSub -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMul -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntPow -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)

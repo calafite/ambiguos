@@ -234,7 +234,7 @@ evalNatRec p z s target = case target of
 
 primitiveArity :: PrimOp -> Int
 primitiveArity operation = case operation of
-    NatToInt -> 1; IntToNat -> 1; IntAbs -> 1; ClampToNat -> 1
+    NatToInt -> 1
     IntFold -> 4
     IntNeg -> 1; FloatNeg -> 1; FloatSqrt -> 1; FloatSin -> 1; FloatCos -> 1; FloatExp -> 1; FloatLog -> 1
     IntToFloat -> 1; FloatToInt -> 1; FloatTruncate -> 1; CharToInt -> 1; IntToChar -> 1
@@ -249,11 +249,6 @@ applyPrimOp operation args = case (operation, args) of
         case applyPrimOp NatToInt [k] of
             VLit (LitInt n) -> VLit (LitInt (n + 1))
             other -> VNeutral (NPrimOp NatToInt [other])
-    (IntToNat, [VLit (LitInt n)])
-        | n >= 0 -> VCon (Identifier "just") [(Explicit, VLit (LitNat n))]
-        | otherwise -> VCon (Identifier "nothing") []
-    (IntAbs, [VLit (LitInt n)]) -> VLit (LitNat (abs n))
-    (ClampToNat, [VLit (LitInt n)]) -> VLit (LitNat (max 0 n))
     (IntAdd, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a + b))
     (IntSub, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a - b))
     (IntMul, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a * b))

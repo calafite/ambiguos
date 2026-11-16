@@ -77,7 +77,6 @@ data PrimOp
     | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatNeg
     | FloatEq | FloatLt | FloatLe | FloatSqrt | FloatSin | FloatCos | FloatExp | FloatLog
     | NatToInt | IntToFloat | FloatToInt | FloatTruncate
-    | IntToNat | IntAbs | ClampToNat
     | CharEq | CharToInt | IntToChar
     | StringAppend | StringLength | StringEq | StringIndex | StringSlice
     | StringToList | ListToString
