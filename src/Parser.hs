@@ -605,7 +605,7 @@ parsePatternBranch env = do
 -- a constructor candidate; the type checker can reinterpret a nullary name as
 -- a variable when the scrutinee has a primitive type.
 parseCasePattern :: Parser Pattern
-parseCasePattern = do
+parseCasePattern = parseListPattern <|> do
     mPt <- peekPosToken
     case mPt of
         Just (PosToken _ (TokenNatural n)) -> consumeToken *> pure (PatLit (LitNat n))
@@ -642,6 +642,20 @@ parseCasePattern = do
             Just (PosToken _ TokenKeywordSucc) -> consumeToken *> pure (PatCon (Identifier "successor") [])
             Just (PosToken _ TokenLeftParen) -> parseCasePattern
             _ -> empty
+
+parseListPattern :: Parser Pattern
+parseListPattern = do
+    expectToken TokenLeftBracket "'['"
+    nextTok <- peekToken
+    case nextTok of
+        Just TokenRightBracket -> consumeToken *> pure (PatCon (Identifier "nil") [])
+        _ -> do
+            first <- parseCasePattern
+            rest <- many (expectToken TokenComma "','" *> parseCasePattern)
+            expectToken TokenRightBracket "']'"
+            pure (foldr (\element tailPattern -> PatCon (Identifier "cons") [element, tailPattern])
+                (PatCon (Identifier "nil") [])
+                (first : rest))
 
 parseCase :: FixityEnv -> Parser Expression
 parseCase env = do
@@ -961,6 +975,7 @@ parseFunctionEquation env = do
             _ -> parseCasePattern
     normalize (PatCon n [])
         | unIdentifier n `notElem` ["nil", "true", "false", "zero", "successor", "nothing"] = PatVar n
+    normalize (PatCon n ps) = PatCon n (map normalize ps)
     normalize p = p
     identifierPattern n
         | unIdentifier n `elem` ["nil", "true", "false", "zero", "successor", "nothing"] = PatCon n []

@@ -1540,7 +1540,7 @@ checkTermination name body =
             let (h, spine) = unfoldApp expr
              in case h of
                     Variable ident | ident == nm ->
-                        if any (\(_, a) -> case a of Variable v -> Set.member v small; _ -> False) spine
+                        if any (\(_, a) -> isSmallerArgument params small a) spine
                             then mapM_ (checkCalls nm params small . snd) spine >> pure ()
                             else Left (NonTerminatingDefinition nm)
                     _ -> checkCalls nm params small f >> checkCalls nm params small arg
@@ -1550,6 +1550,16 @@ checkTermination name body =
             checkCalls nm params small d >> checkCalls nm params small b
         Annotation t _ -> checkCalls nm params small t
         _ -> pure ()
+
+    isSmallerArgument params small argument =
+        case argument of
+            Variable v -> Set.member v small
+            _ ->
+                let (headExpr, arguments) = unfoldApp argument
+                    explicitArguments = [value | (Explicit, value) <- arguments]
+                 in case (headExpr, reverse explicitArguments) of
+                        (Variable (Identifier "drop"), Variable v : _) -> Set.member v (Set.union params small)
+                        _ -> False
 
 checkTerminationElab :: Identifier -> Expression -> Elab ()
 checkTerminationElab nm b = case checkTermination nm b of

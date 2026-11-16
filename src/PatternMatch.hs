@@ -56,24 +56,28 @@ compileMatrix (arg : args) rows
     bind _ body = body
 
     makeBranch p =
-        let childArgs = patternArguments p
+        let childArgs = constructorArguments p
+            branchPattern = branchShape p childArgs
             branchRows = [ (rest, body')
                          | (ps, body) <- rows
-                         , Just (rest, body') <- [specialize p ps body]
+                         , Just (rest, body') <- [specialize p ps body arg]
                          ]
-         in CaseBranch p (compileMatrix (childArgs ++ args) branchRows)
+         in CaseBranch branchPattern (compileMatrix (childArgs ++ args) branchRows)
 
     fallbackBranch =
         if any (isFallback . headOrWild . fst) rows
-            then [CaseBranch PatWild (compileMatrix args [ (drop 1 ps, bind (headOrWild ps) body) | (ps, body) <- rows, isFallback (headOrWild ps) ])]
+            then [CaseBranch PatWild (compileMatrix args [ (drop 1 ps, bindAt arg (headOrWild ps) body) | (ps, body) <- rows, isFallback (headOrWild ps) ])]
             else []
 
-    explicitPatterns = unique [p | (ps, _) <- rows, let p = headOrWild ps, not (isFallback p)]
+    explicitPatterns = unique [shape p | (ps, _) <- rows, let p = headOrWild ps, not (isFallback p)]
 
-    specialize wanted ps body = case ps of
+    shape (PatCon con ps) = PatCon con (replicate (length ps) PatWild)
+    shape p = p
+
+    specialize wanted ps body scrutinee = case ps of
         [] -> Nothing
         p : rest
-            | isFallback p -> Just (rest, bind p body)
+            | isFallback p -> Just (rest, bindAt scrutinee p body)
             | sameShape wanted p -> Just (patternChildren p ++ rest, body)
             | otherwise -> Nothing
 
@@ -84,12 +88,15 @@ compileMatrix (arg : args) rows
     patternChildren (PatCon _ ps) = ps
     patternChildren _ = []
 
-patternArguments :: Pattern -> [Identifier]
-patternArguments (PatCon _ ps) = zipWith argumentName [0 :: Int ..] ps
-  where
+    constructorArguments (PatCon _ ps) = zipWith argumentName [0 :: Int ..] ps
+    constructorArguments _ = []
     argumentName i (PatVar v) = v
     argumentName i _ = Identifier ("pat" <> Text.pack (show i))
-patternArguments _ = []
+    branchShape (PatCon con ps) names = PatCon con (map PatVar names)
+    branchShape pattern _ = pattern
+
+    bindAt scrutinee (PatVar v) body = substitute v (Variable scrutinee) body
+    bindAt _ _ body = body
 
 isVariablePattern (PatVar _) = True
 isVariablePattern PatWild = True
