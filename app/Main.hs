@@ -356,7 +356,7 @@ cmdType contextRef exprText = do
                 Left diag ->
                     outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just exprText) diag))
                 Right (_, inferredType, goals) ->
-                    let values = contextEnv ctx
+                    let values = contextRuntimeEnv ctx
                         normType = normalize values inferredType
                      in do
                          outputStrLn (Text.unpack ("  " <> dim ":" <> " " <> magenta (prettyExpressionWith cfg normType)))
@@ -501,7 +501,7 @@ processStatement contextRef input
                     Left typeError ->
                         outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right (elaboratedExpr, inferredType, goals) -> do
-                        let values = contextEnv ctx
+                        let values = contextRuntimeEnv ctx
                         evalResult <-
                             liftIO $
                                 Exception.try $

@@ -41,7 +41,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Diagnostics (SourceSpan (..), formatSourceSnippet)
 import Parser (defaultFixityEnv)
-import Evaluation (Environment, Value (..), areDefinitionallyEqual, emptyEnvironment, evaluate, evaluateWeakHeadNormalForm)
+import Evaluation (Environment, Neutral (..), Value (..), areDefinitionallyEqual, emptyEnvironment, evaluate, evaluateWeakHeadNormalForm)
 import Pretty (prettyExpression, prettyIdentifier)
 import Substitution (freeVariables, freshIdentifier, substitute)
 import PatternMatch (compileClauses)
@@ -114,6 +114,7 @@ data Context = Context
     { contextTypes :: Map Identifier Expression
     , contextValues :: Map Identifier Expression
     , contextEnv :: Environment
+    , contextRuntimeEnv :: Environment
     , contextLocals :: [Identifier]
     , contextData :: Map Identifier DataInfo
     , contextFixities :: Map Identifier Fixity
@@ -168,6 +169,12 @@ emptyContext =
                     [ (Identifier "zero", VZero)
                     , (Identifier "successor", VPrimSucc)
                     ])
+        , contextRuntimeEnv =
+            Map.union (Map.map (evaluate emptyEnvironment) primitiveValues)
+                (Map.fromList
+                    [ (Identifier "zero", VZero)
+                    , (Identifier "successor", VPrimSucc)
+                    ])
         , contextLocals = []
         , contextData = builtinData
         , contextFixities = defaultFixityEnv
@@ -199,6 +206,7 @@ extendContextType identifier expressionType context =
     context
         { contextTypes = Map.insert identifier expressionType (contextTypes context)
         , contextEnv = Map.delete identifier (contextEnv context)
+        , contextRuntimeEnv = Map.delete identifier (contextRuntimeEnv context)
         , contextLocals = identifier : contextLocals context
         }
 
@@ -213,6 +221,21 @@ extendContextDefinition identifier expressionType expressionValue context =
             { contextTypes = Map.insert identifier expressionType (contextTypes context)
             , contextValues = Map.insert identifier expressionValue (contextValues context)
             , contextEnv = Map.insert identifier value (contextEnv context)
+            , contextRuntimeEnv = Map.insert identifier value (contextRuntimeEnv context)
+            }
+
+extendContextPartialDefinition :: Identifier -> Expression -> Expression -> Context -> Context
+extendContextPartialDefinition identifier expressionType expressionValue context =
+    let oldRuntimeEnv = contextRuntimeEnv context
+        runtimeValue = if isFunctionExpression expressionValue
+            then evaluate recursiveRuntimeEnv expressionValue
+            else evaluate oldRuntimeEnv expressionValue
+        recursiveRuntimeEnv = Map.insert identifier (evaluate recursiveRuntimeEnv expressionValue) oldRuntimeEnv
+     in context
+            { contextTypes = Map.insert identifier expressionType (contextTypes context)
+            , contextValues = Map.insert identifier expressionValue (contextValues context)
+            , contextEnv = Map.insert identifier (VNeutral (NVar identifier)) (contextEnv context)
+            , contextRuntimeEnv = Map.insert identifier runtimeValue oldRuntimeEnv
             }
 
 -- Recursive definitions are represented by closures whose environment contains
@@ -1843,7 +1866,10 @@ checkDefinitionWithPartial isPartial context name maybeDeclaredType bodyTerm =
                                 pure (zonkedBodyTerm, zonkedFinalType)
                     goals <- collectUnsolvedGoals
                     solveUnivConstraints
-                    let updatedContext = extendContextDefinition name finalType zonkedBody context
+                    let updatedContext =
+                            if isPartial
+                                then extendContextPartialDefinition name finalType zonkedBody context
+                                else extendContextDefinition name finalType zonkedBody context
                     pure (updatedContext, finalType, goals)
             )
             (ElabState 0 Map.empty Map.empty Nothing [] 0 [])

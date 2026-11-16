@@ -77,6 +77,7 @@ loadModuleWithPaths searchPaths entry = do
         { contextTypes = Map.union (contextTypes a) (contextTypes b)
         , contextValues = Map.union (contextValues a) (contextValues b)
         , contextEnv = Map.union (contextEnv a) (contextEnv b)
+        , contextRuntimeEnv = Map.union (contextRuntimeEnv a) (contextRuntimeEnv b)
         , contextLocals = contextLocals a ++ contextLocals b
         , contextData = Map.union (contextData a) (contextData b)
         , contextFixities = Map.union (contextFixities a) (contextFixities b)
