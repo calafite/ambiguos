@@ -25,30 +25,48 @@ import TypeChecker.Types
     , throwError
     )
 
--- | Strict positivity check: a data type may not occur negatively (bare, as the
--- domain of an arrow) in any of its constructor types. Occurrences applied to
--- variables (parameters/indices) are permitted, since they describe the
--- structural arguments being consumed.
+-- | Strict positivity check for a constructor type.
+--
+-- The outer Pi telescope is the constructor's list of fields, so a recursive
+-- type is allowed there: @Succ :: Nat -> Nat@ is the canonical example.  Pi
+-- types nested inside a field are actual function types, however, and their
+-- domains are negative: @Bad :: (Bad -> Int) -> Bad@ must be rejected.
 checkPositive :: Identifier -> Expression -> Elab ()
-checkPositive dataName expr = go False expr
+checkPositive dataName expr = checkFields expr
   where
-    go inDomain e = case e of
-        Pi _ _ dom codom ->
-            go True dom >> go inDomain codom
+    checkFields (Pi _ _ field rest) = checkPositiveField field >> checkFields rest
+    checkFields _ = pure ()
+
+    checkPositiveField = goPositive
+
+    goPositive e = case e of
         Variable ident
-            | ident == dataName && inDomain ->
-                throwError (NonStrictlyPositive dataName ident)
+            | ident == dataName -> pure ()
+        Pi _ _ dom codom -> goNegative dom >> goPositive codom
         Application _ f a ->
-            case f of
-                Variable ident | ident == dataName -> go inDomain a
-                _ -> go inDomain f >> go inDomain a
-        Lambda _ _ _ body -> go inDomain body
-        Let _ _ d b -> go inDomain d >> go inDomain b
+            goPositive f >> goPositive a
+        Lambda _ _ _ body -> goPositive body
+        Let _ _ d b -> goPositive d >> goPositive b
         Case t _mMotive branches ->
-            go inDomain t >> mapM_ (go inDomain . branchBody) branches
+            goPositive t >> mapM_ (goPositive . branchBody) branches
           where
             branchBody (CaseBranch _ rhss _) = guardedRhsBody (head rhss)
-        Annotation t _ -> go inDomain t
+        Annotation t _ -> goPositive t
+        _ -> pure ()
+
+    goNegative e = case e of
+        Variable ident
+            | ident == dataName ->
+                throwError (NonStrictlyPositive dataName ident)
+        Pi _ _ dom codom -> goPositive dom >> goNegative codom
+        Application _ f a -> goNegative f >> goNegative a
+        Lambda _ _ _ body -> goNegative body
+        Let _ _ d b -> goNegative d >> goNegative b
+        Case t _mMotive branches ->
+            goNegative t >> mapM_ (goNegative . branchBody) branches
+          where
+            branchBody (CaseBranch _ rhss _) = guardedRhsBody (head rhss)
+        Annotation t _ -> goNegative t
         _ -> pure ()
 
 -- | Structural termination check: every recursive call to `name` must apply at
