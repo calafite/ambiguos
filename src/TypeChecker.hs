@@ -178,7 +178,7 @@ primitiveBindings =
     , (Identifier "intToNat", IntToNat), (Identifier "intAbs", IntAbs), (Identifier "clampToNat", ClampToNat)
     , (Identifier "primIntAdd", IntAdd), (Identifier "primIntSub", IntSub), (Identifier "primIntMul", IntMul), (Identifier "primIntPow", IntPow)
     , (Identifier "primIntDiv", IntDiv), (Identifier "primIntMod", IntMod), (Identifier "primIntNeg", IntNeg)
-    , (Identifier "primIntEq", IntEq), (Identifier "primIntNeq", IntNeq), (Identifier "primIntLt", IntLt), (Identifier "primIntLe", IntLe), (Identifier "primIntGt", IntGt), (Identifier "primIntGe", IntGe)
+    , (Identifier "primIntEq", IntEq), (Identifier "primIntNeq", IntNeq), (Identifier "primIntLt", IntLt), (Identifier "primIntLe", IntLe), (Identifier "primIntGt", IntGt), (Identifier "primIntGe", IntGe), (Identifier "primBoolEq", BoolEq)
     , (Identifier "primIntFold", IntFold)
     , (Identifier "primFloatAdd", FloatAdd), (Identifier "primFloatSub", FloatSub), (Identifier "primFloatMul", FloatMul), (Identifier "primFloatDiv", FloatDiv), (Identifier "primFloatEq", FloatEq)
     , (Identifier "primStringAppend", StringAppend), (Identifier "primStringEq", StringEq), (Identifier "primStringLength", StringLength)
@@ -973,6 +973,7 @@ primitiveOpType operation = case operation of
     IntAdd -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntSub -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMul -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntPow -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
     IntDiv -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt); IntMod -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
     IntEq -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntNeq -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLt -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntLe -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntGt -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool")); IntGe -> binary (PrimType PTInt) (PrimType PTInt) (Variable (Identifier "Bool"))
+    BoolEq -> binary (Variable (Identifier "Bool")) (Variable (Identifier "Bool")) (Variable (Identifier "Bool"))
     FloatAdd -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatSub -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatMul -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat); FloatDiv -> binary (PrimType PTFloat) (PrimType PTFloat) (PrimType PTFloat)
     FloatEq -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool")); FloatLt -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool")); FloatLe -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool"))
     StringAppend -> binary (PrimType PTString) (PrimType PTString) (PrimType PTString); StringEq -> binary (PrimType PTString) (PrimType PTString) (Variable (Identifier "Bool"))
@@ -995,7 +996,7 @@ primitiveOpType operation = case operation of
 -- consulted.
 numericOperator :: Identifier -> Bool
 numericOperator name = name `elem`
-    map Identifier ["+" , "-", "*", "/", "^", "==", "/=", "<", "<=", ">", ">="]
+    map Identifier ["+" , "-", "*", "/", "^", "==", "/=", "<", "<=", ">", ">=", "++"]
 
 numericKind :: Expression -> Maybe PrimType
 numericKind ty = case ty of
@@ -1017,6 +1018,7 @@ numericPrimitive name kind = case (name, kind) of
     (Identifier "/=", PTInt) -> Just IntNeq
     (Identifier "==", PTString) -> Just StringEq
     (Identifier "/=", PTString) -> Just StringEq
+    (Identifier "++", PTString) -> Just StringAppend
     (Identifier "==", PTChar) -> Just CharEq
     (Identifier "/=", PTChar) -> Just CharEq
     (Identifier "+", PTFloat) -> Just FloatAdd
@@ -1043,38 +1045,52 @@ numericBinary context op left right = do
     (elabRight, rightType0) <- synthesizeElab context right
     leftType <- zonk leftType0
     rightType <- zonk rightType0
-    let leftNat = leftType == NatType
-        rightNat = rightType == NatType
-        leftPrim = numericKind leftType
-        rightPrim = numericKind rightType
-        resultKind = case (leftPrim, rightPrim) of
-            (Just PTFloat, _) -> Just PTFloat
-            (_, Just PTFloat) -> Just PTFloat
-            (Just PTInt, _) -> Just PTInt
-            (_, Just PTInt) -> Just PTInt
-            (Just PTString, Just PTString) -> Just PTString
-            (Just PTChar, Just PTChar) -> Just PTChar
-            _ | leftNat && rightNat -> Nothing
-            _ -> Nothing
-        comparison = op `elem` map Identifier ["==", "/=", "<", "<=", ">", ">="]
-    case resultKind of
-        Just kind ->
-            case numericPrimitive op kind of
-                Just primitive -> do
-                    let target = PrimType kind
-                        l' = coerceNumeric kind elabLeft leftType
-                        r' = coerceNumeric kind elabRight rightType
-                        resultType = if comparison then Variable (Identifier "Bool") else target
-                        (firstArg, secondArg) = if op `elem` map Identifier [">", ">="] then (r', l') else (l', r')
-                        core = Application Explicit (Application Explicit (PrimOp primitive) firstArg) secondArg
-                        result = if op == Identifier "/=" then Application Explicit (Variable (Identifier "not")) core else core
-                    pure (result, resultType)
-                Nothing -> throwError (TypeMismatch (PrimType kind) leftType)
-        Nothing
-            | leftNat && rightNat ->
-                pure (Application Explicit (Application Explicit (Variable op) elabLeft) elabRight,
-                      if comparison then Variable (Identifier "Bool") else NatType)
-            | otherwise -> throwError (TypeMismatch leftType rightType)
+    let boolType = Variable (Identifier "Bool")
+    if op `elem` map Identifier ["==", "/="] && leftType == boolType && rightType == boolType
+        then do
+            let core = Application Explicit (Application Explicit (PrimOp BoolEq) elabLeft) elabRight
+                result = if op == Identifier "/=" then Application Explicit (Variable (Identifier "not")) core else core
+            pure (result, boolType)
+        else if op == Identifier "++" && isListType leftType && isListType rightType
+            then pure (Application Explicit (Application Explicit (Variable (Identifier "append")) elabLeft) elabRight, leftType)
+            else numericBinaryRest elabLeft elabRight leftType rightType
+  where
+    isListType ty = case unfoldApp ty of
+        (Variable (Identifier "List"), [_]) -> True
+        _ -> False
+    numericBinaryRest elabLeft elabRight leftType rightType = do
+        let leftNat = leftType == NatType
+            rightNat = rightType == NatType
+            leftPrim = numericKind leftType
+            rightPrim = numericKind rightType
+            resultKind = case (leftPrim, rightPrim) of
+                (Just PTFloat, _) -> Just PTFloat
+                (_, Just PTFloat) -> Just PTFloat
+                (Just PTInt, _) -> Just PTInt
+                (_, Just PTInt) -> Just PTInt
+                (Just PTString, Just PTString) -> Just PTString
+                (Just PTChar, Just PTChar) -> Just PTChar
+                _ | leftNat && rightNat -> Nothing
+                _ -> Nothing
+            comparison = op `elem` map Identifier ["==", "/=", "<", "<=", ">", ">="]
+        case resultKind of
+            Just kind ->
+                case numericPrimitive op kind of
+                    Just primitive -> do
+                        let target = PrimType kind
+                            l' = coerceNumeric kind elabLeft leftType
+                            r' = coerceNumeric kind elabRight rightType
+                            resultType = if comparison then Variable (Identifier "Bool") else target
+                            (firstArg, secondArg) = if op `elem` map Identifier [">", ">="] then (r', l') else (l', r')
+                            core = Application Explicit (Application Explicit (PrimOp primitive) firstArg) secondArg
+                            result = if op == Identifier "/=" then Application Explicit (Variable (Identifier "not")) core else core
+                        pure (result, resultType)
+                    Nothing -> throwError (TypeMismatch (PrimType kind) leftType)
+            Nothing
+                | leftNat && rightNat ->
+                    pure (Application Explicit (Application Explicit (Variable op) elabLeft) elabRight,
+                          if comparison then Variable (Identifier "Bool") else NatType)
+                | otherwise -> throwError (TypeMismatch leftType rightType)
 
 peelConstructorArgs :: Context -> [Identifier] -> Expression -> Elab ([Expression], Expression)
 peelConstructorArgs _ [] ty = pure ([], ty)
@@ -1683,7 +1699,15 @@ checkClassDeclarationDetailed context name params methods =
         defaults = [(methodName m, body) | m <- methods, Just body <- [methodDefault m]]
      in do
         updated <- checkClassDeclaration context name params fields
-        pure updated { contextClassDefaults = Map.insert name defaults (contextClassDefaults updated) }
+        let makeInstanceType ty = case ty of
+                Pi vis p dom (Pi Explicit dict dictTy rest) -> Pi vis p dom (Pi Instance dict dictTy rest)
+                other -> other
+            updatedTypes = foldr (\method ctx ->
+                case Map.lookup (methodName method) (contextTypes ctx) of
+                    Nothing -> ctx
+                    Just ty -> ctx { contextTypes = Map.insert (methodName method) (makeInstanceType ty) (contextTypes ctx) })
+                updated methods
+        pure updatedTypes { contextClassDefaults = Map.insert name defaults (contextClassDefaults updatedTypes) }
 
 checkInstanceDeclarationDetailed :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> Expression -> [Clause] -> Either TypeDiagnostic Context
 checkInstanceDeclarationDetailed context className _params headType clauses = do

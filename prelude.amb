@@ -106,6 +106,23 @@ def not : Bool -> Bool
       ; false -> true
       }
 
+{- --------------------------------------------------------------------------
+   Typeclasses
+   -------------------------------------------------------------------------- -}
+
+class Eq (A : Type) where
+  { (==) : A -> A -> Bool
+  ; (/=) : A -> A -> Bool = \x y -> false
+  }
+
+class Add (A : Type) where
+  { (+) : A -> A -> A
+  }
+
+class Concat (A : Type) where
+  { (++) : A -> A -> A
+  }
+
 def and : Bool -> Bool -> Bool
   = \a b -> case a of
       { true  -> b
@@ -353,9 +370,6 @@ def equalNat : Nat -> Nat -> Bool
                        })
                    x y
 
-def (==) : Nat -> Nat -> Bool
-  = equalNat
-
 def notEqualNat : Nat -> Nat -> Bool
   = \x y -> not (equalNat x y)
 
@@ -398,13 +412,10 @@ def even : Int -> Bool
 def odd : Int -> Bool
   = \n -> not (even n)
 
-def (+) : Int -> Int -> Int = primIntAdd
 def (-) : Int -> Int -> Int = primIntSub
 def (*) : Int -> Int -> Int = primIntMul
 def (/) : Int -> Int -> Int = primIntDiv
 def (^) : Int -> Int -> Int = primIntPow
-def (==) : Int -> Int -> Bool = primIntEq
-def (/=) : Int -> Int -> Bool = primIntNeq
 def (<) : Int -> Int -> Bool = primIntLt
 def (<=) : Int -> Int -> Bool = primIntLe
 def (>) : Int -> Int -> Bool = primIntGt
@@ -412,6 +423,30 @@ def (>=) : Int -> Int -> Bool = primIntGe
 def factorial : Int -> Int = \n -> primIntFold n 1 (\k -> \rec -> primIntMul k rec)
 def predecessor : Int -> Int = \n -> primIntSub n 1
 def pred : Int -> Int = predecessor
+
+instance Eq Int where
+  { (==) = primIntEq
+  ; (/=) = primIntNeq
+  }
+
+instance Eq String where
+  { (==) = primStringEq
+  ; (/=) = \x y -> not (primStringEq x y)
+  }
+
+instance Eq Char where
+  { (==) = \x y -> primCharEq x y
+  ; (/=) = \x y -> not (primCharEq x y)
+  }
+
+instance Eq Bool where
+  { (==) = primBoolEq
+  ; (/=) = \x y -> not (primBoolEq x y)
+  }
+
+instance Add Int where
+  { (+) = primIntAdd
+  }
 
 
 {- --------------------------------------------------------------------------
@@ -458,8 +493,9 @@ def append : {A : Type} -> List A -> List A -> List A
       ; cons x xs  -> cons x (append xs ys)
       }
 
-def (++) : {A : Type} -> List A -> List A -> List A
-  = append
+instance Concat (List Int) where
+  { (++) = append
+  }
 
 def concat : {A : Type} -> List (List A) -> List A
   = \xss -> foldRight append nil xss

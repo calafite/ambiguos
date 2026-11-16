@@ -72,7 +72,7 @@ data PrimType
 
 data PrimOp
     = IntAdd | IntSub | IntMul | IntDiv | IntMod | IntPow | IntNeg
-    | IntEq | IntNeq | IntLt | IntLe | IntGt | IntGe
+    | IntEq | IntNeq | IntLt | IntLe | IntGt | IntGe | BoolEq
     | IntFold
     | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatNeg
     | FloatEq | FloatLt | FloatLe | FloatSqrt | FloatSin | FloatCos | FloatExp | FloatLog

@@ -273,6 +273,10 @@ applyPrimOp operation args = case (operation, args) of
     (StringEq, [VLit (LitString a), VLit (LitString b)]) -> boolValue (a == b)
     (CharEq, [VLit (LitChar a), VLit (LitChar b)]) -> boolValue (a == b)
     (IntEq, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a == b)
+    (BoolEq, [VCon (Identifier "true") [], VCon (Identifier "true") []]) -> boolValue True
+    (BoolEq, [VCon (Identifier "false") [], VCon (Identifier "false") []]) -> boolValue True
+    (BoolEq, [VCon (Identifier "true") [], VCon (Identifier "false") []]) -> boolValue False
+    (BoolEq, [VCon (Identifier "false") [], VCon (Identifier "true") []]) -> boolValue False
     (IntNeq, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a /= b)
     (IntLt, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a < b)
     (IntLe, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a <= b)

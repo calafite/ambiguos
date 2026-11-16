@@ -789,7 +789,8 @@ parseClassDeclaration env = parseLegacy <|> parseDetailed
         expectToken TokenLeftBrace "'{'"
         methods <- parseMethods
         expectToken TokenRightBrace "'}'"
-        pure (ClassDeclarationDetailed name (concat params) methods)
+        pure (ClassDeclaration name (concat params) (Universe (UFixed (-1)))
+            [RecordField (methodName m) (methodType m) | m <- methods])
     parseMethods = do
         method <- do
             methodName <- parseIdentifier
