@@ -928,6 +928,52 @@ parseDefinition env isPartial = do
     bodyTerm <- expressionParser env
     pure (Definition isPartial name maybeType bodyTerm)
 
+parseEquationLhs :: FixityEnv -> Parser ([Pattern], [(Identifier, Expression)])
+parseEquationLhs env = parseLhs [] []
+  where
+    parseLhs pats typed = do
+        next <- peekToken
+        case next of
+            Just TokenEquals -> pure (pats, typed)
+            Just TokenColon -> pure (pats, typed)
+            _ -> do
+                (newPats, newTyped) <- parseTypedGroup <|> do
+                    p <- equationPattern
+                    pure ([p], [])
+                parseLhs (pats ++ newPats) (typed ++ newTyped)
+    equationPattern = normalize <$> parseEquationPattern
+    parseEquationPattern = do
+        next <- peekPosToken
+        case next of
+            Just (PosToken _ (TokenIdentifier n)) -> consumeToken *> pure (identifierPattern n)
+            Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
+            Just (PosToken _ TokenKeywordZero) -> consumeToken *> pure (PatCon (Identifier "zero") [])
+            Just (PosToken _ TokenKeywordSucc) -> consumeToken *> pure (PatCon (Identifier "successor") [])
+            Just (PosToken _ TokenLeftParen) -> parseCasePattern
+            _ -> parseCasePattern
+    normalize (PatCon n [])
+        | unIdentifier n `notElem` ["nil", "true", "false", "zero", "successor", "nothing"] = PatVar n
+    normalize (PatCon n ps) = PatCon n (map normalize ps)
+    normalize p = p
+    identifierPattern n
+        | unIdentifier n `elem` ["nil", "true", "false", "zero", "successor", "nothing"] = PatCon n []
+        | otherwise = PatVar n
+    parseTypedGroup = do
+        expectToken TokenLeftParen "'('"
+        names <- some parseIdentifier
+        expectToken TokenColon "':'"
+        ty <- expressionParser env
+        expectToken TokenRightParen "')'"
+        pure ([PatVar n | n <- names], [(n, ty) | n <- names])
+
+parsePipedClause :: FixityEnv -> Identifier -> Parser Clause
+parsePipedClause env name = do
+    expectToken TokenPipe "'|'"
+    (patterns, _) <- parseEquationLhs env
+    expectToken TokenEquals "'='"
+    body <- parseLineExpression env
+    pure (Clause name patterns body)
+
 parseFunctionEquation :: FixityEnv -> Bool -> Parser Statement
 parseFunctionEquation env isPartial = do
     name <- parseIdentifier
@@ -936,10 +982,16 @@ parseFunctionEquation env isPartial = do
         Just TokenColon -> do
             _ <- consumeToken
             signature <- parseLineExpression env
-            hasDefinition <- optional (expectToken TokenEquals "'='")
-            case hasDefinition of
-                Nothing -> pure (TypeSignature name signature)
-                Just () -> Definition isPartial name (Just signature) <$> parseLineExpression env
+            nextAfterSignature <- peekToken
+            case nextAfterSignature of
+                Just TokenPipe -> do
+                    clauses <- some (parsePipedClause env name)
+                    pure (FunctionDefinition isPartial name (Just signature) clauses)
+                _ -> do
+                    hasDefinition <- optional (expectToken TokenEquals "'='")
+                    case hasDefinition of
+                        Nothing -> pure (TypeSignature name signature)
+                        Just () -> Definition isPartial name (Just signature) <$> parseLineExpression env
         _ -> do
             (patterns, mTypedTypes) <- parseLhs [] []
             mResultType <- optional (expectToken TokenColon "':'" *> expressionParser env)
