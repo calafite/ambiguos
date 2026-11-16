@@ -29,6 +29,8 @@ import AST (CaseBranch (..), ClassMethod (..), Clause (..), Expression (..), Fix
 import Control.Monad (filterM, foldM)
 import Control.Monad.State.Strict (StateT (..), evalStateT, gets, modify, runStateT)
 import Control.Monad.Trans (lift)
+import Data.Char (isLower)
+import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -1778,7 +1780,8 @@ checkDefinition context name maybeDeclaredType bodyTerm =
                     (zonkedBody, finalType) <-
                         case maybeDeclaredType of
                             Just declaredType -> do
-                                (elabDeclType, typeUniverse) <- synthesizeElab context declaredType
+                                let generalizedType = generalizeType context declaredType
+                                (elabDeclType, typeUniverse) <- synthesizeElab context generalizedType
                                 _ <- extractUniverseLevel context typeUniverse
                                 zonkedDeclType <- zonk elabDeclType
                                 -- The name is in scope for its own body (so it can
@@ -1813,7 +1816,34 @@ checkFunctionDefinition context name maybeDeclaredType clauses =
         firstClause : _
             | any ((/= length (clausePatterns firstClause)) . length . clausePatterns) clauses ->
                 Left (TypeDiagnostic Nothing [] (ArityMismatch name (length (clausePatterns firstClause)) (length (clausePatterns (head clauses)))))
-            | otherwise -> checkDefinition context name maybeDeclaredType (compileClauses maybeDeclaredType clauses)
+            | otherwise ->
+                let generalizedType = fmap (generalizeType context) maybeDeclaredType
+                 in checkDefinition context name generalizedType (compileClauses generalizedType clauses)
+
+generalizeType :: Context -> Expression -> Expression
+generalizeType context signature =
+    foldr (\ident body -> Pi Implicit ident (Universe (UFixed (-1))) body)
+        signature
+        (freeTypeVariables context signature)
+
+freeTypeVariables :: Context -> Expression -> [Identifier]
+freeTypeVariables context expression =
+    List.nub [ident | ident <- orderedFreeVars expression, isCandidate ident]
+  where
+    isCandidate ident@(Identifier name) =
+        case Text.uncons name of
+            Just (firstChar, _) -> isLower firstChar && Map.notMember ident (contextTypes context)
+            Nothing -> False
+
+    orderedFreeVars expr = case expr of
+        Variable ident -> [ident]
+        Pi _ parameter domain codomain ->
+            orderedFreeVars domain ++ filter (/= parameter) (orderedFreeVars codomain)
+        Application _ function argument -> orderedFreeVars function ++ orderedFreeVars argument
+        Annotation term ty -> orderedFreeVars term ++ orderedFreeVars ty
+        Tuple terms -> concatMap orderedFreeVars terms
+        Located _ inner -> orderedFreeVars inner
+        _ -> []
 
 renderGoals :: [Goal] -> Text
 renderGoals goals = Text.concat (map formatGoal goals)

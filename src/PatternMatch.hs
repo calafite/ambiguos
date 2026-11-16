@@ -36,6 +36,8 @@ compileClauses maybeType clauses =
     isListPattern _ = False
 
     piDomains (Located _ e) = piDomains e
+    piDomains (Pi Implicit _ _ codomain) = piDomains codomain
+    piDomains (Pi Instance _ _ codomain) = piDomains codomain
     piDomains (Pi Explicit _ domain codomain) = domain : piDomains codomain
     piDomains _ = []
 
