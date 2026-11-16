@@ -439,14 +439,19 @@ processStatement contextRef input
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined record " <> bold (prettyIdentifier name)))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
+            Right (TypeAlias name params body) -> do
+                let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body params
+                let updatedContext = extendContextType name aliasType ctx
+                outputStrLn (Text.unpack (green "✓" <> " Defined type " <> bold (prettyIdentifier name)))
+                liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
             Right (ClassDeclaration name params _ fields _) ->
                 case checkClassDeclaration ctx name params fields of
                     Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined class " <> bold (prettyIdentifier name)))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (InstanceDeclaration className headType fields) ->
-                case checkInstanceDeclaration ctx className headType fields of
+            Right (InstanceDeclaration className _params headType _methods) ->
+                case checkInstanceDeclaration ctx className headType [] of
                     Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined instance for " <> bold (prettyIdentifier className)))
@@ -552,6 +557,7 @@ statementIdentifier :: Statement -> Identifier
 statementIdentifier (Definition _ name _ _) = name
 statementIdentifier (FunctionDefinition _ name _ _) = name
 statementIdentifier (TypeSignature name _) = name
+statementIdentifier (TypeAlias name _ _) = name
 statementIdentifier (FunctionClause (Clause name _ _ _)) = name
 statementIdentifier (DataDeclaration name _ _ _) = name
 statementIdentifier (RecordDeclaration name _ _ _ _) = name
@@ -566,7 +572,8 @@ statementIdentifiers :: Statement -> [Identifier]
 statementIdentifiers (Definition _ name _ _) = [name]
 statementIdentifiers (FunctionDefinition _ name _ _) = [name]
 statementIdentifiers (TypeSignature name _) = [name]
-statementIdentifiers (FunctionClause (Clause name _ _)) = [name]
+statementIdentifiers (FunctionClause (Clause name _ _ _)) = [name]
+statementIdentifiers (TypeAlias name _ _) = [name]
 statementIdentifiers (DataDeclaration name _ _ constrs) = name : map fst constrs
 statementIdentifiers (RecordDeclaration name _ _ fields _) = name : map recordFieldName fields
 statementIdentifiers (FixityDeclaration _ _ _) = []
@@ -637,7 +644,7 @@ runStatements currentContext accNames filePath content (statement : remaining) =
                         else Left (red "✗ " <> "Expression contains unsolved goal(s):\n" <> renderGoals goals)
         ModuleHeader _ -> Right currentContext
         ImportStmt _ _ _ _ -> Right currentContext
-        ClassDeclaration clsName params _ fields ->
+        ClassDeclaration clsName params _ fields _defaults ->
             case checkClassDeclaration currentContext clsName params fields of
                 Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier clsName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
