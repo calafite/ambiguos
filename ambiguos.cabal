@@ -25,6 +25,7 @@ library
                     , Grammar.Analysis
                     , Grammar.Specification
                     , Grammar.Types
+                    , Layout
                     , Lexer
                     , Parser
                     , Pretty
