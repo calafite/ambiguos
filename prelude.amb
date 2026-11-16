@@ -53,12 +53,6 @@ ifThenElse :: Bool -> a -> a -> a
 ifThenElse True x _ = x
 ifThenElse False _ y = y
 
-symmetry :: {a :: Type} -> {x y :: a} -> Id a x y -> Id a y x
-symmetry p = J a x (\z _ -> Id a z x) (Refl a x) y p
-
-cong :: {a b :: Type} -> (f :: a -> b) -> {x y :: a} -> Id a x y -> Id b (f x) (f y)
-cong f p = J a x (\z _ -> Id b (f x) (f z)) (Refl b (f x)) y p
-
 class Eq a where { (==) :: a -> a -> Bool; (/=) :: a -> a -> Bool }
 
 class Ord a where { compare :: a -> a -> Ordering; (<) :: a -> a -> Bool; (<=) :: a -> a -> Bool; (>) :: a -> a -> Bool; (>=) :: a -> a -> Bool }
@@ -78,10 +72,6 @@ class Semigroup a where { (<>) :: a -> a -> a }
 class Monoid a where { empty :: a }
 
 class Concat a where { (++) :: a -> a -> a }
-
-class Functor f where { fmap :: (a -> b) -> f a -> f b }
-
-class Monad m where { ret :: a -> m a; (>>=) :: m a -> (a -> m b) -> m b }
 
 intAdd :: Int -> Int -> Int
 intAdd = primIntAdd
@@ -143,12 +133,12 @@ length :: [a] -> Int
 length [] = 0
 length (_ : xs) = 1 + length xs
 
-reverse :: [a] -> [a]
-reverse xs = reverseInto xs []
-
 reverseInto :: [a] -> [a] -> [a]
 reverseInto [] acc = acc
 reverseInto (x : xs) acc = reverseInto xs (x : acc)
+
+reverse :: [a] -> [a]
+reverse xs = reverseInto xs []
 
 head :: [a] -> Maybe a
 head [] = Nothing
@@ -168,13 +158,6 @@ drop n xs | n <= 0 = xs
 drop _ [] = []
 drop n (_ : xs) = drop (n - 1) xs
 
-elem :: a -> [a] -> Bool
-elem _ [] = False
-elem target (x : xs) = if target == x then True else elem target xs
-
-notElem :: a -> [a] -> Bool
-notElem x xs = not (elem x xs)
-
 takeWhile :: (a -> Bool) -> [a] -> [a]
 takeWhile _ [] = []
 takeWhile p (x : xs) = if p x then x : takeWhile p xs else []
@@ -183,10 +166,6 @@ dropWhile :: (a -> Bool) -> [a] -> [a]
 dropWhile _ [] = []
 dropWhile p (x : xs) = if p x then dropWhile p xs else x : xs
 
-lookup :: a -> [(a, b)] -> Maybe b
-lookup _ [] = Nothing
-lookup key (_ : xs) = lookup key xs
-
 concat :: [[a]] -> [a]
 concat [] = []
 concat (x : xs) = append x (concat xs)
@@ -194,13 +173,3 @@ concat (x : xs) = append x (concat xs)
 replicate :: Int -> a -> [a]
 replicate n x | n <= 0 = []
 replicate n x = x : replicate (n - 1) x
-
-qsort :: Ord a => [a] -> [a]
-qsort [] = []
-qsort (x : xs) = append (qsort (filter (lessThan x) xs)) (append [x] (qsort (filter (greaterEqual x) xs)))
-
-lessThan :: Ord a => a -> a -> Bool
-lessThan x y = x < y
-
-greaterEqual :: Ord a => a -> a -> Bool
-greaterEqual x y = x >= y
