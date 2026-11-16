@@ -921,7 +921,11 @@ parseFunctionEquation env = do
     case next of
         Just TokenColon -> do
             _ <- consumeToken
-            TypeSignature name <$> parseLineExpression env
+            signature <- parseLineExpression env
+            hasDefinition <- optional (expectToken TokenEquals "'='")
+            case hasDefinition of
+                Nothing -> pure (TypeSignature name signature)
+                Just () -> Definition name (Just signature) <$> parseLineExpression env
         _ -> do
             (patterns, mTypedTypes) <- parseLhs [] []
             mResultType <- optional (expectToken TokenColon "':'" *> expressionParser env)
