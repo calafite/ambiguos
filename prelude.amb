@@ -1,7 +1,4 @@
-{- ==========================================================================
-   Ambiguos Standard Prelude
-   Calculus of Constructions with Martin-Löf Identity and Inductive Types
-   ========================================================================== -}
+-- Ambiguos standard prelude: pure Haskell-style syntax.
 
 infixr 9 .
 infixr 8 ^
@@ -13,640 +10,197 @@ infixr 3 &&
 infixr 2 ||
 infixr 0 $
 
+data Unit = Unit
+data Bool = False | True
+data Ordering = LT | EQ | GT
+data Nat = Zero | Succ Nat
+data Pair a b = Pair a b
+data Either a b = Left a | Right b
+data Maybe a = Nothing | Just a
+data List a = [] | (:) a (List a)
+data Dec p = Yes p | No (p -> Void)
 
-{- --------------------------------------------------------------------------
-   1. Function Combinators
-   -------------------------------------------------------------------------- -}
+type String = [Char]
 
-identity : a -> a
+identity :: a -> a
 identity x = x
 
-id : a -> a
+id :: a -> a
 id x = x
 
-constant : a -> b -> a
-constant x _ = x
+const :: a -> b -> a
+const x _ = x
 
-flip : (a -> b -> c) -> b -> a -> c
+flip :: (a -> b -> c) -> b -> a -> c
 flip f y x = f x y
 
-compose : (b -> c) -> (a -> b) -> a -> c
+compose :: (b -> c) -> (a -> b) -> a -> c
 compose g f x = g (f x)
 
-(.) : (b -> c) -> (a -> b) -> a -> c
+(.) :: (b -> c) -> (a -> b) -> a -> c
 (.) = compose
 
-apply : (a -> b) -> a -> b
-apply f x = f x
+($) :: (a -> b) -> a -> b
+($) f x = f x
 
-($) : (a -> b) -> a -> b
-($) = apply
+not :: Bool -> Bool
+not True = False
+not False = True
 
+otherwise = True
 
-{- --------------------------------------------------------------------------
-   2. Propositional Equality (Identity Types & Transport)
-   -------------------------------------------------------------------------- -}
+ifThenElse :: Bool -> a -> a -> a
+ifThenElse True x _ = x
+ifThenElse False _ y = y
 
-def symmetry : {A : Type} -> {x y : A} -> Id A x y -> Id A y x
-  = \p -> J A x (\(z : A) -> \_ -> Id A z x) (refl A x) y p
+symmetry :: {a :: Type} -> {x y :: a} -> Id a x y -> Id a y x
+symmetry p = J a x (\z _ -> Id a z x) (Refl a x) y p
 
-def transitivity : {A : Type} -> {x y z : A} -> Id A x y -> Id A y z -> Id A x z
-  = \p q -> J A y (\(w : A) -> \_ -> Id A x w) p z q
+cong :: {a b :: Type} -> (f :: a -> b) -> {x y :: a} -> Id a x y -> Id b (f x) (f y)
+cong f p = J a x (\z _ -> Id b (f x) (f z)) (Refl b (f x)) y p
 
-def congruence : {A B : Type} -> (f : A -> B) -> {x y : A} -> Id A x y -> Id B (f x) (f y)
-  = \f p -> J A x (\(z : A) -> \_ -> Id B (f x) (f z)) (refl B (f x)) y p
+class Eq a where { (==) :: a -> a -> Bool; (/=) :: a -> a -> Bool }
 
-def congruence2 : {A B C : Type} -> (f : A -> B -> C) -> {x1 x2 : A} -> {y1 y2 : B}
-               -> Id A x1 x2 -> Id B y1 y2 -> Id C (f x1 y1) (f x2 y2)
-  = \f p q -> J A x1 (\(z : A) -> \_ -> Id C (f x1 y1) (f z y2))
-                     (congruence (f x1) q)
-                     x2 p
+class Ord a where { compare :: a -> a -> Ordering; (<) :: a -> a -> Bool; (<=) :: a -> a -> Bool; (>) :: a -> a -> Bool; (>=) :: a -> a -> Bool }
 
-def substitute : {A : Type} -> (P : A -> Type) -> {x y : A} -> Id A x y -> P x -> P y
-  = \P p px -> J A x (\(z : A) -> \_ -> P z) px y p
+class Add a where { (+) :: a -> a -> a }
 
-def transport : {A : Type} -> (P : A -> Type) -> {x y : A} -> Id A x y -> P x -> P y
-  = substitute
+class Sub a where { (-) :: a -> a -> a }
 
-def sym : {A : Type} -> {x y : A} -> Id A x y -> Id A y x = symmetry
+class Mul a where { (*) :: a -> a -> a }
 
-def trans : {A : Type} -> {x y z : A} -> Id A x y -> Id A y z -> Id A x z = transitivity
+class Div a where { (/) :: a -> a -> a }
 
-def cong : {A B : Type} -> (f : A -> B) -> {x y : A} -> Id A x y -> Id B (f x) (f y) = congruence
+class Neg a where { negate :: a -> a }
 
-def cong2 : {A B C : Type} -> (f : A -> B -> C) -> {x1 x2 : A} -> {y1 y2 : B}
-     -> Id A x1 x2 -> Id B y1 y2 -> Id C (f x1 y1) (f x2 y2) = congruence2
+class Semigroup a where { (<>) :: a -> a -> a }
 
+class Monoid a where { empty :: a }
 
-{- --------------------------------------------------------------------------
-   3. Intuitionistic Logic & Void
-   -------------------------------------------------------------------------- -}
+class Concat a where { (++) :: a -> a -> a }
 
-def Not : Type -> Type
-  = \A -> A -> Void
+class Functor f where { fmap :: (a -> b) -> f a -> f b }
 
-def absurd : {A : Type} -> Void -> A
-  = \v -> abort A v
+class Monad m where { ret :: a -> m a; (>>=) :: m a -> (a -> m b) -> m b }
 
-def doubleNegation : {A : Type} -> A -> Not (Not A)
-  = \x na -> na x
+intAdd :: Int -> Int -> Int
+intAdd = primIntAdd
 
-def contraposition : {P Q : Type} -> (P -> Q) -> Not Q -> Not P
-  = \implication notQ p -> notQ (implication p)
+intSub :: Int -> Int -> Int
+intSub = primIntSub
 
+intMul :: Int -> Int -> Int
+intMul = primIntMul
 
-{- --------------------------------------------------------------------------
-   4. Unit & Ordering
-   -------------------------------------------------------------------------- -}
+intDiv :: Int -> Int -> Int
+intDiv = primIntDiv
 
-data Unit : Type where
-  { unit : Unit
-  }
+min :: Int -> Int -> Int
+min x y = if x <= y then x else y
 
-data Ordering : Type where
-  { less    : Ordering
-  ; equal   : Ordering
-  ; greater : Ordering
-  }
+max :: Int -> Int -> Int
+max x y = if x <= y then y else x
 
+addition :: Nat -> Nat -> Nat
+addition Zero y = y
+addition (Succ x) y = Succ (addition x y)
 
-{- --------------------------------------------------------------------------
-   5. Booleans & Decision Procedures
-   -------------------------------------------------------------------------- -}
+multiplication :: Nat -> Nat -> Nat
+multiplication Zero _ = Zero
+multiplication (Succ x) y = addition y (multiplication x y)
 
-data Bool : Type where
-  { true  : Bool
-  ; false : Bool
-  }
+natPredecessor :: Nat -> Nat
+natPredecessor Zero = Zero
+natPredecessor (Succ x) = x
 
-data Dec (P : Type) : Type where
-  { yes : P -> Dec P
-  ; no  : (P -> Void) -> Dec P
-  }
+subtraction :: Nat -> Nat -> Nat
+subtraction x Zero = x
+subtraction x (Succ y) = natPredecessor (subtraction x y)
 
-not : Bool -> Bool
-not true = false
-not false = true
+data ListBox a = ListBox (List a)
 
-isYes : {P : Type} -> Dec P -> Bool
-isYes (yes _) = true
-isYes (no _) = false
+foldr :: (a -> b -> b) -> b -> [a] -> b
+foldr _ z [] = z
+foldr f z (x : xs) = f x (foldr f z xs)
 
-{- --------------------------------------------------------------------------
-   Typeclasses
-   -------------------------------------------------------------------------- -}
+foldl :: (b -> a -> b) -> b -> [a] -> b
+foldl _ z [] = z
+foldl f z (x : xs) = foldl f (f z x) xs
 
-class Eq (A : Type) where
-  { (==) : A -> A -> Bool
-  ; (/=) : A -> A -> Bool = \x y -> not (x == y)
-  }
+map :: (a -> b) -> [a] -> [b]
+map _ [] = []
+map f (x : xs) = f x : map f xs
 
-class Add (A : Type) where
-  { (+) : A -> A -> A
-  }
+filter :: (a -> Bool) -> [a] -> [a]
+filter _ [] = []
+filter p (x : xs) = if p x then x : filter p xs else filter p xs
 
-class Concat (A : Type) where
-  { (++) : A -> A -> A
-  }
+append :: [a] -> [a] -> [a]
+append [] ys = ys
+append (x : xs) ys = x : append xs ys
 
-class Semigroup (A : Type) where
-  { (<>) : A -> A -> A
-  }
+length :: [a] -> Int
+length [] = 0
+length (_ : xs) = 1 + length xs
 
-class Monoid (A : Type) where
-  { empty : A
-  }
+reverse :: [a] -> [a]
+reverse xs = reverseInto xs []
 
-and : Bool -> Bool -> Bool
-and true b = b
-and false _ = false
+reverseInto :: [a] -> [a] -> [a]
+reverseInto [] acc = acc
+reverseInto (x : xs) acc = reverseInto xs (x : acc)
 
-(&&) : Bool -> Bool -> Bool
-(&&) = and
+head :: [a] -> Maybe a
+head [] = Nothing
+head (x : _) = Just x
 
-booleanAnd : Bool -> Bool -> Bool
-booleanAnd = and
+tail :: [a] -> Maybe [a]
+tail [] = Nothing
+tail (_ : xs) = Just xs
 
-or : Bool -> Bool -> Bool
-or true _ = true
-or false b = b
+take :: Int -> [a] -> [a]
+take n _ | n <= 0 = []
+take _ [] = []
+take n (x : xs) = x : take (n - 1) xs
 
-(||) : Bool -> Bool -> Bool
-(||) = or
+drop :: Int -> [a] -> [a]
+drop n xs | n <= 0 = xs
+drop _ [] = []
+drop n (_ : xs) = drop (n - 1) xs
 
-booleanOr : Bool -> Bool -> Bool
-booleanOr = or
+elem :: a -> [a] -> Bool
+elem _ [] = False
+elem target (x : xs) = if target == x then True else elem target xs
 
-xor : Bool -> Bool -> Bool
-xor true b = not b
-xor false b = b
+notElem :: a -> [a] -> Bool
+notElem x xs = not (elem x xs)
 
-booleanXor : Bool -> Bool -> Bool
-booleanXor = xor
+takeWhile :: (a -> Bool) -> [a] -> [a]
+takeWhile _ [] = []
+takeWhile p (x : xs) = if p x then x : takeWhile p xs else []
 
-def ifThenElse : {A : Type} -> Bool -> A -> A -> A
-  = \b t f -> case b of
-      { true  -> t
-      ; false -> f
-      }
+dropWhile :: (a -> Bool) -> [a] -> [a]
+dropWhile _ [] = []
+dropWhile p (x : xs) = if p x then dropWhile p xs else x : xs
 
-def booleanEliminator : (P : Bool -> Type) -> P true -> P false -> (b : Bool) -> P b
-  = \P pt pf b -> case b of
-      { true  -> pt
-      ; false -> pf
-      }
+lookup :: a -> [(a, b)] -> Maybe b
+lookup _ [] = Nothing
+lookup key (_ : xs) = lookup key xs
 
-def boolToType : Bool -> Type
-  = \b -> case b of
-      { true  -> Unit
-      ; false -> Void
-      }
+concat :: [[a]] -> [a]
+concat [] = []
+concat (x : xs) = append x (concat xs)
 
-def trueNotEqualFalse : Not (Id Bool true false)
-  = \p -> substitute boolToType p unit
+replicate :: Int -> a -> [a]
+replicate n x | n <= 0 = []
+replicate n x = x : replicate (n - 1) x
 
-def falseNotEqualTrue : Not (Id Bool false true)
-  = \p -> trueNotEqualFalse (symmetry p)
+qsort :: Ord a => [a] -> [a]
+qsort [] = []
+qsort (x : xs) = append (qsort (filter (lessThan x) xs)) (append [x] (qsort (filter (greaterEqual x) xs)))
 
+lessThan :: Ord a => a -> a -> Bool
+lessThan x y = x < y
 
-{- --------------------------------------------------------------------------
-   6. Products & Dependent Pairs
-   -------------------------------------------------------------------------- -}
-
-data Pair (A B : Type) : Type where
-  { pair : A -> B -> Pair A B
-  }
-
-first : Pair a b -> a
-first (pair x _) = x
-
-second : Pair a b -> b
-second (pair _ y) = y
-
-fst : Pair a b -> a
-fst = first
-
-snd : Pair a b -> b
-snd = second
-
-swap : Pair a b -> Pair b a
-swap (pair x y) = pair y x
-
-curry : (Pair a b -> c) -> a -> b -> c
-curry f a b = f (pair a b)
-
-uncurry : (a -> b -> c) -> Pair a b -> c
-uncurry f (pair a b) = f a b
-
-mapPair : (a -> c) -> (b -> d) -> Pair a b -> Pair c d
-mapPair f g (pair x y) = pair (f x) (g y)
-
-def nonContradiction : {A : Type} -> Not (Pair A (Not A))
-  = \p -> case p of
-      { pair x na -> na x
-      }
-
-data Sigma (A : Type) (P : A -> Type) : Type where
-  { dependentPair : (witness : A) -> P witness -> Sigma A P
-  }
-
-def proj1 : {A : Type} -> {P : A -> Type} -> Sigma A P -> A
-  = \s -> case s of
-      { dependentPair witness proof -> witness
-      }
-
-def proj2 : {A : Type} -> {P : A -> Type} -> (s : Sigma A P) -> P (proj1 s)
-  = \s -> case s of
-      { dependentPair witness proof -> proof
-      }
-
-
-{- --------------------------------------------------------------------------
-   7. Disjoint Sums (Either) and Optionals (Maybe)
-   -------------------------------------------------------------------------- -}
-
-data Either (A B : Type) : Type where
-  { left  : A -> Either A B
-  ; right : B -> Either A B
-  }
-
-either : (a -> c) -> (b -> c) -> Either a b -> c
-either f _ (left x) = f x
-either _ g (right y) = g y
-
-isLeft : Either a b -> Bool
-isLeft (left _) = true
-isLeft (right _) = false
-
-isRight : Either a b -> Bool
-isRight (left _) = false
-isRight (right _) = true
-
-swapEither : Either a b -> Either b a
-swapEither (left x) = right x
-swapEither (right y) = left y
-
-mapLeft : (a -> c) -> Either a b -> Either c b
-mapLeft f (left x) = left (f x)
-mapLeft _ (right y) = right y
-
-mapRight : (b -> c) -> Either a b -> Either a c
-mapRight _ (left x) = left x
-mapRight g (right y) = right (g y)
-
-data Maybe (A : Type) : Type where
-  { nothing : Maybe A
-  ; just    : A -> Maybe A
-  }
-
-maybe : b -> (a -> b) -> Maybe a -> b
-maybe defaultValue _ nothing = defaultValue
-maybe _ f (just x) = f x
-
-fromMaybe : a -> Maybe a -> a
-fromMaybe defaultValue nothing = defaultValue
-fromMaybe _ (just x) = x
-
-isJust : Maybe a -> Bool
-isJust nothing = false
-isJust (just _) = true
-
-isNothing : Maybe a -> Bool
-isNothing nothing = true
-isNothing (just _) = false
-
-mapMaybe : (a -> b) -> Maybe a -> Maybe b
-mapMaybe _ nothing = nothing
-mapMaybe f (just x) = just (f x)
-
-bindMaybe : Maybe a -> (a -> Maybe b) -> Maybe b
-bindMaybe nothing _ = nothing
-bindMaybe (just x) f = f x
-
-{- --------------------------------------------------------------------------
-   8. Peano Natural Numbers (compatibility for indexed/dependent code)
-   -------------------------------------------------------------------------- -}
-
-def natPredecessor : Nat -> Nat
-  = \n -> case n of
-      { zero        -> 0
-      ; successor k -> k
-      }
-
-def natPred : Nat -> Nat
-  = natPredecessor
-
-def isZero : Nat -> Bool
-  = \n -> case n of
-      { zero        -> true
-      ; successor _ -> false
-      }
-
-def addition : Nat -> Nat -> Nat
-  = \x y -> natRec (\_ -> Nat) y (\_ -> \rec -> successor rec) x
-
-def multiplication : Nat -> Nat -> Nat
-  = \x y -> natRec (\_ -> Nat) 0 (\_ -> \rec -> addition y rec) x
-
-def power : Nat -> Nat -> Nat
-  = \base exponent -> natRec (\_ -> Nat) 1 (\_ -> \rec -> multiplication base rec) exponent
-
-def subtraction : Nat -> Nat -> Nat
-  = \x y -> natRec (\_ -> Nat) x (\_ -> \rec -> natPredecessor rec) y
-
-def equalNat : Nat -> Nat -> Bool
-  = \x y -> natRec (\_ -> Nat -> Bool)
-                   isZero
-                   (\_ -> \rec -> \n -> case n of
-                       { zero        -> false
-                       ; successor m -> rec m
-                       })
-                   x y
-
-def notEqualNat : Nat -> Nat -> Bool
-  = \x y -> not (equalNat x y)
-
-def lessOrEqualNat : Nat -> Nat -> Bool
-  = \x y -> isZero (subtraction x y)
-
-def lessThanNat : Nat -> Nat -> Bool
-  = \x y -> lessOrEqualNat (successor x) y
-
-def greaterOrEqualNat : Nat -> Nat -> Bool
-  = \x y -> lessOrEqualNat y x
-
-def greaterThanNat : Nat -> Nat -> Bool
-  = \x y -> lessThanNat y x
-
-def compareNat : Nat -> Nat -> Ordering
-  = \x y -> case equalNat x y of
-      { true  -> equal
-        ; false -> case lessThanNat x y of
-          { true  -> less
-          ; false -> greater
-          }
-      }
-
-
-min : Int -> Int -> Int
-min x y = case x <= y of { true -> x ; false -> y }
-
-max : Int -> Int -> Int
-max x y = case x <= y of { true -> y ; false -> x }
-
-even : Int -> Bool
-even n = primIntEq (primIntMod n 2) 0
-
-odd : Int -> Bool
-odd n = not (even n)
-
-(-) : Int -> Int -> Int
-(-) x y = primIntSub x y
-
-(*) : Int -> Int -> Int
-(*) x y = primIntMul x y
-
-(/) : Int -> Int -> Int
-(/) x y = primIntDiv x y
-
-(^) : Int -> Int -> Int
-(^) x y = primIntPow x y
-
-(<) : Int -> Int -> Bool
-(<) x y = primIntLt x y
-
-(<=) : Int -> Int -> Bool
-(<=) x y = primIntLe x y
-
-(>) : Int -> Int -> Bool
-(>) x y = primIntGt x y
-
-(>=) : Int -> Int -> Bool
-(>=) x y = primIntGe x y
-
-factorial : Int -> Int
-factorial n = primIntFold n 1 (\k rec -> primIntMul k rec)
-
-predecessor : Int -> Int
-predecessor n = primIntSub n 1
-
-pred : Int -> Int
-pred = predecessor
-
-instance Eq Int where
-  { (==) = primIntEq
-  ; (/=) = primIntNeq
-  }
-
-instance Eq String where
-  { (==) = primStringEq
-  ; (/=) = \x y -> not (primStringEq x y)
-  }
-
-instance Eq Char where
-  { (==) = \x y -> primCharEq x y
-  ; (/=) = \x y -> not (primCharEq x y)
-  }
-
-instance Eq Bool where
-  { (==) = primBoolEq
-  ; (/=) = \x y -> not (primBoolEq x y)
-  }
-
-instance Add Int where
-  { (+) = primIntAdd
-  }
-
-
-{- --------------------------------------------------------------------------
-   9. Inductive Lists & Higher-Order Combinators
-   -------------------------------------------------------------------------- -}
-
-infixr 5 ++
-
-data List (A : Type) : Type where
-  { nil  : List A
-  ; cons : A -> List A -> List A
-  }
-
-foldRight : (a -> b -> b) -> b -> List a -> b
-foldRight _ initial nil = initial
-foldRight f initial (cons x xs) = f x (foldRight f initial xs)
-
-foldr : (a -> b -> b) -> b -> List a -> b
-foldr = foldRight
-
-foldLeft : (b -> a -> b) -> b -> List a -> b
-foldLeft _ initial nil = initial
-foldLeft f initial (cons x xs) = foldLeft f (f initial x) xs
-
-foldl : (b -> a -> b) -> b -> List a -> b
-foldl = foldLeft
-
-length : List a -> Int
-length = foldRight (\_ accumulator -> accumulator + 1) 0
-
-map : (a -> b) -> List a -> List b
-map _ nil = nil
-map f (cons x xs) = cons (f x) (map f xs)
-
-append : List a -> List a -> List a
-append nil ys = ys
-append (cons x xs) ys = cons x (append xs ys)
-
-instance Semigroup (List Int) where
-  { (<>) = append
-  }
-
-instance Monoid (List Int) where
-  { empty = nil
-  }
-
-elem : Int -> List Int -> Bool
-elem target nil = false
-elem target (cons x xs) = case target == x of { true -> true ; false -> elem target xs }
-
-notElem : Int -> List Int -> Bool
-notElem target xs = not (elem target xs)
-
-lookup : String -> List (Pair String Int) -> Maybe Int
-lookup _ nil = nothing
-lookup target (cons entry rest) = case entry of { pair key value -> case target == key of { true -> just value ; false -> lookup target rest } }
-
-takeWhile : (a -> Bool) -> List a -> List a
-takeWhile _ nil = nil
-takeWhile predicate (cons x xs) = case predicate x of { true -> cons x (takeWhile predicate xs) ; false -> nil }
-
-dropWhile : (a -> Bool) -> List a -> List a
-dropWhile _ nil = nil
-dropWhile predicate (cons x xs) = case predicate x of { true -> dropWhile predicate xs ; false -> cons x xs }
-
-span : (a -> Bool) -> List a -> Pair (List a) (List a)
-span predicate xs = pair (takeWhile predicate xs) (dropWhile predicate xs)
-
-break : (a -> Bool) -> List a -> Pair (List a) (List a)
-break predicate = span (\x -> not (predicate x))
-
-def unzip : {A B : Type} -> List (Pair A B) -> Pair (List A) (List B)
-  = \xs -> case xs of
-      { nil -> pair nil nil
-      ; cons entry rest -> case entry of
-          { pair x y -> case unzip rest of
-              { pair xs ys -> pair (cons x xs) (cons y ys) }
-          }
-      }
-
-intersperse : a -> List a -> List a
-intersperse _ nil = nil
-intersperse separator (cons x xs) = cons x (case xs of { nil -> nil ; _ -> cons separator (intersperse separator xs) })
-
-intercalate : List a -> List (List a) -> List a
-intercalate separator = foldRight append nil . intersperse separator
-
-sum : List Int -> Int
-sum = foldLeft primIntAdd 0
-
-product : List Int -> Int
-product = foldLeft primIntMul 1
-
-range : Int -> Int -> List Int
-range start stop = primIntFold (stop - start) nil (\k rec -> append rec (cons (start + k - 1) nil))
-
-indexMaybe : List a -> Int -> Maybe a
-indexMaybe nil _ = nothing
-indexMaybe (cons x xs) index = case index <= 0 of { true -> just x ; false -> indexMaybe xs (index - 1) }
-
-def catMaybes : {A : Type} -> List (Maybe A) -> List A
-  = \xs -> case xs of
-      { nil -> nil
-      ; cons item rest -> case item of
-          { nothing -> catMaybes rest
-          ; just x -> cons x (catMaybes rest)
-          }
-      }
-
-instance Concat (List Int) where
-  { (++) = append
-  }
-
-concat : List (List a) -> List a
-concat = foldRight append nil
-
-reverse : List a -> List a
-reverse = foldLeft (\acc x -> cons x acc) nil
-
-filter : (a -> Bool) -> List a -> List a
-filter predicate xs = case xs of { nil -> nil ; cons x rest -> case predicate x of { true -> cons x (filter predicate rest) ; false -> filter predicate rest } }
-
-all : (a -> Bool) -> List a -> Bool
-all predicate = foldRight (\x acc -> predicate x && acc) true
-
-any : (a -> Bool) -> List a -> Bool
-any predicate = foldRight (\x acc -> predicate x || acc) false
-
-isNil : List a -> Bool
-isNil nil = true
-isNil (cons _ _) = false
-
-isCons : List a -> Bool
-isCons = not . isNil
-
-headMaybe : List a -> Maybe a
-headMaybe nil = nothing
-headMaybe (cons x _) = just x
-
-head : a -> List a -> a
-head defaultValue xs = fromMaybe defaultValue (headMaybe xs)
-
-tail : List a -> List a
-tail nil = nil
-tail (cons _ xs) = xs
-
-replicate : Int -> a -> List a
-replicate count x = primIntFold count nil (\_ rec -> cons x rec)
-
-take : Int -> List a -> List a
-take count xs = case count <= 0 of { true -> nil ; false -> case xs of { nil -> nil ; cons x rest -> cons x (take (count - 1) rest) } }
-
-drop : Int -> List a -> List a
-drop count xs = case count <= 0 of { true -> xs ; false -> case xs of { nil -> nil ; cons _ rest -> drop (count - 1) rest } }
-
-zipWith : (a -> b -> c) -> List a -> List b -> List c
-zipWith f xs ys = case xs of { nil -> nil ; cons x rest -> case ys of { nil -> nil ; cons y tail -> cons (f x y) (zipWith f rest tail) } }
-
-zip : List a -> List b -> List (Pair a b)
-zip = zipWith pair
-
-{- --------------------------------------------------------------------------
-   10. Machine primitive wrappers
-   -------------------------------------------------------------------------- -}
-
-def intAdd : Int -> Int -> Int
-  = primIntAdd
-
-def intSub : Int -> Int -> Int
-  = primIntSub
-
-def intMul : Int -> Int -> Int
-  = primIntMul
-
-def intDiv : Int -> Int -> Int
-  = primIntDiv
-
-def floatAdd : Float -> Float -> Float
-  = primFloatAdd
-
-def floatSub : Float -> Float -> Float
-  = primFloatSub
-
-def floatMul : Float -> Float -> Float
-  = primFloatMul
-
-def floatDiv : Float -> Float -> Float
-  = primFloatDiv
-
-def stringAppend : String -> String -> String
-  = primStringAppend
-
-def stringEmpty : String
-  = ""
+greaterEqual :: Ord a => a -> a -> Bool
+greaterEqual x y = x >= y

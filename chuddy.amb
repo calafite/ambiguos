@@ -1,11 +1,12 @@
 import prelude
 
-lastElement : List a -> Maybe a
-lastElement []          = nothing
-lastElement [element]   = just element
-lastElement (cons _ xs) = lastElement xs  
+lastElement :: [a] -> Maybe a
+lastElement [] = Nothing
+lastElement [x] = Just x
+lastElement (_ : xs) = lastElement xs
 
-partial fibonacci : Int -> Int
-  | 0 = 0
-  | 1 = 1
-  | n = fibonacci (n - 1) + fibonacci (n - 2)
+partial fibonacci :: Int -> Int
+fibonacci n
+  | n <= 0 = 0
+  | n == 1 = 1
+  | otherwise = fibonacci (n - 1) + fibonacci (n - 2)
