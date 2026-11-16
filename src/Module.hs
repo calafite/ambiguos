@@ -16,7 +16,7 @@ import qualified Data.Text as Text
 import Parser (parseProgramWith, defaultFixityEnv)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>), (<.>), takeExtension)
-import TypeChecker (Context (..), checkClassDeclaration, checkClassDeclarationDetailed, checkDataDeclaration, checkDefinition, checkFunctionDefinition, checkInstanceDeclaration, checkInstanceDeclarationDetailed, checkRecordDeclaration, emptyContext)
+import TypeChecker (Context (..), checkClassDeclaration, checkClassDeclarationDetailed, checkDataDeclaration, checkDefinitionWithPartial, checkFunctionDefinitionWithPartial, checkInstanceDeclaration, checkInstanceDeclarationDetailed, checkRecordDeclaration, emptyContext)
 
 data ModuleError
     = ModuleNotFound [FilePath]
@@ -64,8 +64,8 @@ loadModuleWithPaths searchPaths entry = do
         step ctx stmt = case stmt of
             DataDeclaration n ps u cs -> either (const Nothing) Just (checkDataDeclaration ctx n ps u cs)
             RecordDeclaration n ps u fs con -> either (const Nothing) Just (checkRecordDeclaration ctx n ps u fs con)
-            Definition n ty body -> either (const Nothing) (Just . first3) (checkDefinition ctx n ty body)
-            FunctionDefinition n ty clauses -> either (const Nothing) (Just . first3) (checkFunctionDefinition ctx n ty clauses)
+            Definition partial n ty body -> either (const Nothing) (Just . first3) (checkDefinitionWithPartial partial ctx n ty body)
+            FunctionDefinition partial n ty clauses -> either (const Nothing) (Just . first3) (checkFunctionDefinitionWithPartial partial ctx n ty clauses)
             ClassDeclaration n ps _ fs -> either (const Nothing) Just (checkClassDeclaration ctx n ps fs)
             ClassDeclarationDetailed n ps ms -> either (const Nothing) Just (checkClassDeclarationDetailed ctx n ps ms)
             InstanceDeclaration n h fs -> either (const Nothing) Just (checkInstanceDeclaration ctx n h fs)

@@ -47,7 +47,9 @@ import TypeChecker (
     checkInstanceDeclaration,
     checkInstanceDeclarationDetailed,
     checkDefinition,
+    checkDefinitionWithPartial,
     checkFunctionDefinition,
+    checkFunctionDefinitionWithPartial,
     emptyContext,
     lookupContext,
     renderGoals,
@@ -119,6 +121,7 @@ replCompletion contextRef = Haskeline.completeWord Nothing " \t(){}[];:" $ \word
     let userDefs = map unIdentifier (Map.keys (contextTypes ctx) ++ Map.keys (contextData ctx))
         builtins =
             [ "def"
+            , "partial"
             , "data"
             , "where"
             , "case"
@@ -462,8 +465,8 @@ processStatement contextRef input
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined instance for " <> bold (prettyIdentifier className)))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (Definition name maybeType bodyTerm) ->
-                case checkDefinition ctx name maybeType bodyTerm of
+            Right (Definition isPartial name maybeType bodyTerm) ->
+                case checkDefinitionWithPartial isPartial ctx name maybeType bodyTerm of
                     Left typeError ->
                         outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right (updatedContext, finalType, goals) -> do
@@ -473,8 +476,8 @@ processStatement contextRef input
                                 outputStrLn (Text.unpack (yellow "⚠" <> " Defined " <> bold (prettyIdentifier name) <> " with " <> bold (Text.pack (show (length goals))) <> " goal(s):"))
                                 outputStr (Text.unpack (renderGoals goals))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = goals}))
-            Right (FunctionDefinition name maybeType clauses) ->
-                case checkFunctionDefinition ctx name maybeType clauses of
+            Right (FunctionDefinition isPartial name maybeType clauses) ->
+                case checkFunctionDefinitionWithPartial isPartial ctx name maybeType clauses of
                     Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right (updatedContext, finalType, goals) -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined " <> bold (prettyIdentifier name) <> " " <> dim ":" <> " " <> magenta (prettyExpressionWith cfg finalType)))
@@ -559,8 +562,8 @@ loadFileFromLegacy initialContext filePath = do
                             pure (Just updatedContext)
 
 statementIdentifier :: Statement -> Identifier
-statementIdentifier (Definition name _ _) = name
-statementIdentifier (FunctionDefinition name _ _) = name
+statementIdentifier (Definition _ name _ _) = name
+statementIdentifier (FunctionDefinition _ name _ _) = name
 statementIdentifier (TypeSignature name _) = name
 statementIdentifier (FunctionClause (Clause name _ _)) = name
 statementIdentifier (DataDeclaration name _ _ _) = name
@@ -575,8 +578,8 @@ statementIdentifier (ClassDeclarationDetailed name _ _) = name
 statementIdentifier (InstanceDeclarationDetailed name _ _ _) = name
 
 statementIdentifiers :: Statement -> [Identifier]
-statementIdentifiers (Definition name _ _) = [name]
-statementIdentifiers (FunctionDefinition name _ _) = [name]
+statementIdentifiers (Definition _ name _ _) = [name]
+statementIdentifiers (FunctionDefinition _ name _ _) = [name]
 statementIdentifiers (TypeSignature name _) = [name]
 statementIdentifiers (FunctionClause (Clause name _ _)) = [name]
 statementIdentifiers (DataDeclaration name _ _ constrs) = name : map fst constrs
@@ -604,8 +607,8 @@ runStatements currentContext accNames filePath content (statement : remaining) =
             case checkRecordDeclaration currentContext rName params univ fields conName of
                 Left typeError -> Left (red "✗ " <> "Type error in record '" <> bold (prettyIdentifier rName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
-        Definition defName maybeType bodyTerm ->
-            case checkDefinition currentContext defName maybeType bodyTerm of
+        Definition isPartial defName maybeType bodyTerm ->
+            case checkDefinitionWithPartial isPartial currentContext defName maybeType bodyTerm of
                 Left typeError ->
                     Left (red "✗ " <> "Type error in definition '" <> bold (prettyIdentifier defName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right (updatedContext, _, goals) ->
@@ -621,8 +624,8 @@ runStatements currentContext accNames filePath content (statement : remaining) =
                                     <> " unsolved goal(s):\n"
                                     <> renderGoals goals
                                 )
-        FunctionDefinition defName maybeType clauses ->
-            case checkFunctionDefinition currentContext defName maybeType clauses of
+        FunctionDefinition isPartial defName maybeType clauses ->
+            case checkFunctionDefinitionWithPartial isPartial currentContext defName maybeType clauses of
                 Left typeError -> Left (red "✗ " <> "Type error in definition '" <> bold (prettyIdentifier defName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right (updatedContext, _, goals) ->
                     if null goals then Right updatedContext else Left (red "✗ Definition contains unsolved goals:\n" <> renderGoals goals)

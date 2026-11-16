@@ -36,6 +36,7 @@ advancePosString = foldl advancePosChar
 data Token
     = TokenKeywordType
     | TokenKeywordDef
+    | TokenKeywordPartial
     | TokenKeywordData
     | TokenKeywordWhere
     | TokenKeywordCase
@@ -108,6 +109,7 @@ prettyToken :: Token -> Text
 prettyToken tok = case tok of
     TokenKeywordType -> "'Type'"
     TokenKeywordDef -> "'def'"
+    TokenKeywordPartial -> "'partial'"
     TokenKeywordData -> "'data'"
     TokenKeywordWhere -> "'where'"
     TokenKeywordCase -> "'case'"
@@ -265,6 +267,7 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
     classifyIdentifier text = case text of
         "Type" -> TokenKeywordType
         "def" -> TokenKeywordDef
+        "partial" -> TokenKeywordPartial
         "data" -> TokenKeywordData
         "where" -> TokenKeywordWhere
         "case" -> TokenKeywordCase

@@ -919,17 +919,17 @@ parseDataDeclaration env = do
         expectToken TokenRightBrace "'}'"
         pure cs
 
-parseDefinition :: FixityEnv -> Parser Statement
-parseDefinition env = do
+parseDefinition :: FixityEnv -> Bool -> Parser Statement
+parseDefinition env isPartial = do
     expectToken TokenKeywordDef "'def'"
     name <- parseIdentifier
     maybeType <- optional (expectToken TokenColon "':'" *> expressionParser env)
     expectToken TokenEquals "'='"
     bodyTerm <- expressionParser env
-    pure (Definition name maybeType bodyTerm)
+    pure (Definition isPartial name maybeType bodyTerm)
 
-parseFunctionEquation :: FixityEnv -> Parser Statement
-parseFunctionEquation env = do
+parseFunctionEquation :: FixityEnv -> Bool -> Parser Statement
+parseFunctionEquation env isPartial = do
     name <- parseIdentifier
     next <- peekToken
     case next of
@@ -939,7 +939,7 @@ parseFunctionEquation env = do
             hasDefinition <- optional (expectToken TokenEquals "'='")
             case hasDefinition of
                 Nothing -> pure (TypeSignature name signature)
-                Just () -> Definition name (Just signature) <$> parseLineExpression env
+                Just () -> Definition isPartial name (Just signature) <$> parseLineExpression env
         _ -> do
             (patterns, mTypedTypes) <- parseLhs [] []
             mResultType <- optional (expectToken TokenColon "':'" *> expressionParser env)
@@ -950,7 +950,7 @@ parseFunctionEquation env = do
                     Just result -> Just (foldr (\(n, ty) rest -> Pi Explicit n ty rest) result mTypedTypes)
                 clause = Clause name patterns body
             pure (case declaredType of
-                Just ty -> FunctionDefinition name (Just ty) [clause]
+                Just ty -> FunctionDefinition isPartial name (Just ty) [clause]
                 Nothing -> FunctionClause clause)
   where
     parseLhs pats typed = do
@@ -1013,13 +1013,19 @@ statementParser env = do
         Just TokenKeywordInstance -> parseInstanceDeclaration env
         Just TokenKeywordData -> parseDataDeclaration env
         Just TokenKeywordRecord -> parseRecordDeclaration env
-        Just TokenKeywordDef -> parseDefinition env
+        Just TokenKeywordPartial -> do
+            _ <- consumeToken
+            next <- peekToken
+            case next of
+                Just TokenKeywordDef -> parseDefinition env True
+                _ -> parseFunctionEquation env True
+        Just TokenKeywordDef -> parseDefinition env False
         Just TokenKeywordInfixL -> parseFixityDeclaration env
         Just TokenKeywordInfixR -> parseFixityDeclaration env
         Just TokenKeywordInfix -> parseFixityDeclaration env
-        Just (TokenIdentifier _) -> parseFunctionEquation env <|> parseEvaluation env
-        Just (TokenOperator _) -> parseFunctionEquation env <|> parseEvaluation env
-        Just TokenLeftParen -> parseFunctionEquation env <|> parseEvaluation env
+        Just (TokenIdentifier _) -> parseFunctionEquation env False <|> parseEvaluation env
+        Just (TokenOperator _) -> parseFunctionEquation env False <|> parseEvaluation env
+        Just TokenLeftParen -> parseFunctionEquation env False <|> parseEvaluation env
         _ -> parseEvaluation env
 
 runCompleteParser :: Parser a -> [PosToken] -> Either ParseError a
@@ -1078,19 +1084,19 @@ groupStatements (TypeSignature name sig : rest) =
         cs = [c | FunctionClause c <- clauses]
      in if null cs
             then TypeSignature name sig : groupStatements rest
-            else FunctionDefinition name (Just sig) cs : groupStatements remaining
+            else FunctionDefinition False name (Just sig) cs : groupStatements remaining
   where
     matching (FunctionClause (Clause n _ _)) = n == name
     matching _ = False
 groupStatements (FunctionClause c@(Clause name _ _) : rest) =
     let (matching, remaining) = span isMatching rest
-     in FunctionDefinition name Nothing (c : [cl | FunctionClause cl <- matching]) : groupStatements remaining
+     in FunctionDefinition False name Nothing (c : [cl | FunctionClause cl <- matching]) : groupStatements remaining
   where
     isMatching (FunctionClause (Clause n _ _)) = n == name
     isMatching _ = False
-groupStatements (FunctionDefinition name mty clauses : rest) =
+groupStatements (FunctionDefinition partial name mty clauses : rest) =
     let (matching, remaining) = span isMatching rest
-     in FunctionDefinition name mty (clauses ++ [cl | FunctionClause cl <- matching]) : groupStatements remaining
+     in FunctionDefinition partial name mty (clauses ++ [cl | FunctionClause cl <- matching]) : groupStatements remaining
   where
     isMatching (FunctionClause (Clause n _ _)) = n == name
     isMatching _ = False

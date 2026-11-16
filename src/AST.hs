@@ -159,10 +159,10 @@ data Clause = Clause
     deriving (Eq, Show)
 
 data Statement
-    = Definition Identifier (Maybe Expression) Expression
+    = Definition !Bool Identifier (Maybe Expression) Expression
     | TypeSignature !Identifier !Expression
     | FunctionClause !Clause
-    | FunctionDefinition !Identifier !(Maybe Expression) ![Clause]
+    | FunctionDefinition !Bool !Identifier !(Maybe Expression) ![Clause]
     | Evaluation Expression
     | DataDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [(Identifier, Expression)]
     | FixityDeclaration !Associativity !Int ![Identifier]

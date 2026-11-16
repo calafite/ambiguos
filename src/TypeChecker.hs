@@ -18,7 +18,9 @@ module TypeChecker (
     synthesize,
     check,
     checkDefinition,
+    checkDefinitionWithPartial,
     checkFunctionDefinition,
+    checkFunctionDefinitionWithPartial,
     lookupContext,
     renderTypeError,
     renderTypeDiagnostic,
@@ -26,7 +28,7 @@ module TypeChecker (
 ) where
 
 import AST (CaseBranch (..), ClassMethod (..), Clause (..), Expression (..), Fixity (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), RecordField (..), RecordInfo (..), UniverseLevel (..), Visibility (..))
-import Control.Monad (filterM, foldM)
+import Control.Monad (filterM, foldM, unless)
 import Control.Monad.State.Strict (StateT (..), evalStateT, gets, modify, runStateT)
 import Control.Monad.Trans (lift)
 import Data.Char (isLower)
@@ -1509,13 +1511,13 @@ checkPositive dataName expr = go False expr
 checkTermination :: Identifier -> Expression -> Either TypeError ()
 checkTermination name body =
     if Set.member name (freeVariables body)
-        then checkCalls name Set.empty Set.empty body
+        then checkCalls name Set.empty Set.empty Set.empty body
         else pure ()
   where
-    checkCalls :: Identifier -> Set.Set Identifier -> Set.Set Identifier -> Expression -> Either TypeError ()
-    checkCalls nm params small expr = case expr of
+    checkCalls :: Identifier -> Set.Set Identifier -> Set.Set Identifier -> Set.Set Identifier -> Expression -> Either TypeError ()
+    checkCalls nm params small guarded expr = case expr of
         Lambda _ pname _ bdy ->
-            checkCalls nm (Set.insert pname params) small bdy
+            checkCalls nm (Set.insert pname params) small guarded bdy
         Case target _mMotive branches ->
             let targetVar = case target of Variable v -> Just v; _ -> Nothing
                 small' = case targetVar of
@@ -1523,10 +1525,11 @@ checkTermination name body =
                         | Set.member v params || Set.member v small ->
                             Set.union small (Set.fromList (concatMap (patternNames . branchPattern) branches))
                     _ -> small
-             in mapM_ (checkBranch' nm params small') branches
+             in mapM_ (checkBranch' nm params small' guarded target branches) branches
           where
-            checkBranch' n pp ss (CaseBranch pat bdy) =
-                checkCalls n pp (Set.union ss (Set.fromList (patternNames pat))) bdy
+            checkBranch' n pp ss gg targetExpr allBranches (CaseBranch pat bdy) =
+                let branchGuarded = integerGuard targetExpr allBranches pat gg
+                 in checkCalls n pp (Set.union ss (Set.fromList (patternNames pat))) branchGuarded bdy
             patternNames (PatVar v) = [v]
             patternNames PatWild = []
             patternNames (PatLit _) = []
@@ -1536,18 +1539,18 @@ checkTermination name body =
             let (h, spine) = unfoldApp expr
              in case h of
                     Variable ident | ident == nm ->
-                        if any (\(_, a) -> isSmallerArgument params small a) spine
-                            then mapM_ (checkCalls nm params small . snd) spine >> pure ()
+                        if any (\(_, a) -> isSmallerArgument params small guarded a) spine
+                            then mapM_ (checkCalls nm params small guarded . snd) spine >> pure ()
                             else Left (NonTerminatingDefinition nm)
-                    _ -> checkCalls nm params small f >> checkCalls nm params small arg
+                    _ -> checkCalls nm params small guarded f >> checkCalls nm params small guarded arg
         Pi _ _ dom codom ->
-            checkCalls nm params small dom >> checkCalls nm params small codom
+            checkCalls nm params small guarded dom >> checkCalls nm params small guarded codom
         Let _ _ d b ->
-            checkCalls nm params small d >> checkCalls nm params small b
-        Annotation t _ -> checkCalls nm params small t
+            checkCalls nm params small guarded d >> checkCalls nm params small guarded b
+        Annotation t _ -> checkCalls nm params small guarded t
         _ -> pure ()
 
-    isSmallerArgument params small argument =
+    isSmallerArgument params small guarded argument =
         case argument of
             Variable v -> Set.member v small
             _ ->
@@ -1556,6 +1559,26 @@ checkTermination name body =
                  in case (headExpr, reverse explicitArguments) of
                         (Variable (Identifier "drop"), Variable v : _) -> Set.member v (Set.union params small)
                         _ -> False
+                    || case (headExpr, explicitArguments) of
+                        (PrimOp IntSub, [Variable v, Literal (LitInt k)]) ->
+                            k >= 1 && Set.member v guarded
+                        _ -> False
+
+    integerGuard target branches pattern guards =
+        case (stripLocated target, pattern) of
+            (Application Explicit (Application Explicit (PrimOp IntLe) (Variable v)) (Literal (LitInt _)), PatCon con [])
+                | con == Identifier "false" -> Set.insert v guards
+            (Variable v, PatWild)
+                | any (isPositiveBase . branchPattern) branches -> Set.insert v guards
+            (Variable v, PatVar _)
+                | any (isPositiveBase . branchPattern) branches -> Set.insert v guards
+            _ -> guards
+
+    isPositiveBase (PatLit (LitInt n)) = n >= 0
+    isPositiveBase _ = False
+
+    stripLocated (Located _ inner) = stripLocated inner
+    stripLocated inner = inner
 
 checkTerminationElab :: Identifier -> Expression -> Elab ()
 checkTerminationElab nm b = case checkTermination nm b of
@@ -1779,6 +1802,16 @@ checkDefinition ::
     Expression ->
     Either TypeDiagnostic (Context, Expression, [Goal])
 checkDefinition context name maybeDeclaredType bodyTerm =
+    checkDefinitionWithPartial False context name maybeDeclaredType bodyTerm
+
+checkDefinitionWithPartial ::
+    Bool ->
+    Context ->
+    Identifier ->
+    Maybe Expression ->
+    Expression ->
+    Either TypeDiagnostic (Context, Expression, [Goal])
+checkDefinitionWithPartial isPartial context name maybeDeclaredType bodyTerm =
     let traceMsg = "while checking definition '" <> prettyIdentifier name <> "'"
      in evalStateT
             ( localTrace traceMsg $
@@ -1798,14 +1831,14 @@ checkDefinition context name maybeDeclaredType bodyTerm =
                                 let recursiveContext = extendContextType name elabDeclType context
                                 elabBody <- checkElab recursiveContext bodyTerm zonkedDeclType
                                 zonkedBodyTerm <- zonk elabBody
-                                checkTerminationElab name zonkedBodyTerm
+                                unless isPartial (checkTerminationElab name zonkedBodyTerm)
                                 zonkedFinalType <- zonk zonkedDeclType
                                 pure (zonkedBodyTerm, zonkedFinalType)
                             Nothing -> do
                                 (elabBody, rawType) <- synthesizeElab context bodyTerm
                                 zonkedType <- zonk rawType
                                 zonkedBodyTerm <- zonk elabBody
-                                checkTerminationElab name zonkedBodyTerm
+                                unless isPartial (checkTerminationElab name zonkedBodyTerm)
                                 zonkedFinalType <- zonk zonkedType
                                 pure (zonkedBodyTerm, zonkedFinalType)
                     goals <- collectUnsolvedGoals
@@ -1817,6 +1850,10 @@ checkDefinition context name maybeDeclaredType bodyTerm =
 
 checkFunctionDefinition :: Context -> Identifier -> Maybe Expression -> [Clause] -> Either TypeDiagnostic (Context, Expression, [Goal])
 checkFunctionDefinition context name maybeDeclaredType clauses =
+    checkFunctionDefinitionWithPartial False context name maybeDeclaredType clauses
+
+checkFunctionDefinitionWithPartial :: Bool -> Context -> Identifier -> Maybe Expression -> [Clause] -> Either TypeDiagnostic (Context, Expression, [Goal])
+checkFunctionDefinitionWithPartial isPartial context name maybeDeclaredType clauses =
     case clauses of
         [] -> Left (TypeDiagnostic Nothing [] (CannotSynthesizeType (Variable name)))
         firstClause : _
@@ -1824,7 +1861,7 @@ checkFunctionDefinition context name maybeDeclaredType clauses =
                 Left (TypeDiagnostic Nothing [] (ArityMismatch name (length (clausePatterns firstClause)) (length (clausePatterns (head clauses)))))
             | otherwise ->
                 let generalizedType = fmap (generalizeType context) maybeDeclaredType
-                 in checkDefinition context name generalizedType (compileClauses generalizedType clauses)
+                 in checkDefinitionWithPartial isPartial context name generalizedType (compileClauses generalizedType clauses)
 
 generalizeType :: Context -> Expression -> Expression
 generalizeType context signature =

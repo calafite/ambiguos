@@ -18,7 +18,7 @@ import Pretty (PrettyConfig (..), prettyExpression, prettyExpressionWith)
 import System.Exit (exitFailure, exitSuccess)
 import TypeChecker (
     Context (..), Goal (..), TypeDiagnostic (..),
-    check, checkDataDeclaration, checkDefinition, checkFunctionDefinition, emptyContext, renderTypeDiagnostic,
+    check, checkDataDeclaration, checkDefinition, checkDefinitionWithPartial, checkFunctionDefinition, checkFunctionDefinitionWithPartial, emptyContext, renderTypeDiagnostic,
     synthesize, checkClassDeclaration, checkInstanceDeclaration,
   )
 
@@ -193,12 +193,12 @@ verifyStmts ctx (s : ss) =
             case checkInstanceDeclaration ctx name headType fields of
                 Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
                 Right ctx' -> verifyStmts ctx' ss
-        Definition name mty body ->
-            case checkDefinition ctx name mty body of
+        Definition isPartial name mty body ->
+            case checkDefinitionWithPartial isPartial ctx name mty body of
                 Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
                 Right (ctx', _, goals) -> do (ctx'', e, g) <- verifyStmts ctx' ss; pure (ctx'', e, g + length goals)
-        FunctionDefinition name mty clauses ->
-            case checkFunctionDefinition ctx name mty clauses of
+        FunctionDefinition isPartial name mty clauses ->
+            case checkFunctionDefinitionWithPartial isPartial ctx name mty clauses of
                 Left _ -> do (ctx', e, g) <- verifyStmts ctx ss; pure (ctx', e + 1, g)
                 Right (ctx', _, goals) -> do (ctx'', e, g) <- verifyStmts ctx' ss; pure (ctx'', e, g + length goals)
         DataDeclaration name params univ constrs ->
