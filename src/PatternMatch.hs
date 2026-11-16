@@ -12,16 +12,29 @@ clauseBody = guardedRhsBody . head . clauseRhss
 compileClauses :: Maybe Expression -> [Clause] -> Expression
 compileClauses _ [] = Hole Nothing
 compileClauses maybeType clauses =
-    foldr (\(arg, ty) body -> Lambda Explicit arg (Just ty) body)
+    foldr (\(visibility, name, ty) body -> Lambda visibility name (Just ty) body)
         (compileMatrix args (map clauseRow clauses))
-        (zip args (parameterTypes maybeType (length args)))
+        (clauseBinders maybeType args)
   where
     arity = maximum (0 : map (length . clausePats) clauses)
     args = [inferNameAt i | i <- [0 .. arity - 1]]
     clauseRow c = (map normalizePattern (clausePats c), clauseBody c)
 
-    parameterTypes (Just ty) n = take n (piDomains ty ++ repeat (PrimType PTInt))
-    parameterTypes Nothing n = [inferTypeAt i | i <- [0 .. n - 1]]
+    piBinders (Located _ e) = piBinders e
+    piBinders (Pi visibility parameter domain codomain) = (visibility, parameter, domain) : piBinders codomain
+    piBinders _ = []
+
+    clauseBinders (Just ty) explicitArgs = assignExplicit explicitArgs (piBinders ty)
+    clauseBinders Nothing explicitArgs = [(Explicit, arg, inferTypeAt i) | (i, arg) <- zip [0 ..] explicitArgs]
+
+    assignExplicit remaining [] =
+        [(Explicit, arg, PrimType PTInt) | arg <- remaining]
+    assignExplicit remaining ((visibility, name, domain) : rest)
+        | visibility == Explicit =
+            case remaining of
+                arg : more -> (Explicit, arg, domain) : assignExplicit more rest
+                [] -> []
+        | otherwise = (visibility, name, domain) : assignExplicit remaining rest
 
     inferTypeAt i
         | any (isListPattern . patternAt i . clausePats) clauses =
@@ -49,12 +62,6 @@ compileClauses maybeType clauses =
     stringPattern s = case Text.uncons s of
         Nothing -> PatCon (Identifier "[]") []
         Just (c, rest) -> PatCon (Identifier ":") [PatLit (LitChar c), stringPattern rest]
-
-    piDomains (Located _ e) = piDomains e
-    piDomains (Pi Implicit _ _ codomain) = piDomains codomain
-    piDomains (Pi Instance _ _ codomain) = piDomains codomain
-    piDomains (Pi Explicit _ domain codomain) = domain : piDomains codomain
-    piDomains _ = []
 
 compileMatrix :: [Identifier] -> [([Pattern], Expression)] -> Expression
 compileMatrix _ [] = Hole Nothing

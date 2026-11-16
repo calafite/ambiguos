@@ -445,6 +445,21 @@ checkElab context expression expType = case expression of
                     extendedContext = extendContextType targetParameter domain context
                 elaboratedBody <- checkElab extendedContext body substitutedCodomain
                 pure (Lambda Implicit targetParameter (Just domain) elaboratedBody)
+            (Lambda Instance parameter maybeDeclaredType body, Pi Instance binder domain codomain) -> do
+                case maybeDeclaredType of
+                    Just declaredType -> do
+                        (elabDeclType, declUniverse) <- synthesizeElab context declaredType
+                        _ <- extractUniverseLevel context declUniverse
+                        unify context elabDeclType domain
+                    Nothing -> pure ()
+                let targetParameter = parameter
+                    substitutedCodomain = substitute binder (Variable targetParameter) codomain
+                    extendedContext =
+                        (extendContextType targetParameter domain context)
+                            { contextLocals = targetParameter : contextLocals context
+                            }
+                elaboratedBody <- checkElab extendedContext body substitutedCodomain
+                pure (Lambda Instance targetParameter (Just domain) elaboratedBody)
             (Lambda Explicit parameter maybeDeclaredType body, MetaVar i) -> do
                 dom <- case maybeDeclaredType of
                     Just declType -> do
@@ -467,6 +482,13 @@ checkElab context expression expType = case expression of
                 let extendedContext = extendContextType binder domain context
                 elaboratedBody <- checkElab extendedContext otherExpr codomain
                 pure (Lambda Implicit binder (Just domain) elaboratedBody)
+            (otherExpr, Pi Instance binder domain codomain) -> do
+                let extendedContext =
+                        (extendContextType binder domain context)
+                            { contextLocals = binder : contextLocals context
+                            }
+                elaboratedBody <- checkElab extendedContext otherExpr codomain
+                pure (Lambda Instance binder (Just domain) elaboratedBody)
             (Lambda _ _ _ _, notPiType) ->
                 throwError (ExpectedFunctionType notPiType)
             (otherExpression, _) -> do
