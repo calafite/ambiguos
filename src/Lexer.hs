@@ -302,7 +302,7 @@ tokenize sourceText = scanLoop initialPos (Text.unpack sourceText) ' '
         "do" -> TokenKeywordDo
         "otherwise" -> TokenKeywordOtherwise
         "Id" -> TokenKeywordId
-        "refl" -> TokenKeywordRefl
+        "Refl" -> TokenKeywordRefl
         "J" -> TokenKeywordJ
         "Void" -> TokenKeywordVoid
         "abort" -> TokenKeywordAbort
