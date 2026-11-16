@@ -46,9 +46,7 @@ import TypeChecker (
     checkClassDeclarationDetailed,
     checkInstanceDeclaration,
     checkInstanceDeclarationDetailed,
-    checkDefinition,
     checkDefinitionWithPartial,
-    checkFunctionDefinition,
     checkFunctionDefinitionWithPartial,
     emptyContext,
     lookupContext,
@@ -536,6 +534,7 @@ loadFileFrom initialContext filePath = do
             pure (Just loadedContext)
         Left _ -> loadFileFromLegacy initialContext filePath
 
+loadFileFromLegacy :: Context -> FilePath -> IO (Maybe Context)
 loadFileFromLegacy initialContext filePath = do
     fileContentResult <- Exception.try (TextIO.readFile filePath)
     case fileContentResult of
@@ -651,9 +650,9 @@ runStatements currentContext accNames filePath content (statement : remaining) =
                         else Left (red "✗ " <> "Expression contains unsolved goal(s):\n" <> renderGoals goals)
         ModuleHeader _ -> Right currentContext
         ImportStmt _ _ _ _ -> Right currentContext
-        ClassDeclaration name params _ fields ->
-            case checkClassDeclaration currentContext name params fields of
-                Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier name) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
+        ClassDeclaration clsName params _ fields ->
+            case checkClassDeclaration currentContext clsName params fields of
+                Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier clsName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
         InstanceDeclaration className headType fields ->
             case checkInstanceDeclaration currentContext className headType fields of
