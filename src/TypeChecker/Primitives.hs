@@ -45,7 +45,7 @@ primitiveValues = Map.fromList [(name, PrimOp operation) | (name, operation) <- 
 
 primitiveOpType :: PrimOp -> Expression
 primitiveOpType operation = case operation of
-    NatToInt -> unary NatType (PrimType PTInt)
+    NatToInt -> unary (PrimType PTInt) (PrimType PTInt)
     IntNeg -> unary (PrimType PTInt) (PrimType PTInt)
     FloatNeg -> unary (PrimType PTFloat) (PrimType PTFloat)
     IntAdd -> binary (PrimType PTInt) (PrimType PTInt) (PrimType PTInt)
@@ -68,31 +68,32 @@ primitiveOpType operation = case operation of
     FloatEq -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool"))
     FloatLt -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool"))
     FloatLe -> binary (PrimType PTFloat) (PrimType PTFloat) (Variable (Identifier "Bool"))
-    StringAppend -> binary (PrimType PTString) (PrimType PTString) (PrimType PTString)
-    StringEq -> binary (PrimType PTString) (PrimType PTString) (Variable (Identifier "Bool"))
+    StringAppend -> binary charList charList charList
+    StringEq -> binary charList charList (Variable (Identifier "Bool"))
     CharEq -> binary (PrimType PTChar) (PrimType PTChar) (Variable (Identifier "Bool"))
     IntToFloat -> unary (PrimType PTInt) (PrimType PTFloat)
     FloatToInt -> unary (PrimType PTFloat) (PrimType PTInt)
     FloatTruncate -> unary (PrimType PTFloat) (PrimType PTInt)
     CharToInt -> unary (PrimType PTChar) (PrimType PTInt)
     IntToChar -> unary (PrimType PTInt) (PrimType PTChar)
-    StringLength -> unary (PrimType PTString) NatType
-    StringToList -> unary (PrimType PTString) (Variable (Identifier "List"))
-    ListToString -> unary (Variable (Identifier "List")) (PrimType PTString)
-    IntToString -> unary (PrimType PTInt) (PrimType PTString)
-    FloatToString -> unary (PrimType PTFloat) (PrimType PTString)
-    CharToString -> unary (PrimType PTChar) (PrimType PTString)
+    StringLength -> unary charList (PrimType PTInt)
+    StringToList -> unary charList (Variable (Identifier "List"))
+    ListToString -> unary (Variable (Identifier "List")) charList
+    IntToString -> unary (PrimType PTInt) charList
+    FloatToString -> unary (PrimType PTFloat) charList
+    CharToString -> unary (PrimType PTChar) charList
     FloatSqrt -> unary (PrimType PTFloat) (PrimType PTFloat)
     FloatSin -> unary (PrimType PTFloat) (PrimType PTFloat)
     FloatCos -> unary (PrimType PTFloat) (PrimType PTFloat)
     FloatExp -> unary (PrimType PTFloat) (PrimType PTFloat)
     FloatLog -> unary (PrimType PTFloat) (PrimType PTFloat)
-    StringIndex -> binary (PrimType PTString) NatType (Variable (Identifier "Maybe"))
-    StringSlice -> binary (PrimType PTString) (PrimType PTInt) (PrimType PTString)
+    StringIndex -> binary charList (PrimType PTInt) (Variable (Identifier "Maybe"))
+    StringSlice -> binary charList (PrimType PTInt) charList
     IntFold -> Pi Implicit (Identifier "A") (Universe (UFixed (-1))) (Pi Explicit (Identifier "n") (PrimType PTInt) (Pi Explicit (Identifier "z") (Variable (Identifier "A")) (Pi Explicit (Identifier "step") (Pi Explicit (Identifier "_") (PrimType PTInt) (Pi Explicit (Identifier "_") (Variable (Identifier "A")) (Variable (Identifier "A")))) (Variable (Identifier "A")))))
   where
     unary domain codomain = Pi Explicit (Identifier "_") domain codomain
     binary left right codomain = Pi Explicit (Identifier "_") left (Pi Explicit (Identifier "_") right codomain)
+    charList = Application Explicit (Variable (Identifier "List")) (PrimType PTChar)
 
 numericOperator :: Identifier -> Bool
 numericOperator name = name `elem`
@@ -116,9 +117,6 @@ numericPrimitive name kind = case (name, kind) of
     (Identifier ">", PTInt) -> Just IntGt
     (Identifier ">=", PTInt) -> Just IntGe
     (Identifier "/=", PTInt) -> Just IntNeq
-    (Identifier "==", PTString) -> Just StringEq
-    (Identifier "/=", PTString) -> Just StringEq
-    (Identifier "++", PTString) -> Just StringAppend
     (Identifier "==", PTChar) -> Just CharEq
     (Identifier "/=", PTChar) -> Just CharEq
     (Identifier "+", PTFloat) -> Just FloatAdd
@@ -130,23 +128,11 @@ numericPrimitive name kind = case (name, kind) of
     (Identifier "<=", PTFloat) -> Just FloatLe
     (Identifier "/=", PTFloat) -> Just FloatEq
     _ -> Nothing
-
 coerceNumeric :: PrimType -> Expression -> Expression -> Expression
-coerceNumeric target expr fromType = case (target, fromType) of
-    (PTInt, NatType) -> Application Explicit (PrimOp NatToInt) expr
-    (PTFloat, NatType) -> Application Explicit (PrimOp IntToFloat)
-        (Application Explicit (PrimOp NatToInt) expr)
-    (PTFloat, PrimType PTInt) -> Application Explicit (PrimOp IntToFloat) expr
-    _ -> expr
+coerceNumeric _ expr _ = expr
 
 isSuccessorExpression :: Expression -> Bool
-isSuccessorExpression Succ = True
-isSuccessorExpression (Located _ Succ) = True
-isSuccessorExpression (Variable (Identifier "successor")) = True
 isSuccessorExpression _ = False
 
 intSuccessorExpression :: Expression -> Expression
-intSuccessorExpression value =
-    Application Explicit
-        (Application Explicit (PrimOp IntAdd) value)
-        (Literal (LitInt 1))
+intSuccessorExpression value = value

@@ -5,8 +5,6 @@ module TypeChecker.Elaboration
     , reflexivityType
     , jType
     , abortType
-    , succType
-    , natRecType
     , tupleValue
     , checkIsType
     , numericBinary
@@ -61,6 +59,7 @@ import TypeChecker.Types
     , lookupContext
     , throwError
     )
+
 import TypeChecker.Unify (instantiateLeadingImplicits, unify)
 import TypeChecker.Universe
     ( addUnivConstraint
@@ -68,7 +67,10 @@ import TypeChecker.Universe
     , freshUnivVar
     )
 
-identityType, reflexivityType, jType, abortType, succType, natRecType :: Expression
+listCharType :: Expression
+listCharType = Application Explicit (Variable (Identifier "List")) (PrimType PTChar)
+
+identityType, reflexivityType, jType, abortType :: Expression
 identityType =
     Pi
         Explicit
@@ -133,21 +135,6 @@ abortType =
         (Identifier "A")
         (Universe (UFixed (-1)))
         (Pi Explicit (Identifier "_") VoidType (Variable (Identifier "A")))
-succType =
-    Pi Explicit (Identifier "_") NatType NatType
-natRecType =
-    Pi Explicit (Identifier "P") pType
-        $ Pi Explicit (Identifier "z") zType
-        $ Pi Explicit (Identifier "s") sType
-        $ Pi Explicit (Identifier "n") NatType codomainType
-  where
-    pType = Pi Explicit (Identifier "_") NatType (Universe (UFixed (-1)))
-    zType = Application Explicit (Variable (Identifier "P")) Zero
-    nVar = Variable (Identifier "n")
-    pn = Application Explicit (Variable (Identifier "P")) nVar
-    psuccn = Application Explicit (Variable (Identifier "P")) (Application Explicit Succ nVar)
-    sType = Pi Explicit (Identifier "n") NatType (Pi Explicit (Identifier "_") pn psuccn)
-    codomainType = Application Explicit (Variable (Identifier "P")) nVar
 
 tupleValue :: [Expression] -> Expression
 tupleValue [] = Variable (Identifier "unit")
@@ -190,18 +177,14 @@ numericBinary context op left right = do
         (Variable (Identifier "List"), [_]) -> True
         _ -> False
     numericBinaryRest elabLeft elabRight leftType rightType = do
-        let leftNat = leftType == NatType
-            rightNat = rightType == NatType
-            leftPrim = numericKind leftType
+        let leftPrim = numericKind leftType
             rightPrim = numericKind rightType
             resultKind = case (leftPrim, rightPrim) of
                 (Just PTFloat, _) -> Just PTFloat
                 (_, Just PTFloat) -> Just PTFloat
                 (Just PTInt, _) -> Just PTInt
                 (_, Just PTInt) -> Just PTInt
-                (Just PTString, Just PTString) -> Just PTString
                 (Just PTChar, Just PTChar) -> Just PTChar
-                _ | leftNat && rightNat -> Nothing
                 _ -> Nothing
             comparison = op `elem` map Identifier ["==", "/=", "<", "<=", ">", ">="]
         case resultKind of
@@ -217,11 +200,7 @@ numericBinary context op left right = do
                             result = if op == Identifier "/=" then Application Explicit (Variable (Identifier "not")) core else core
                         pure (result, resultType)
                     Nothing -> throwError (TypeMismatch (PrimType kind) leftType)
-            Nothing
-                | leftNat && rightNat ->
-                    pure (Application Explicit (Application Explicit (Variable op) elabLeft) elabRight,
-                          if comparison then Variable (Identifier "Bool") else NatType)
-                | otherwise -> throwError (TypeMismatch leftType rightType)
+            _ -> throwError (TypeMismatch leftType rightType)
 
 synthesizeElab :: Context -> Expression -> Elab (Expression, Expression)
 synthesizeElab context expression = case expression of
@@ -250,18 +229,10 @@ synthesizeElab context expression = case expression of
     J -> pure (J, jType)
     VoidType -> pure (VoidType, Universe (UFixed (-1)))
     Abort -> pure (Abort, abortType)
-    NatType -> pure (NatType, Universe (UFixed (-1)))
-    Zero -> pure (Zero, NatType)
-    -- The constructor itself remains Nat -> Nat so higher-order Nat proofs
-    -- (for example `congruence successor ih`) infer the inductive operation.
-    -- Applications are specialized to Int by the application rule below.
-    Succ -> pure (Succ, succType)
-    NatRec -> pure (NatRec, natRecType)
-    Literal (LitNat n) -> pure (Literal (LitNat n), NatType)
-    Literal (LitInt _) -> pure (expression, PrimType PTInt)
+    Literal (LitInt n) -> pure (Literal (LitInt n), PrimType PTInt)
     Literal (LitFloat _) -> pure (expression, PrimType PTFloat)
     Literal (LitChar _) -> pure (expression, PrimType PTChar)
-    Literal (LitString _) -> pure (expression, PrimType PTString)
+    Literal (LitString _) -> pure (expression, listCharType)
     Tuple [] -> synthesizeElab context (Variable (Identifier "unit"))
     Tuple elements -> synthesizeElab context (tupleValue elements)
     PrimType primitiveType -> pure (PrimType primitiveType, Universe (UFixed (-1)))
@@ -309,12 +280,6 @@ synthesizeElab context expression = case expression of
         elabCase <- checkElab context (Case target mMotive branches) retMeta
         zonkedRet <- zonk retMeta
         pure (elabCase, zonkedRet)
-    PatternCase target mMotive branches -> do
-        retMeta <- freshMeta context (Universe (UFixed (-1)))
-        compiled <- compilePatternCase synthesizeElab context target branches
-        elabCase <- checkElab context (Case target mMotive compiled) retMeta
-        zonkedRet <- zonk retMeta
-        pure (elabCase, zonkedRet)
     Projection expr field -> do
         (elabExpr, exprType) <- synthesizeElab context expr
         let (headExpr, _) = unfoldApp exprType
@@ -341,15 +306,6 @@ synthesizeElab context expression = case expression of
         synthesizeElab context applied
     Application Explicit (Application Explicit (Variable op) left) right
         | numericOperator op -> numericBinary context op left right
-    Application Explicit successorExpr argument
-        | isSuccessorExpression successorExpr -> do
-            (elabArg, argType0) <- synthesizeElab context argument
-            argType <- zonk argType0
-            let argWhnf = evaluateWeakHeadNormalForm (contextEnv context) argType
-            case argWhnf of
-                NatType -> pure (Application Explicit Succ elabArg, NatType)
-                PrimType PTInt -> pure (intSuccessorExpression elabArg, PrimType PTInt)
-                _ -> throwError (TypeMismatch NatType argWhnf)
     Pi vis parameter domain codomain -> do
         (elabDomain, domainUniverse) <- checkIsType context domain
         levelI <- extractUniverseLevel context domainUniverse
@@ -431,17 +387,11 @@ checkElab context expression expType = case expression of
             (Tuple [], _) -> checkElab context (Variable (Identifier "unit")) whnfExpected
             (Tuple elements, Universe _) -> fst <$> checkIsType context (Tuple elements)
             (Tuple elements, _) -> checkElab context (tupleValue elements) whnfExpected
-            (Literal (LitNat n), NatType) -> pure (Literal (LitNat n))
-            (Literal (LitNat n), PrimType PTInt) -> pure (Literal (LitInt n))
-            (Literal (LitNat n), PrimType PTFloat) -> pure (Literal (LitFloat (fromIntegral n)))
-            (Literal (LitInt n), NatType)
-                | n >= 0 -> pure (Literal (LitNat n))
-                | otherwise -> throwError (TypeMismatch NatType (PrimType PTInt))
             (Literal (LitInt n), PrimType PTInt) -> pure (Literal (LitInt n))
             (Literal (LitInt n), PrimType PTFloat) -> pure (Literal (LitFloat (fromIntegral n)))
             (Literal (LitFloat n), PrimType PTFloat) -> pure (Literal (LitFloat n))
             (Literal (LitChar c), PrimType PTChar) -> pure (Literal (LitChar c))
-            (Literal (LitString s), PrimType PTString) -> pure (Literal (LitString s))
+            (Literal (LitString s), ty) | ty == listCharType -> pure (Literal (LitString s))
             (Hole mName, _) -> do
                 mId <- freshMetaId
                 recordMeta mId mName context zonkedExpected
@@ -452,20 +402,6 @@ checkElab context expression expType = case expression of
                 let whnfTargetType = evaluateWeakHeadNormalForm env zonkedTargetType
                 elabBranches <- checkCaseBranches checkElab context elabTarget whnfTargetType whnfExpected mMotive branches
                 pure (Case elabTarget mMotive elabBranches)
-            (PatternCase target mMotive branches, _) -> do
-                (elabTarget, _) <- synthesizeElab context target
-                compiled <- compilePatternCase synthesizeElab context elabTarget branches
-                checkElab context (Case elabTarget mMotive compiled) expType
-            (Succ, Pi Explicit _ NatType _) -> pure Succ
-            (Application Explicit successorExpr argument, PrimType PTInt)
-                | isSuccessorExpression successorExpr -> do
-                    (elabArg, argType) <- synthesizeElab context argument
-                    argZonked <- zonk argType
-                    let argWhnf = evaluateWeakHeadNormalForm env argZonked
-                    case argWhnf of
-                        PrimType PTInt -> pure (intSuccessorExpression elabArg)
-                        NatType -> pure (intSuccessorExpression (Application Explicit (PrimOp NatToInt) elabArg))
-                        _ -> throwError (TypeMismatch (PrimType PTInt) argWhnf)
             (Let param maybeDeclaredType defExpr body, _) -> do
                 (elabDef, defType) <- case maybeDeclaredType of
                     Just declaredType -> do
@@ -538,9 +474,7 @@ checkElab context expression expType = case expression of
                 let actual = evaluateWeakHeadNormalForm env synthesizedType
                     expected = evaluateWeakHeadNormalForm env zonkedExpected
                     coerced = case (actual, expected) of
-                        (NatType, PrimType PTInt) -> Just (Application Explicit (PrimOp NatToInt) elabExpr)
                         (PrimType PTInt, PrimType PTFloat) -> Just (Application Explicit (PrimOp IntToFloat) elabExpr)
-                        (NatType, PrimType PTFloat) -> Just (Application Explicit (PrimOp IntToFloat) (Application Explicit (PrimOp NatToInt) elabExpr))
                         _ -> Nothing
                 case coerced of
                     Just term -> pure term

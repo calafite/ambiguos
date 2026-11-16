@@ -96,10 +96,6 @@ unify ctx e1 e2 = do
             (J, J) -> pure ()
             (VoidType, VoidType) -> pure ()
             (Abort, Abort) -> pure ()
-            (NatType, NatType) -> pure ()
-            (Zero, Zero) -> pure ()
-            (Succ, Succ) -> pure ()
-            (NatRec, NatRec) -> pure ()
             (Variable x, Variable y) | x == y -> pure ()
             _ -> unfoldAndRetry z1 z2
   where

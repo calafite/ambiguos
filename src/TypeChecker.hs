@@ -12,7 +12,6 @@ module TypeChecker
     , checkDataDeclaration
     , checkRecordDeclaration
     , checkClassDeclaration
-    , checkClassDeclarationDetailed
     , checkInstanceDeclaration
     , checkInstanceDeclarationDetailed
     , synthesize
@@ -30,7 +29,6 @@ module TypeChecker
 import TypeChecker.Declarations
     ( check
     , checkClassDeclaration
-    , checkClassDeclarationDetailed
     , checkDataDeclaration
     , checkDefinition
     , checkDefinitionWithPartial

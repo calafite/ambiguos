@@ -131,18 +131,6 @@ builtinData :: Map Identifier DataInfo
 builtinData =
     Map.fromList
         [
-            ( Identifier "Nat"
-            , DataInfo
-                { dataParams = []
-                , dataIndices = []
-                , dataUniverse = Universe (UFixed (-1))
-                , dataConstructors =
-                    [ (Identifier "zero", NatType)
-                    , (Identifier "successor", Pi Explicit (Identifier "_") NatType NatType)
-                    ]
-                }
-            )
-        ,
             ( Identifier "Void"
             , DataInfo
                 { dataParams = []
@@ -156,28 +144,10 @@ builtinData =
 emptyContext :: Context
 emptyContext =
     Context
-        { contextTypes =
-            Map.union primitiveTypes (Map.fromList
-                [ (Identifier "zero", NatType)
-                , (Identifier "successor", Pi Explicit (Identifier "_") NatType NatType)
-                ])
-        , contextValues =
-            Map.union primitiveValues (Map.fromList
-                [ (Identifier "zero", Zero)
-                , (Identifier "successor", Succ)
-                ])
-        , contextEnv =
-            Map.union (Map.map (evaluate emptyEnvironment) primitiveValues)
-                (Map.fromList
-                    [ (Identifier "zero", VZero)
-                    , (Identifier "successor", VPrimSucc)
-                    ])
-        , contextRuntimeEnv =
-            Map.union (Map.map (evaluate emptyEnvironment) primitiveValues)
-                (Map.fromList
-                    [ (Identifier "zero", VZero)
-                    , (Identifier "successor", VPrimSucc)
-                    ])
+        { contextTypes = primitiveTypes
+        , contextValues = primitiveValues
+        , contextEnv = Map.map (evaluate emptyEnvironment) primitiveValues
+        , contextRuntimeEnv = Map.map (evaluate emptyEnvironment) primitiveValues
         , contextLocals = []
         , contextData = builtinData
         , contextFixities = defaultFixityEnv

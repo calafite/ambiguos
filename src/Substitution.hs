@@ -7,7 +7,7 @@ module Substitution (
     alphaEquivalent,
 ) where
 
-import AST (CaseBranch (..), Expression (..), Identifier (..), Pattern (..))
+import AST (CaseBranch (..), Clause (..), Expression (..), Guard (..), GuardedRhs (..), Identifier (..), Pattern (..), Statement (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -21,30 +21,26 @@ freeVariables expression = case expression of
     J -> Set.empty
     VoidType -> Set.empty
     Abort -> Set.empty
-    NatType -> Set.empty
-    Zero -> Set.empty
-    Succ -> Set.empty
-    NatRec -> Set.empty
     Hole _ -> Set.empty
     MetaVar _ -> Set.empty
     Located _ e -> freeVariables e
     Projection term _ -> freeVariables term
     RecordLiteral _ fields -> Set.unions (map (freeVariables . snd) fields)
     Tuple elements -> Set.unions (map freeVariables elements)
-    PatternCase target motive branches ->
-        Set.unions (freeVariables target : maybe [] (\(_, t) -> [freeVariables t]) motive ++ [freeVariables body | (_, body) <- branches])
     Literal _ -> Set.empty
     PrimType _ -> Set.empty
     PrimOp _ -> Set.empty
     Case target (Just (mv, mtype)) branches ->
         let targetVars = freeVariables target
             motiveVars = Set.delete mv (freeVariables mtype)
-            branchVars (CaseBranch pat body) = foldr Set.delete (freeVariables body) (patternBindings pat)
-         in Set.unions (targetVars : motiveVars : map branchVars branches)
+            branchVars (CaseBranch pat rhss _) =
+                foldr Set.delete (Set.unions (map freeVariablesRhs rhss)) (patternBindings pat)
+             in Set.unions (targetVars : motiveVars : map branchVars branches)
     Case target Nothing branches ->
         let targetVars = freeVariables target
-            branchVars (CaseBranch pat body) = foldr Set.delete (freeVariables body) (patternBindings pat)
-         in Set.unions (targetVars : map branchVars branches)
+            branchVars (CaseBranch pat rhss _) =
+                foldr Set.delete (Set.unions (map freeVariablesRhs rhss)) (patternBindings pat)
+             in Set.unions (targetVars : map branchVars branches)
     Let param maybeParamType defExpr body ->
         let typeFreeVars = maybe Set.empty freeVariables maybeParamType
             defFreeVars = freeVariables defExpr
@@ -62,6 +58,18 @@ freeVariables expression = case expression of
         Set.union (freeVariables domain) (Set.delete parameter (freeVariables codomain))
     Annotation term annotationType ->
         Set.union (freeVariables term) (freeVariables annotationType)
+
+freeVariablesRhs :: GuardedRhs -> Set Identifier
+freeVariablesRhs (GuardedRhs guards body) =
+    Set.unions (map freeVariablesGuard guards ++ [freeVariables body])
+
+freeVariablesGuard :: Guard -> Set Identifier
+freeVariablesGuard (BoolGuard expr) = freeVariables expr
+freeVariablesGuard (PatGuard pat expr) =
+    Set.delete (patternVar pat) (freeVariables expr)
+  where
+    patternVar (PatVar v) = v
+    patternVar _ = error "freeVariablesGuard: non-variable pattern guard"
 
 freshIdentifier :: Identifier -> Set Identifier -> Identifier
 freshIdentifier (Identifier baseName) usedIdentifiers =
@@ -81,32 +89,33 @@ freshIdentifier (Identifier baseName) usedIdentifiers =
 patternBindings :: Pattern -> [Identifier]
 patternBindings (PatVar v) = [v]
 patternBindings PatWild = []
+patternBindings (PatAs v _) = [v]
 patternBindings (PatLit _) = []
 patternBindings (PatCon _ ps) = concatMap patternBindings ps
 patternBindings (PatTuple ps) = concatMap patternBindings ps
+patternBindings (PatList ps) = concatMap patternBindings ps
 
-alphaPattern :: Pattern -> Pattern -> Expression -> Expression -> Bool
-alphaPattern p1 p2 b1 b2 =
-    shape p1 p2
-        && length vs1 == length vs2
-        && let used = Set.unions [freeVariables b1, freeVariables b2]
-               fresh = map (\v -> freshIdentifier v used) vs1
-               renameAll body = foldr (\(v, f) b -> substitute v (Variable f) b) body (zip vs1 fresh)
-           in alphaEquivalent (renameAll b1) (renameAll (foldr (\(v, f) b -> substitute v (Variable f) b) b2 (zip vs2 fresh)))
+alphaPattern :: Pattern -> Pattern -> Bool
+alphaPattern p1 p2 =
+    shape p1 p2 && length vs1 == length vs2
   where
     vs1 = patternBindings p1
     vs2 = patternBindings p2
     shape (PatVar _) (PatVar _) = True
     shape PatWild PatWild = True
+    shape (PatAs _ _) (PatAs _ _) = True
     shape (PatLit x) (PatLit y) = x == y
-    shape (PatCon c xs) (PatCon d ys) = c == d && length xs == length ys && and (zipWith (\a b -> shapeOnly a b) xs ys)
+    shape (PatCon c xs) (PatCon d ys) = c == d && length xs == length ys && and (zipWith shapeOnly xs ys)
     shape (PatTuple xs) (PatTuple ys) = length xs == length ys && and (zipWith shapeOnly xs ys)
+    shape (PatList xs) (PatList ys) = length xs == length ys && and (zipWith shapeOnly xs ys)
     shape _ _ = False
     shapeOnly (PatVar _) (PatVar _) = True
     shapeOnly PatWild PatWild = True
+    shapeOnly (PatAs _ _) (PatAs _ _) = True
     shapeOnly (PatLit x) (PatLit y) = x == y
     shapeOnly (PatCon c xs) (PatCon d ys) = c == d && length xs == length ys && and (zipWith shapeOnly xs ys)
     shapeOnly (PatTuple xs) (PatTuple ys) = length xs == length ys && and (zipWith shapeOnly xs ys)
+    shapeOnly (PatList xs) (PatList ys) = length xs == length ys && and (zipWith shapeOnly xs ys)
     shapeOnly _ _ = False
 
 substitute :: Identifier -> Expression -> Expression -> Expression
@@ -121,17 +130,9 @@ substitute targetVariable replacementExpression sourceExpression =
         J -> J
         VoidType -> VoidType
         Abort -> Abort
-        NatType -> NatType
-        Zero -> Zero
-        Succ -> Succ
-        NatRec -> NatRec
         Projection term field -> Projection (substitute targetVariable replacementExpression term) field
         RecordLiteral name fields -> RecordLiteral name [(f, substitute targetVariable replacementExpression e) | (f, e) <- fields]
         Tuple elements -> Tuple (map (substitute targetVariable replacementExpression) elements)
-        PatternCase target motive branches ->
-            PatternCase (substitute targetVariable replacementExpression target)
-                (fmap (\(v, t) -> (v, substitute targetVariable replacementExpression t)) motive)
-                [(p, substitute targetVariable replacementExpression e) | (p, e) <- branches]
         Literal literal -> Literal literal
         PrimType primitiveType -> PrimType primitiveType
         PrimOp operation -> PrimOp operation
@@ -144,27 +145,47 @@ substitute targetVariable replacementExpression sourceExpression =
                 (fmap (\(mv, mt) -> (mv, substitute targetVariable replacementExpression mt)) mMotive)
                 (map substBranch branches)
           where
-            substBranch (CaseBranch pat body)
-                | elem targetVariable bound = CaseBranch pat body
-                | any (`Set.member` replacementFreeVariables) bound =
-                    let (newPat, renamedBody) = renamePattern pat body (Set.unions [replacementFreeVariables, freeVariables body, Set.singleton targetVariable])
-                     in CaseBranch newPat (substitute targetVariable replacementExpression renamedBody)
-                | otherwise =
-                    CaseBranch pat (substitute targetVariable replacementExpression body)
-              where bound = patternBindings pat
-
-            renamePattern pat body used =
-                foldl renameOne (pat, body) (patternBindings pat)
+            substBranch (CaseBranch pat rhss wheres) =
+                let bound = patternBindings pat
+                     in if elem targetVariable bound
+                         then CaseBranch pat rhss wheres
+                         else
+                             if any (`Set.member` replacementFreeVariables) bound
+                                 then
+                                     let (newPat, renamedRhss, renamedWheres) =
+                                             renamePattern pat rhss wheres (Set.unions [replacementFreeVariables, Set.singleton targetVariable])
+                                      in CaseBranch newPat (map (substituteRhs targetVariable replacementExpression) renamedRhss)
+                                                            (map (substituteStmt targetVariable replacementExpression) renamedWheres)
+                                 else CaseBranch pat (map (substituteRhs targetVariable replacementExpression) rhss)
+                                                            (map (substituteStmt targetVariable replacementExpression) wheres)
+            substituteRhs tv repl (GuardedRhs guards body) =
+                GuardedRhs (map (substituteGuard tv repl) guards) (substitute targetVariable replacementExpression body)
+            substituteGuard tv repl (BoolGuard expr) = BoolGuard (substitute tv repl expr)
+            substituteGuard tv repl (PatGuard pat expr) = PatGuard pat (substitute tv repl expr)
+            substituteStmt tv repl stmt = substituteStmt' stmt
               where
-                renameOne (p, b) v =
+                substituteStmt' (TypeSignature name ty) = TypeSignature name (substitute tv repl ty)
+                substituteStmt' (FunctionDefinition isPartial name mty clauses) =
+                    FunctionDefinition isPartial name (fmap (substitute tv repl) mty) (map (substituteClause tv repl) clauses)
+                substituteStmt' (Evaluation expr) = Evaluation (substitute tv repl expr)
+                substituteStmt' stmt = stmt
+            substituteClause tv repl (Clause name pats rhss wheres) =
+                Clause name pats (map (substituteRhs tv repl) rhss) (map (substituteStmt tv repl) wheres)
+            renamePattern pat rhss wheres used =
+                foldl renameOne (pat, rhss, wheres) (patternBindings pat)
+              where
+                renameOne (p, rs, ws) v =
                     let fresh = freshIdentifier v used
-                     in (renamePat v fresh p, substitute v (Variable fresh) b)
-                renamePat v fresh (PatVar x) | x == v = PatVar fresh
-                renamePat _ _ (PatVar x) = PatVar x
-                renamePat _ _ PatWild = PatWild
-                renamePat _ _ (PatLit l) = PatLit l
-                renamePat v fresh (PatCon c ps) = PatCon c (map (renamePat v fresh) ps)
-                renamePat v fresh (PatTuple ps) = PatTuple (map (renamePat v fresh) ps)
+                        renamePat' p' = case p' of
+                            PatVar x | x == v -> PatVar fresh
+                            PatVar x -> PatVar x
+                            PatWild -> PatWild
+                            PatAs x inner -> PatAs x (renamePat' inner)
+                            PatLit l -> PatLit l
+                            PatCon c ps -> PatCon c (map renamePat' ps)
+                            PatTuple ps -> PatTuple (map renamePat' ps)
+                            PatList ps -> PatList (map renamePat' ps)
+                     in (renamePat' p, rs, ws)
         Let param maybeParamType defExpr body ->
             let substType = fmap (substitute targetVariable replacementExpression) maybeParamType
                 substDef = substitute targetVariable replacementExpression defExpr
@@ -188,14 +209,9 @@ substitute targetVariable replacementExpression sourceExpression =
                                  in Let freshParam substType substDef (substitute targetVariable replacementExpression renamedBody)
                             else Let param substType substDef (substitute targetVariable replacementExpression body)
         Application vis function argument ->
-            Application
-                vis
-                (substitute targetVariable replacementExpression function)
-                (substitute targetVariable replacementExpression argument)
+            Application vis (substitute targetVariable replacementExpression function) (substitute targetVariable replacementExpression argument)
         Annotation term annotationType ->
-            Annotation
-                (substitute targetVariable replacementExpression term)
-                (substitute targetVariable replacementExpression annotationType)
+            Annotation (substitute targetVariable replacementExpression term) (substitute targetVariable replacementExpression annotationType)
         Lambda vis parameter maybeParameterType body ->
             let substitutedType = fmap (substitute targetVariable replacementExpression) maybeParameterType
                 typeFreeVariables = case maybeParameterType of
@@ -251,10 +267,6 @@ alphaEquivalent leftExpression rightExpression =
         (J, J) -> True
         (VoidType, VoidType) -> True
         (Abort, Abort) -> True
-        (NatType, NatType) -> True
-        (Zero, Zero) -> True
-        (Succ, Succ) -> True
-        (NatRec, NatRec) -> True
         (Hole _, Hole _) -> True
         (MetaVar i, MetaVar j) -> i == j
         (Case t1 (Just (mv1, mtype1)) bs1, Case t2 (Just (mv2, mtype2)) bs2) ->
@@ -265,13 +277,8 @@ alphaEquivalent leftExpression rightExpression =
                 && alphaEquivalent mtype1' mtype2'
                 && length bs1 == length bs2
                 && and (zipWith branchEq bs1 bs2)
-          where
-            branchEq (CaseBranch p1 b1) (CaseBranch p2 b2) =
-                alphaPattern p1 p2 b1 b2
         (Case t1 Nothing bs1, Case t2 Nothing bs2) ->
             alphaEquivalent t1 t2 && length bs1 == length bs2 && and (zipWith branchEq bs1 bs2)
-          where
-            branchEq (CaseBranch p1 b1) (CaseBranch p2 b2) = alphaPattern p1 p2 b1 b2
         (Case _ (Just _) _, Case _ Nothing _) -> False
         (Case _ Nothing _, Case _ (Just _) _) -> False
         (Let p1 ty1 d1 b1, Let p2 ty2 d2 b2) ->
@@ -280,14 +287,14 @@ alphaEquivalent leftExpression rightExpression =
                     (Just t1, Just t2) -> alphaEquivalent t1 t2
                     _ -> False
              in typesMatch
-                    && alphaEquivalent d1 d2
-                    && if p1 == p2
-                        then alphaEquivalent b1 b2
-                        else
-                            let fresh = freshIdentifier p1 (Set.union (freeVariables b1) (freeVariables b2))
-                                renamed1 = substitute p1 (Variable fresh) b1
-                                renamed2 = substitute p2 (Variable fresh) b2
-                             in alphaEquivalent renamed1 renamed2
+                && alphaEquivalent d1 d2
+                && if p1 == p2
+                    then alphaEquivalent b1 b2
+                    else
+                        let fresh = freshIdentifier p1 (Set.union (freeVariables b1) (freeVariables b2))
+                            renamed1 = substitute p1 (Variable fresh) b1
+                            renamed2 = substitute p2 (Variable fresh) b2
+                         in alphaEquivalent renamed1 renamed2
         (Application v1 f1 a1, Application v2 f2 a2) ->
             v1 == v2 && alphaEquivalent f1 f2 && alphaEquivalent a1 a2
         (Annotation t1 ty1, Annotation t2 ty2) ->
@@ -319,3 +326,10 @@ alphaEquivalent leftExpression rightExpression =
         (Located _ e1, e2) -> alphaEquivalent e1 e2
         (e1, Located _ e2) -> alphaEquivalent e1 e2
         _ -> False
+  where
+    branchEq (CaseBranch p1 rhss1 _) (CaseBranch p2 rhss2 _) =
+        alphaPattern p1 p2 && length rhss1 == length rhss2 && and (zipWith rhsEq rhss1 rhss2)
+    rhsEq (GuardedRhs g1 b1) (GuardedRhs g2 b2) =
+        length g1 == length g2 && and (zipWith guardEq g1 g2) && alphaEquivalent b1 b2
+    guardEq (BoolGuard e1) (BoolGuard e2) = alphaEquivalent e1 e2
+    guardEq (PatGuard p1 e1) (PatGuard p2 e2) = alphaPattern p1 p2 && alphaEquivalent e1 e2

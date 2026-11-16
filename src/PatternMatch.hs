@@ -1,9 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 module PatternMatch (compileClauses) where
 
-import AST (CaseBranch (..), Clause (..), Expression (..), Identifier (..), Pattern (..), PrimType (..), Visibility (..))
+import AST (CaseBranch (..), Clause (..), Expression (..), GuardedRhs (..), Identifier (..), Literal (..), Pattern (..), PrimType (..), Visibility (..))
 import Substitution (substitute)
 import qualified Data.Text as Text
+
+-- | Clause body extraction: take the first RHS body (guards handled by type checker).
+clauseBody :: Clause -> Expression
+clauseBody = guardedRhsBody . head . clauseRhss
 
 compileClauses :: Maybe Expression -> [Clause] -> Expression
 compileClauses _ [] = Hole Nothing
@@ -12,25 +16,39 @@ compileClauses maybeType clauses =
         (compileMatrix args (map clauseRow clauses))
         (zip args (parameterTypes maybeType (length args)))
   where
-    arity = maximum (0 : map (length . clausePatterns) clauses)
+    arity = maximum (0 : map (length . clausePats) clauses)
     args = [inferNameAt i | i <- [0 .. arity - 1]]
-    clauseRow c = (clausePatterns c, clauseBody c)
+    clauseRow c = (map normalizePattern (clausePats c), clauseBody c)
 
     parameterTypes (Just ty) n = take n (piDomains ty ++ repeat (PrimType PTInt))
     parameterTypes Nothing n = [inferTypeAt i | i <- [0 .. n - 1]]
 
     inferTypeAt i
-        | any (isListPattern . patternAt i . clausePatterns) clauses =
+        | any (isListPattern . patternAt i . clausePats) clauses =
             Application Explicit (Variable (Identifier "List")) (PrimType PTInt)
         | otherwise = PrimType PTInt
 
-    inferNameAt i = case [v | c <- clauses, PatVar v <- [patternAt i (clausePatterns c)]] of
+    inferNameAt i = case [v | c <- clauses, PatVar v <- [patternAt i (clausePats c)]] of
         v : _ -> v
         [] -> Identifier ("arg" <> Text.pack (show i))
 
     patternAt i ps = if i < length ps then ps !! i else PatWild
-    isListPattern (PatCon n _) = unIdentifier n `elem` ["nil", "cons"]
+    isListPattern (PatList _) = True
     isListPattern _ = False
+
+    normalizePattern (PatList []) = PatCon (Identifier "[]") []
+    normalizePattern (PatList (p : ps)) = PatCon (Identifier ":") [normalizePattern p, normalizePattern (PatList ps)]
+    normalizePattern (PatTuple []) = PatCon (Identifier "()") []
+    normalizePattern (PatTuple [p]) = normalizePattern p
+    normalizePattern (PatTuple (p : ps)) = PatCon (Identifier "Pair") [normalizePattern p, normalizePattern (PatTuple ps)]
+    normalizePattern (PatAs n p) = PatAs n (normalizePattern p)
+    normalizePattern (PatLit (LitString s)) = stringPattern s
+    normalizePattern (PatCon n ps) = PatCon n (map normalizePattern ps)
+    normalizePattern p = p
+
+    stringPattern s = case Text.uncons s of
+        Nothing -> PatCon (Identifier "[]") []
+        Just (c, rest) -> PatCon (Identifier ":") [PatLit (LitChar c), stringPattern rest]
 
     piDomains (Located _ e) = piDomains e
     piDomains (Pi Implicit _ _ codomain) = piDomains codomain
@@ -59,11 +77,11 @@ compileMatrix (arg : args) rows
                          | (ps, body) <- rows
                          , Just (rest, body') <- [specialize p ps body arg]
                          ]
-         in CaseBranch pat (compileMatrix (childArgs ++ args) branchRows)
+         in CaseBranch pat [GuardedRhs [] (compileMatrix (childArgs ++ args) branchRows)] []
 
     fallbackBranch =
         if any (isFallback . headOrWild . fst) rows
-            then [CaseBranch PatWild (compileMatrix args [ (drop 1 ps, bindAt arg (headOrWild ps) body) | (ps, body) <- rows, isFallback (headOrWild ps) ])]
+            then [CaseBranch PatWild [GuardedRhs [] (compileMatrix args [ (drop 1 ps, bindAt arg (headOrWild ps) body) | (ps, body) <- rows, isFallback (headOrWild ps) ])] []]
             else []
 
     explicitPatterns = unique [shape p | (ps, _) <- rows, let p = headOrWild ps, not (isFallback p)]

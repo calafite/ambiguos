@@ -17,6 +17,7 @@ module TypeChecker.Meta
 import AST
     ( CaseBranch (..)
     , Expression (..)
+    , GuardedRhs (..)
     , Identifier (..)
     , UniverseLevel (..)
     , Visibility (..)
@@ -96,7 +97,10 @@ zonk expr = do
             Case <$> zonk target <*> traverse zonkMotive mMotive <*> traverse zonkBranch branches
           where
             zonkMotive (mv, mt) = (,) mv <$> zonk mt
-            zonkBranch (CaseBranch pat body) = CaseBranch pat <$> zonk body
+            zonkBranch (CaseBranch pat rhss wheres) =
+                CaseBranch pat <$> traverse zonkRhs rhss <*> pure wheres
+              where
+                zonkRhs (GuardedRhs guards body) = GuardedRhs guards <$> zonk body
         Annotation t ty -> Annotation <$> zonk t <*> zonk ty
         Located sp e -> Located sp <$> zonk e
         other -> pure other
@@ -109,9 +113,11 @@ occursIn i expr = case expr of
     Pi _ _ d c -> occursIn i d || occursIn i c
     Let _ ty d b -> maybe False (occursIn i) ty || occursIn i d || occursIn i b
     Case target mMotive branches ->
-        occursIn i target || any (\(CaseBranch _ b) -> occursIn i b) branches || case mMotive of
+        occursIn i target || any (\(CaseBranch _ rhss _) -> any (occursInRhs . guardedRhsBody) rhss) branches || case mMotive of
             Just (_, mt) -> occursIn i mt
             Nothing -> False
+      where
+        occursInRhs expr = occursIn i expr
     Annotation t ty -> occursIn i t || occursIn i ty
     Located _ e -> occursIn i e
     _ -> False

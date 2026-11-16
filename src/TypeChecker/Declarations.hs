@@ -4,7 +4,6 @@ module TypeChecker.Declarations
     ( checkDataDeclaration
     , checkRecordDeclaration
     , checkClassDeclaration
-    , checkClassDeclarationDetailed
     , checkInstanceDeclaration
     , checkInstanceDeclarationDetailed
     , synthesize
@@ -19,9 +18,9 @@ module TypeChecker.Declarations
 
 import AST
     ( CaseBranch (..)
-    , ClassMethod (..)
     , Clause (..)
     , Expression (..)
+    , GuardedRhs (..)
     , Identifier (..)
     , Pattern (..)
     , RecordField (..)
@@ -161,7 +160,7 @@ checkRecordDeclaration context recName params univ fields mConName =
                         conVars = map recordFieldName fields
                         projectionFor field =
                             let recVar = Identifier "record"
-                                branch = CaseBranch (PatCon conName (map PatVar conVars)) (Variable (recordFieldName field))
+                                branch = CaseBranch (PatCon conName (map PatVar conVars)) [GuardedRhs [] (Variable (recordFieldName field))] []
                                 body = Lambda Explicit recVar Nothing (Case (Variable recVar) Nothing [branch])
                                 value = foldr (\(_, p, _) b -> Lambda Implicit p Nothing b) body allArgs
                                 ty = foldr (\(_, p, t) b -> Pi Implicit p t b)
@@ -201,22 +200,6 @@ checkRecordDeclaration context recName params univ fields mConName =
 checkClassDeclaration :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> [RecordField] -> Either TypeDiagnostic Context
 checkClassDeclaration context name params fields =
     checkRecordDeclaration context name params (Universe (UFixed (-1))) fields Nothing
-
-checkClassDeclarationDetailed :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> [ClassMethod] -> Either TypeDiagnostic Context
-checkClassDeclarationDetailed context name params methods =
-    let fields = [RecordField (methodName m) (methodType m) | m <- methods]
-        defaults = [(methodName m, body) | m <- methods, Just body <- [methodDefault m]]
-     in do
-        updated <- checkClassDeclaration context name params fields
-        let makeInstanceType ty = case ty of
-                Pi vis p dom (Pi Explicit dict dictTy rest) -> Pi vis p dom (Pi Instance dict dictTy rest)
-                other -> other
-            updatedTypes = foldr (\method ctx ->
-                case Map.lookup (methodName method) (contextTypes ctx) of
-                    Nothing -> ctx
-                    Just ty -> ctx { contextTypes = Map.insert (methodName method) (makeInstanceType ty) (contextTypes ctx) })
-                updated methods
-        pure updatedTypes { contextClassDefaults = Map.insert name defaults (contextClassDefaults updatedTypes) }
 
 checkInstanceDeclarationDetailed :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> Expression -> [Clause] -> Either TypeDiagnostic Context
 checkInstanceDeclarationDetailed context className _params headType clauses = do
@@ -338,8 +321,8 @@ checkFunctionDefinitionWithPartial isPartial context name maybeDeclaredType clau
     case clauses of
         [] -> Left (TypeDiagnostic Nothing [] (CannotSynthesizeType (Variable name)))
         firstClause : _
-            | any ((/= length (clausePatterns firstClause)) . length . clausePatterns) clauses ->
-                Left (TypeDiagnostic Nothing [] (ArityMismatch name (length (clausePatterns firstClause)) (length (clausePatterns firstClause))))
+            | any ((/= length (clausePats firstClause)) . length . clausePats) clauses ->
+                Left (TypeDiagnostic Nothing [] (ArityMismatch name (length (clausePats firstClause)) (length (clausePats firstClause))))
             | otherwise ->
                 let generalizedType = fmap (generalizeType context) maybeDeclaredType
                  in checkDefinitionWithPartial isPartial context name generalizedType (compileClauses generalizedType clauses)

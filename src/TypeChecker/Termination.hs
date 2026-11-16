@@ -9,6 +9,7 @@ module TypeChecker.Termination
 import AST
     ( CaseBranch (..)
     , Expression (..)
+    , GuardedRhs (..)
     , Identifier (..)
     , Literal (..)
     , Pattern (..)
@@ -45,6 +46,8 @@ checkPositive dataName expr = go False expr
         Let _ _ d b -> go inDomain d >> go inDomain b
         Case t _mMotive branches ->
             go inDomain t >> mapM_ (go inDomain . branchBody) branches
+          where
+            branchBody (CaseBranch _ rhss _) = guardedRhsBody (head rhss)
         Annotation t _ -> go inDomain t
         _ -> pure ()
 
@@ -72,9 +75,9 @@ checkTermination name body =
                     _ -> small
              in mapM_ (checkBranch' nm params small' guarded target branches) branches
           where
-            checkBranch' n pp ss gg targetExpr allBranches (CaseBranch pat bdy) =
+            checkBranch' n pp ss gg targetExpr allBranches (CaseBranch pat rhss _) =
                 let branchGuarded = integerGuard targetExpr allBranches pat gg
-                 in checkCalls n pp (Set.union ss (Set.fromList (patternNames pat))) branchGuarded bdy
+                 in checkCalls n pp (Set.union ss (Set.fromList (patternNames pat))) branchGuarded (guardedRhsBody (head rhss))
             patternNames (PatVar v) = [v]
             patternNames PatWild = []
             patternNames (PatLit _) = []

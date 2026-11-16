@@ -7,13 +7,14 @@ module AST (
     Literal (..),
     PrimType (..),
     PrimOp (..),
-    CaseBranch (..),
-    RecordField (..),
-    RecordInfo (..),
-    ClassMethod (..),
+    Guard (..),
+    GuardedRhs (..),
     Pattern (..),
+    CaseBranch (..),
     Clause (..),
     Expression (..),
+    RecordField (..),
+    RecordInfo (..),
     Statement (..),
 ) where
 
@@ -43,11 +44,6 @@ data Fixity = Fixity
     }
     deriving (Eq, Ord, Show)
 
--- | Universe level representation.
---   UFixed n   = concrete level n (e.g., Type 0, Type 1)
---   UVar u     = level variable (for level polymorphism / typical ambiguity)
---   UMax l1 l2 = maximum of two levels
---   USucc l    = successor of a level (l + 1)
 data UniverseLevel
     = UFixed !Int
     | UVar !Int
@@ -56,8 +52,7 @@ data UniverseLevel
     deriving (Eq, Ord, Show)
 
 data Literal
-    = LitNat !Integer
-    | LitInt !Integer
+    = LitInt !Integer
     | LitFloat !Double
     | LitChar !Char
     | LitString !Text
@@ -67,7 +62,6 @@ data PrimType
     = PTInt
     | PTFloat
     | PTChar
-    | PTString
     deriving (Eq, Ord, Show)
 
 data PrimOp
@@ -83,13 +77,39 @@ data PrimOp
     | IntToString | FloatToString | CharToString
     deriving (Eq, Ord, Show)
 
-data CaseBranch = CaseBranch
-    { branchPattern :: !Pattern
-    , branchBody :: !Expression
+-- | Guard for pattern matching: boolean condition or pattern guard.
+data Guard
+    = BoolGuard !Expression
+    | PatGuard !Pattern !Expression
+    deriving (Eq, Show)
+
+-- | A right-hand side with its guards.
+data GuardedRhs = GuardedRhs
+    { guardedRhsGuards :: ![Guard]
+    , guardedRhsBody   :: !Expression
     }
     deriving (Eq, Show)
 
--- | Record field declaration: a named field with its type.
+-- | Pattern: variables, constructors, literals, as-patterns, lists, tuples.
+data Pattern
+    = PatVar !Identifier
+    | PatWild
+    | PatAs !Identifier !Pattern
+    | PatLit !Literal
+    | PatCon !Identifier ![Pattern]
+    | PatTuple ![Pattern]
+    | PatList ![Pattern]
+    deriving (Eq, Show)
+
+-- | A case branch with optional guards and where bindings.
+data CaseBranch = CaseBranch
+    { branchPattern :: !Pattern
+    , branchRhss    :: ![GuardedRhs]
+    , branchWhere   :: ![Statement]
+    }
+    deriving (Eq, Show)
+
+-- | Record field declaration.
 data RecordField = RecordField
     { recordFieldName :: !Identifier
     , recordFieldType :: !Expression
@@ -102,25 +122,11 @@ data RecordInfo = RecordInfo
     , recordParams    :: ![(Visibility, Identifier, Expression)]
     , recordUniverse  :: !Expression
     , recordFields    :: ![RecordField]
-    , recordConName   :: !Identifier   -- ^ constructor name (default: mk<RecordName>)
+    , recordConName   :: !Identifier
     }
     deriving (Eq, Show)
 
-data ClassMethod = ClassMethod
-    { methodName :: !Identifier
-    , methodType :: !Expression
-    , methodDefault :: !(Maybe Expression)
-    }
-    deriving (Eq, Show)
-
-data Pattern
-    = PatVar !Identifier
-    | PatWild
-    | PatLit !Literal
-    | PatCon !Identifier ![Pattern]
-    | PatTuple ![Pattern]
-    deriving (Eq, Show)
-
+-- | Expressions in the core language.
 data Expression
     = Variable Identifier
     | Universe UniverseLevel
@@ -129,7 +135,6 @@ data Expression
     | Pi Visibility Identifier Expression Expression
     | Let Identifier (Maybe Expression) Expression Expression
     | Case Expression (Maybe (Identifier, Expression)) [CaseBranch]
-    | PatternCase Expression (Maybe (Identifier, Expression)) [(Pattern, Expression)]
     | Literal !Literal
     | PrimType !PrimType
     | PrimOp !PrimOp
@@ -139,38 +144,36 @@ data Expression
     | J
     | VoidType
     | Abort
-    | NatType
-    | Zero
-    | Succ
-    | NatRec
     | Hole (Maybe Identifier)
     | MetaVar Int
     | Located !SourceSpan !Expression
-    | Projection !Expression !Identifier   -- ^ expr.field postfix projection
+    | Projection !Expression !Identifier
     | RecordLiteral !Identifier ![(Identifier, Expression)]
     | Tuple ![Expression]
     deriving (Eq, Show)
 
+-- | A clause: name, patterns, guarded right-hand sides, optional where bindings.
 data Clause = Clause
-    { clauseName     :: !Identifier
-    , clausePatterns :: ![Pattern]
-    , clauseBody     :: !Expression
+    { clauseName   :: !Identifier
+    , clausePats   :: ![Pattern]
+    , clauseRhss   :: ![GuardedRhs]
+    , clauseWhere  :: ![Statement]
     }
     deriving (Eq, Show)
 
+-- | Top-level statements.
 data Statement
-    = Definition !Bool Identifier (Maybe Expression) Expression
-    | TypeSignature !Identifier !Expression
+    = TypeSignature !Identifier !Expression
+    | Definition !Bool Identifier (Maybe Expression) Expression
     | FunctionClause !Clause
     | FunctionDefinition !Bool !Identifier !(Maybe Expression) ![Clause]
     | Evaluation Expression
     | DataDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [(Identifier, Expression)]
+    | TypeAlias Identifier [(Visibility, Identifier, Expression)] Expression
     | FixityDeclaration !Associativity !Int ![Identifier]
     | RecordDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [RecordField] (Maybe Identifier)
     | ModuleHeader [Identifier]
     | ImportStmt !Bool ![Identifier] !(Maybe [Identifier]) !(Maybe Identifier)
-    | ClassDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [RecordField]
-    | InstanceDeclaration Identifier Expression [(Identifier, Expression)]
-    | ClassDeclarationDetailed Identifier [(Visibility, Identifier, Expression)] [ClassMethod]
-    | InstanceDeclarationDetailed Identifier [(Visibility, Identifier, Expression)] Expression [Clause]
+    | ClassDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [RecordField] [(Identifier, [Clause])]
+    | InstanceDeclaration Identifier [(Visibility, Identifier, Expression)] Expression [(Identifier, [Clause])]
     deriving (Eq, Show)
