@@ -1665,6 +1665,7 @@ checkDataDeclaration context dataName params univ constructors =
             { contextTypes = Map.insert cName cType (contextTypes ctx)
             , contextValues = Map.insert cName (Variable cName) (contextValues ctx)
             , contextEnv = Map.insert cName (VCon cName []) (contextEnv ctx)
+            , contextRuntimeEnv = Map.insert cName (VCon cName []) (contextRuntimeEnv ctx)
             }
 
 checkRecordDeclaration ::
@@ -1720,6 +1721,7 @@ checkRecordDeclaration context recName params univ fields mConName =
                                 { contextTypes = Map.insert conName fullConType (contextTypes paramContext)
                                 , contextValues = Map.insert conName (Variable conName) (contextValues paramContext)
                                 , contextEnv = Map.insert conName (VCon conName []) (contextEnv paramContext)
+                                , contextRuntimeEnv = Map.insert conName (VCon conName []) (contextRuntimeEnv paramContext)
                                 }
                         ctxWithProjections =
                             foldr (\(fieldName, fieldType, fieldValue) ctx ->
