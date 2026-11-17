@@ -146,6 +146,14 @@ main = do
                     assert (not (null goals)) "explicit holes report unsolved goals"
                     assert (lookupContext (Identifier "foo") holeContext == Right (Pi Explicit (Identifier "_") (PrimType PTInt) (PrimType PTInt))) "explicit holes keep the declared type"
         _ -> assert False "hole program has a single definition"
+    tupleLet <- evalOrDie preludeContext "let (a, b) = (1, 2) in a + b"
+    assert (tupleLet == VLit (LitInt 3)) "tuple let binding evaluates"
+    tupleLam <- evalOrDie preludeContext "(\\(x, y) -> x + y) (1, 2)"
+    assert (tupleLam == VLit (LitInt 3)) "tuple lambda evaluates"
+    guarded <- evalOrDie preludeContext "case 1 of { x | x == 1 -> 2 ; _ -> 3 }"
+    assert (guarded == VLit (LitInt 2)) "case guard evaluates"
+    asPat <- evalOrDie preludeContext "case True of { b@_ -> b ; _ -> False }"
+    assert (asPat == VCon (Identifier "True") []) "as-pattern binds the whole scrutinee"
     putStrLn "ok"
 
 unwrap :: Expression -> Expression

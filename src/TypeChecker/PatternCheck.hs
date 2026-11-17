@@ -115,6 +115,7 @@ checkPrimitiveCaseBranches checkElab' context pt expType branches = do
                 [] -> Hole Nothing
             (effectivePat, branchContext) = case pat of
                 PatVar n -> (PatVar n, extendContextType n (PrimType pt) context)
+                PatAs n _ -> (PatVar n, extendContextType n (PrimType pt) context)
                 PatWild -> (PatWild, context)
                 PatLit (LitInt n) | pt == PTInt -> (PatLit (LitInt n), context)
                 PatLit (LitInt n) | pt == PTFloat -> (PatLit (LitFloat (fromIntegral n)), context)
@@ -260,11 +261,13 @@ checkBranch checkElab' context elabTarget dataInfo paramArgs indexArgs dataTypeN
     let (con, vars) = case pat of
             PatCon c ps -> (c, [case p of { PatVar v -> v; _ -> Identifier ("_pat" <> Text.pack (show i)) } | (i, p) <- zip [(0 :: Int) ..] ps])
             PatVar c -> (c, [])
+            PatAs _ _ -> (Identifier "_", [])
             _ -> (Identifier "_", [])
     if con == Identifier "_"
         then do
             let extContext = case pat of
                     PatVar v -> extendContextType v whnfTargetType context
+                    PatAs x _ -> extendContextType x whnfTargetType context
                     _ -> context
             elabBody <- checkElab' extContext body expType
             pure (CaseBranch pat [GuardedRhs [] elabBody] [])

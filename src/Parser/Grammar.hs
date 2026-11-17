@@ -472,6 +472,7 @@ parseLambda env = do
 parseLet :: FixityEnv -> Parser Expression
 parseLet env = do
     expectToken TokenKeywordLet "'let'"
+    _ <- optional (expectToken TokenLeftBrace "'{'") -- layout-inserted block brace
     tupleStart <- optional (expectToken TokenLeftParen "'('")
     case tupleStart of
         Just _ -> do
@@ -481,6 +482,7 @@ parseLet env = do
             expectToken TokenRightParen "')'"
             expectToken TokenEquals "'='"
             valExpr <- expressionParser env
+            _ <- optional (expectToken TokenRightBrace "'}") -- close layout block before 'in'
             expectToken TokenKeywordIn "'in'"
             bodyExpr <- expressionParser env
             pure (Case valExpr Nothing [CaseBranch (PatTuple (map PatVar (first : rest))) [GuardedRhs [] bodyExpr] []])
@@ -489,6 +491,7 @@ parseLet env = do
             maybeType <- optional (expectToken TokenDoubleColon "'::'" *> expressionParser env)
             expectToken TokenEquals "'='"
             valExpr <- expressionParser env
+            _ <- optional (expectToken TokenRightBrace "'}") -- close layout block before 'in'
             expectToken TokenKeywordIn "'in'"
             bodyExpr <- expressionParser env
             pure (Let name maybeType valExpr bodyExpr)
@@ -519,7 +522,7 @@ parseCase env = do
     branches <- case nextTok of
         Just TokenLeftBrace -> parseBraced
         _ -> parsePiped
-    pure (Case target mMotive [CaseBranch pat [GuardedRhs [] body] [] | (pat, body) <- branches])
+    pure (Case target mMotive [CaseBranch pat [rhs] [] | (pat, rhs) <- branches])
   where
     parseMotive :: Parser (Maybe (Identifier, Expression))
     parseMotive = do
@@ -534,19 +537,27 @@ parseCase env = do
             _ -> pure Nothing
     parseBraced = do
         expectToken TokenLeftBrace "'{'"
-        bs <- many (parseCasePatternBranch <* optional (expectToken TokenSemicolon "';'"))
+        bs <- many (parseBracedBranch <* optional (expectToken TokenSemicolon "';'"))
         expectToken TokenRightBrace "'}'"
         pure bs
+      where
+        parseBracedBranch = do
+            pat <- parseCasePattern
+            guards <- many (expectToken TokenPipe "'|'" *> parseInfix env 0)
+            expectToken TokenArrow "'->'"
+            body <- expressionParser env
+            pure (pat, GuardedRhs (map BoolGuard guards) body)
     parsePiped = do
         _ <- optional (expectToken TokenPipe "'|'")
-        b1 <- parseCasePatternBranch
-        bs <- many (expectToken TokenPipe "'|'" *> parseCasePatternBranch)
+        b1 <- parsePipedBranch
+        bs <- many (expectToken TokenPipe "'|'" *> parsePipedBranch)
         pure (b1 : bs)
-    parseCasePatternBranch = do
-        pat <- parseCasePattern
-        expectToken TokenArrow "'->'"
-        body <- expressionParser env
-        pure (pat, body)
+      where
+        parsePipedBranch = do
+            pat <- parseCasePattern
+            expectToken TokenArrow "'->'"
+            body <- expressionParser env
+            pure (pat, GuardedRhs [] body)
 
 expressionParser :: FixityEnv -> Parser Expression
 expressionParser env = withSpan $ do

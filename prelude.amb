@@ -20,6 +20,9 @@ data Maybe a = Nothing | Just a
 data List a = [] | (:) a (List a)
 data Dec p = Yes p | No (p -> Void)
 
+pair x y = Pair x y
+unit = Unit
+
 type String = [Char]
 
 identity :: a -> a
