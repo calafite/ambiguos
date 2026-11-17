@@ -1,8 +1,11 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Parser.Decl
     ( groupStatements
+    , normalizeTypeSugar
     ) where
 
-import AST (Clause (..), Statement (..))
+import AST (Clause (..), Expression (..), Identifier (..), Statement (..), Visibility (..))
 
 groupStatements :: [Statement] -> [Statement]
 groupStatements [] = []
@@ -28,3 +31,17 @@ groupStatements (FunctionDefinition partial name mty clauses : rest) =
     isMatching (FunctionClause (Clause n _ _ _)) = n == name
     isMatching _ = False
 groupStatements (stmt : rest) = stmt : groupStatements rest
+
+-- | Normalize the surface list type spelling `a : []` used by older
+-- declarations into the canonical `List a` application.
+normalizeTypeSugar :: Expression -> Expression
+normalizeTypeSugar (Located spanInfo expression) = Located spanInfo (normalizeTypeSugar expression)
+normalizeTypeSugar (Application Explicit (Application Explicit (Variable (Identifier ":")) element) (Variable (Identifier "[]"))) =
+    Application Explicit (Variable (Identifier "List")) (normalizeTypeSugar element)
+normalizeTypeSugar (Application visibility function argument) =
+    Application visibility (normalizeTypeSugar function) (normalizeTypeSugar argument)
+normalizeTypeSugar (Pi visibility name domain codomain) =
+    Pi visibility name (normalizeTypeSugar domain) (normalizeTypeSugar codomain)
+normalizeTypeSugar (Annotation expression expressionType) =
+    Annotation (normalizeTypeSugar expression) (normalizeTypeSugar expressionType)
+normalizeTypeSugar expression = expression

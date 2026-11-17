@@ -34,7 +34,7 @@ import Diagnostics (SourceSpan (..), formatSourceSnippet)
 import Layout (insertLayout)
 import Parser.Monad
 import Parser.Pattern (parseCasePattern)
-import Parser.Decl (groupStatements)
+import Parser.Decl (groupStatements, normalizeTypeSugar)
 import Parser.Expr (desugarList, parseIdentifier, parseParenOp)
 import qualified Parser.Expr as Expr
 
@@ -861,15 +861,6 @@ parseFunctionEquation env isPartial = do
 
 parseLineExpression :: FixityEnv -> Parser Expression
 parseLineExpression = Expr.parseLineExpression expressionParser
-
-normalizeTypeSugar :: Expression -> Expression
-normalizeTypeSugar (Located sp e) = Located sp (normalizeTypeSugar e)
-normalizeTypeSugar (Application Explicit (Application Explicit (Variable (Identifier ":")) a) (Variable (Identifier "[]"))) =
-    Application Explicit (Variable (Identifier "List")) (normalizeTypeSugar a)
-normalizeTypeSugar (Application v f a) = Application v (normalizeTypeSugar f) (normalizeTypeSugar a)
-normalizeTypeSugar (Pi v n d r) = Pi v n (normalizeTypeSugar d) (normalizeTypeSugar r)
-normalizeTypeSugar (Annotation e t) = Annotation (normalizeTypeSugar e) (normalizeTypeSugar t)
-normalizeTypeSugar e = e
 
 parseEvaluation :: FixityEnv -> Parser Statement
 parseEvaluation env = Evaluation <$> expressionParser env
