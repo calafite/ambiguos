@@ -7,10 +7,6 @@ module Layout (
 import Lexer (PosToken (..), Token (..))
 import Diagnostics (SourcePos (..))
 
--- | Layout triggers that open a new layout block when followed by indented content.
-layoutTriggers :: [Token]
-layoutTriggers = [TokenKeywordOf, TokenKeywordWhere, TokenKeywordLet, TokenKeywordDo]
-
 -- | Insert virtual '{', '}', ';' tokens to implement the Haskell offside rule.
 insertLayout :: [PosToken] -> [PosToken]
 insertLayout tokens = go [] 1 tokens
