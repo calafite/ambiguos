@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module PatternMatch (compileClauses) where
 
-import AST (CaseBranch (..), Clause (..), Expression (..), Guard (..), GuardedRhs (..), Identifier (..), Literal (..), Pattern (..), PrimType (..), Statement (..), Visibility (..))
+import AST (CaseBranch (..), Clause (..), Expression (..), Guard (..), GuardedRhs (..), Identifier (..), Literal (..), Pattern (..), Statement (..), Visibility (..))
 import Substitution (substitute)
 import qualified Data.Text as Text
 
@@ -36,7 +36,7 @@ clauseBody (Clause _ _ rhss wheres) = wrapWhere wheres (compileRhss rhss)
 compileClauses :: Maybe Expression -> [Clause] -> Expression
 compileClauses _ [] = Hole Nothing
 compileClauses maybeType clauses =
-    foldr (\(visibility, name, ty) body -> Lambda visibility name (Just ty) body)
+    foldr (\(visibility, name, maybeTy) body -> Lambda visibility name maybeTy body)
         (compileMatrix args (map clauseRow clauses))
         (clauseBinders maybeType args)
   where
@@ -49,29 +49,22 @@ compileClauses maybeType clauses =
     piBinders _ = []
 
     clauseBinders (Just ty) explicitArgs = assignExplicit explicitArgs (piBinders ty)
-    clauseBinders Nothing explicitArgs = [(Explicit, arg, inferTypeAt i) | (i, arg) <- zip [0 ..] explicitArgs]
+    clauseBinders Nothing explicitArgs = [(Explicit, arg, Nothing) | arg <- explicitArgs]
 
     assignExplicit remaining [] =
-        [(Explicit, arg, PrimType PTInt) | arg <- remaining]
+        [(Explicit, arg, Nothing) | arg <- remaining]
     assignExplicit remaining ((visibility, name, domain) : rest)
         | visibility == Explicit =
             case remaining of
-                arg : more -> (Explicit, arg, domain) : assignExplicit more rest
+                arg : more -> (Explicit, arg, Just domain) : assignExplicit more rest
                 [] -> []
-        | otherwise = (visibility, name, domain) : assignExplicit remaining rest
-
-    inferTypeAt i
-        | any (isListPattern . patternAt i . clausePats) clauses =
-            Application Explicit (Variable (Identifier "List")) (PrimType PTInt)
-        | otherwise = PrimType PTInt
+        | otherwise = (visibility, name, Just domain) : assignExplicit remaining rest
 
     inferNameAt i = case [v | c <- clauses, PatVar v <- [patternAt i (clausePats c)]] of
         v : _ -> v
         [] -> Identifier ("arg" <> Text.pack (show i))
 
     patternAt i ps = if i < length ps then ps !! i else PatWild
-    isListPattern (PatList _) = True
-    isListPattern _ = False
 
     normalizePattern (PatList []) = PatCon (Identifier "[]") []
     normalizePattern (PatList (p : ps)) = PatCon (Identifier ":") [normalizePattern p, normalizePattern (PatList ps)]
