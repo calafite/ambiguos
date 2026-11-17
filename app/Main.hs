@@ -445,10 +445,23 @@ processStatement contextRef input
                         outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right (updatedContext, _, goals) -> do
                         let name = statementIdentifier statement
+                            isInferredDefinition = case statement of
+                                Definition _ _ _ _ -> True
+                                FunctionDefinition _ _ _ _ -> True
+                                _ -> False
+                            verb = if isInferredDefinition then "Defined" else "Processed"
                             suffix = if null goals
                                 then green "✓"
                                 else yellow "⚠"
-                        outputStrLn (Text.unpack (suffix <> " Processed " <> bold (prettyIdentifier name)))
+                            typeSuffix =
+                                if isInferredDefinition
+                                    then case lookupContext name updatedContext of
+                                        Left _ -> ""
+                                        Right inferredType ->
+                                            " :: "
+                                                <> prettyExpressionWith cfg (normalize (contextRuntimeEnv updatedContext) inferredType)
+                                    else ""
+                        outputStrLn (Text.unpack (suffix <> " " <> verb <> " " <> bold (prettyIdentifier name) <> typeSuffix))
                         unless (null goals) $ do
                             outputStrLn (Text.unpack (yellow "Unsolved goal(s):"))
                             outputStr (Text.unpack (renderGoals goals))
