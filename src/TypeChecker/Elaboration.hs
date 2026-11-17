@@ -58,7 +58,7 @@ import TypeChecker.Types
     , throwError
     )
 
-import TypeChecker.Unify (instantiateLeadingImplicits, unify)
+import TypeChecker.Unify (instantiateLeadingImplicits, resolveInstance, unify)
 import TypeChecker.Universe
     ( addUnivConstraint
     , extractUniverseLevel
@@ -177,15 +177,44 @@ numericBinary context op left right = do
     charListType = Application Explicit (Variable (Identifier "List")) (PrimType PTChar)
 
     equality negated elabLeft elabRight leftType rightType = do
-        (target, primitive) <- case () of
-            _ | leftType == boolType || rightType == boolType -> pure (boolType, BoolEq)
-              | isCharList leftType || isCharList rightType -> pure (charListType, StringEq)
-              | Just PTFloat <- knownPrimitive leftType rightType -> pure (PrimType PTFloat, FloatEq)
-              | Just PTChar <- knownPrimitive leftType rightType -> pure (PrimType PTChar, CharEq)
-              | otherwise -> pure (PrimType PTInt, IntEq)
-        unify context leftType target
-        unify context rightType target
-        let core = Application Explicit (Application Explicit (PrimOp primitive) elabLeft) elabRight
+        case () of
+            _ | leftType == boolType || rightType == boolType -> do
+                  unify context leftType boolType
+                  unify context rightType boolType
+                  eqPrim negated BoolEq elabLeft elabRight
+              | isCharList leftType || isCharList rightType -> do
+                  unify context leftType charListType
+                  unify context rightType charListType
+                  eqPrim negated StringEq elabLeft elabRight
+              | Just PTFloat <- knownPrimitive leftType rightType -> do
+                  unify context leftType (PrimType PTFloat)
+                  unify context rightType (PrimType PTFloat)
+                  eqPrim negated FloatEq elabLeft elabRight
+              | Just PTChar <- knownPrimitive leftType rightType -> do
+                  unify context leftType (PrimType PTChar)
+                  unify context rightType (PrimType PTChar)
+                  eqPrim negated CharEq elabLeft elabRight
+              | Just PTInt <- knownPrimitive leftType rightType -> do
+                  unify context leftType (PrimType PTInt)
+                  unify context rightType (PrimType PTInt)
+                  eqPrim negated IntEq elabLeft elabRight
+              | otherwise -> do
+                  -- Non-primitive types: resolve an Eq instance dictionary and
+                  -- apply its (==) method to the operands.
+                  unify context leftType rightType
+                  commonType <- zonk leftType
+                  dictExpr <- resolveInstance context
+                      (Application Explicit (Variable (Identifier "Eq")) commonType)
+                  let eqAtType = Application Implicit (Variable (Identifier "==")) commonType
+                      eqWithDict = Application Explicit eqAtType dictExpr
+                      core = Application Explicit (Application Explicit eqWithDict elabLeft) elabRight
+                      result = if negated
+                              then Application Explicit (Variable (Identifier "not")) core
+                              else core
+                  pure (result, boolType)
+
+    eqPrim negated prim elabLeft elabRight = do
+        let core = Application Explicit (Application Explicit (PrimOp prim) elabLeft) elabRight
             result = if negated then Application Explicit (Variable (Identifier "not")) core else core
         pure (result, boolType)
 

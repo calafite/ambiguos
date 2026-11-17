@@ -58,6 +58,22 @@ ifThenElse False _ y = y
 
 class Eq a where { (==) :: a -> a -> Bool; (/=) :: a -> a -> Bool }
 
+instance Eq Int where
+  (==) = primIntEq
+  (/=) = primIntNeq
+
+instance Eq Float where
+  (==) = primFloatEq
+  (/=) = \x y -> not (primFloatEq x y)
+
+instance Eq Char where
+  (==) = primCharEq
+  (/=) = \x y -> not (primCharEq x y)
+
+instance Eq Bool where
+  (==) = primBoolEq
+  (/=) = \x y -> not (primBoolEq x y)
+
 class Ord a where { compare :: a -> a -> Ordering; (<) :: a -> a -> Bool; (<=) :: a -> a -> Bool; (>) :: a -> a -> Bool; (>=) :: a -> a -> Bool }
 
 class Add a where { (+) :: a -> a -> a }
