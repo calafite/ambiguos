@@ -3,7 +3,7 @@
 
 module Main (main) where
 
-import AST (Clause (..), Identifier (..), RecordField (..), Statement (..))
+import AST (Clause (..), Identifier (..), RecordField (..), Statement (..), Visibility (..))
 import qualified Control.Exception as Exception
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (unless)
