@@ -57,6 +57,95 @@ parseListLiteral env = do
             expectToken TokenRightBracket "']'"
             pure (desugarList elems)
 
+-- | Normalize tuple patterns into nested `Pair`/`Unit` constructor patterns so
+-- that the existing constructor-matching machinery (type checking and
+-- evaluation) handles tuple `let` bindings and tuple lambdas without
+-- special-casing `PatTuple` everywhere.  This mirrors `tupleValue` for
+-- expressions: `()` ~ `Unit`, `(x, y)` ~ `Pair x y`, `(x, y, z)` ~
+-- `Pair x (Pair y z)`, etc.
+normalizePatterns :: Expression -> Expression
+normalizePatterns expr = case expr of
+    Case target mMotive branches ->
+        Case (normalizePatterns target)
+            ((\(n, t) -> (n, normalizePatterns t)) <$> mMotive)
+            (map normalizeBranch branches)
+    Lambda vis param mType body ->
+        Lambda vis param (normalizePatterns <$> mType) (normalizePatterns body)
+    Pi vis param dom codom ->
+        Pi vis param (normalizePatterns dom) (normalizePatterns codom)
+    Application vis f a -> Application vis (normalizePatterns f) (normalizePatterns a)
+    Let param mType def body ->
+        Let param (normalizePatterns <$> mType) (normalizePatterns def) (normalizePatterns body)
+    Annotation term ty -> Annotation (normalizePatterns term) (normalizePatterns ty)
+    Located sp inner -> Located sp (normalizePatterns inner)
+    other -> other
+
+normalizeBranch :: CaseBranch -> CaseBranch
+normalizeBranch (CaseBranch pat rhss wheres) =
+    CaseBranch (normalizePattern pat) (map normalizeRhs rhss) (map normalizeStatement wheres)
+
+normalizeRhs :: GuardedRhs -> GuardedRhs
+normalizeRhs (GuardedRhs guards body) = GuardedRhs guards (normalizePatterns body)
+
+normalizePattern :: Pattern -> Pattern
+normalizePattern (PatTuple []) = PatCon (Identifier "Unit") []
+normalizePattern (PatTuple [p]) = normalizePattern p
+normalizePattern (PatTuple [p1, p2]) =
+    PatCon (Identifier "Pair") [normalizePattern p1, normalizePattern p2]
+normalizePattern (PatTuple (p1 : p2 : rest)) =
+    PatCon (Identifier "Pair")
+        [ normalizePattern p1
+        , normalizePattern (PatTuple (p2 : rest))
+        ]
+normalizePattern (PatCon n ps) = PatCon n (map normalizePattern ps)
+normalizePattern (PatAs n p) = PatAs n (normalizePattern p)
+normalizePattern p = p
+
+normalizeStatement :: Statement -> Statement
+normalizeStatement stmt = case stmt of
+    Definition partial name mType body ->
+        Definition partial name (normalizePatterns <$> mType) (normalizePatterns body)
+    FunctionDefinition partial name mType clauses ->
+        FunctionDefinition partial name (normalizePatterns <$> mType)
+            (map normalizeClause clauses)
+    FunctionClause clause ->
+        FunctionClause (normalizeClause clause)
+    TypeSignature name ty ->
+        TypeSignature name (normalizePatterns ty)
+    DataDeclaration name params univ constructors ->
+        DataDeclaration name params (normalizePatterns univ)
+            (map normalizeDataConstructor constructors)
+    RecordDeclaration name params univ fields mConName ->
+        RecordDeclaration name params (normalizePatterns univ)
+            (map normalizeRecordField fields) mConName
+    ClassDeclaration name params univ fields methods ->
+        ClassDeclaration name params (normalizePatterns univ)
+            (map normalizeRecordField fields) (map normalizeClassMethod methods)
+    InstanceDeclaration className params headType methods ->
+        InstanceDeclaration className params (normalizePatterns headType)
+            (map normalizeInstanceMethod methods)
+    Evaluation expr -> Evaluation (normalizePatterns expr)
+    TypeAlias name params body ->
+        TypeAlias name params (normalizePatterns body)
+    other -> other
+
+normalizeDataConstructor :: (Identifier, Expression) -> (Identifier, Expression)
+normalizeDataConstructor (cName, cType) = (cName, normalizePatterns cType)
+
+normalizeRecordField :: RecordField -> RecordField
+normalizeRecordField (RecordField n ty) = RecordField n (normalizePatterns ty)
+
+normalizeClassMethod :: (Identifier, [Clause]) -> (Identifier, [Clause])
+normalizeClassMethod (n, clauses) = (n, map normalizeClause clauses)
+
+normalizeInstanceMethod :: (Identifier, [Clause]) -> (Identifier, [Clause])
+normalizeInstanceMethod (n, clauses) = (n, map normalizeClause clauses)
+
+normalizeClause :: Clause -> Clause
+normalizeClause (Clause name pats rhss wheres) =
+    Clause name (map normalizePattern pats) (map normalizeRhs rhss) wheres
+
+
 parseAtomicExpression :: FixityEnv -> Parser Expression
 parseAtomicExpression env = do
     mPt <- peekPosToken
@@ -882,7 +971,8 @@ parseExpressionWith env input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
         Right toks -> Right (insertLayout toks)
-    runCompleteParser (expressionParser env) tokens
+    expr <- runCompleteParser (expressionParser env) tokens
+    pure (normalizePatterns expr)
 
 parseStatement :: Text -> Either ParseError Statement
 parseStatement = parseStatementWith defaultFixityEnv
@@ -902,7 +992,8 @@ parseProgramWith env input = do
     tokens <- case tokenize input of
         Left lexErr -> Left (ErrorLexical lexErr)
         Right toks -> Right (insertLayout toks)
-    groupStatements <$> parseAll env tokens
+    stmts <- groupStatements <$> parseAll env tokens
+    pure (map normalizeStatement stmts)
   where
     parseAll :: FixityEnv -> [PosToken] -> Either ParseError [Statement]
     parseAll _ [] = Right []
