@@ -129,20 +129,6 @@ prettyWithConfig c p e
             parenthesizeIf (p > 3) ("{{" <> prettyIdentifier n <> " :: " <> prettyWithConfig c 0 d <> "}} -> " <> prettyWithConfig c 3 r)
         Let n mt d b ->
             parenthesizeIf (p > 2) ("let " <> prettyIdentifier n <> maybe "" (\t -> " :: " <> prettyWithConfig c 0 t) mt <> " = " <> prettyWithConfig c 0 d <> " in " <> prettyWithConfig c 0 b)
-        Case t mm bs ->
-            parenthesizeIf (p > 2) ("case " <> prettyWithConfig c 0 t <> motive mm <> " of { " <> Text.intercalate " ; " (map branch bs) <> " }")
-  where
-    motive Nothing = ""
-    motive (Just (n, t)) = " as " <> prettyIdentifier n <> " return " <> prettyWithConfig c 0 t
-
-    branch (CaseBranch pat rhss _) =
-        prettyPattern pat <> " -> " <> Text.intercalate " | " [prettyGuardedRhs r | r <- rhss]
-    prettyGuardedRhs (GuardedRhs [] body) = prettyWithConfig c 0 body
-    prettyGuardedRhs (GuardedRhs guards body) =
-        Text.intercalate " && " [prettyGuard g | g <- guards] <> " -> " <> prettyWithConfig c 0 body
-    prettyGuard (BoolGuard e) = prettyWithConfig c 0 e
-    prettyGuard (PatGuard p e) = prettyPattern p <> " <- " <> prettyWithConfig c 0 e
-
 lambdaText :: PrettyConfig -> Visibility -> Identifier -> Maybe Expression -> Expression -> Text
 lambdaText c v n mt b = "\\" <> binder <> " -> " <> prettyWithConfig c 0 b
   where

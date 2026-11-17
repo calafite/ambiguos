@@ -69,7 +69,9 @@ checkPrimitiveCaseBranches checkElab' context pt expType branches = do
         else traverse checkOne branches
   where
     checkOne (CaseBranch pat rhss _) = do
-        let body = guardedRhsBody (head rhss)
+        let body = case rhss of
+                GuardedRhs _ rhs : _ -> rhs
+                [] -> Hole Nothing
             (effectivePat, branchContext) = case pat of
                 PatCon n [] -> (PatVar n, extendContextType n (PrimType pt) context)
                 PatVar n -> (PatVar n, extendContextType n (PrimType pt) context)
@@ -89,9 +91,9 @@ checkPrimitiveCaseBranches checkElab' context pt expType branches = do
     literalType (LitChar _) = PrimType PTChar
     literalType (LitString _) = Application Explicit (Variable (Identifier "List")) (PrimType PTChar)
     literalPrimType (LitInt _) = Just PTInt
-    literalPrimType (LitInt _) = Just PTInt
     literalPrimType (LitFloat _) = Just PTFloat
     literalPrimType (LitChar _) = Just PTChar
+    literalPrimType (LitString _) = Nothing
 
 checkDataCaseBranches ::
     (Context -> Expression -> Expression -> Elab Expression) ->
@@ -212,7 +214,9 @@ checkBranch ::
     CaseBranch ->
     Elab CaseBranch
 checkBranch checkElab' context elabTarget dataInfo paramArgs indexArgs dataTypeName whnfTargetType mMotive expType (CaseBranch pat rhss _) = do
-    let body = guardedRhsBody (head rhss)
+    let body = case rhss of
+            GuardedRhs _ rhs : _ -> rhs
+            [] -> Hole Nothing
     let (con, vars) = case pat of
             PatCon c ps -> (c, [case p of { PatVar v -> v; _ -> Identifier ("_pat" <> Text.pack (show i)) } | (i, p) <- zip [(0 :: Int) ..] ps])
             PatVar c -> (c, [])
