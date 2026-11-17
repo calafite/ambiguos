@@ -3,7 +3,7 @@
 
 module Main (main) where
 
-import AST (Clause (..), Expression (..), Fixity (..), Identifier (..), RecordField (..), Statement (..), UniverseLevel (..), Visibility (..))
+import AST (Clause (..), Identifier (..), RecordField (..), Statement (..))
 import qualified Control.Exception as Exception
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (unless)
@@ -41,25 +41,17 @@ import TypeChecker (
     DataInfo (..),
     Goal (..),
     checkStatement,
-    checkDataDeclaration,
-    checkRecordDeclaration,
-    checkClassDeclaration,
-    checkInstanceDeclarationDetailed,
-    checkDefinitionWithPartial,
-    checkFunctionDefinitionWithPartial,
     emptyContext,
-    extendContextDefinition,
     lookupContext,
     renderGoals,
     renderTypeDiagnostic,
     synthesize,
   )
 
-bold, dim, green, cyan, magenta, red, yellow :: Text -> Text
+bold, dim, green, magenta, red, yellow :: Text -> Text
 bold t = "\ESC[1m" <> t <> "\ESC[0m"
 dim t = "\ESC[2m" <> t <> "\ESC[0m"
 green t = "\ESC[32m" <> t <> "\ESC[0m"
-cyan t = "\ESC[36m" <> t <> "\ESC[0m"
 magenta t = "\ESC[35m" <> t <> "\ESC[0m"
 red t = "\ESC[31m" <> t <> "\ESC[0m"
 yellow t = "\ESC[33m" <> t <> "\ESC[0m"
@@ -424,70 +416,6 @@ processStatement contextRef input
         case parseStatement input of
             Left parseError ->
                 outputStrLn (Text.unpack (red "✗ " <> renderParseErrorWithSource Nothing (Just input) parseError))
-            Right (DataDeclaration name params univ constrs) ->
-                case checkDataDeclaration ctx name params univ constrs of
-                    Left typeError ->
-                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right updatedContext -> do
-                        let conNames = Text.intercalate ", " (map (prettyIdentifier . fst) constrs)
-                        outputStrLn (Text.unpack (green "✓" <> " Defined data " <> bold (prettyIdentifier name) <> " with: " <> cyan conNames))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (RecordDeclaration name params univ fields conName) ->
-                case checkRecordDeclaration ctx name params univ fields conName of
-                    Left typeError ->
-                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right updatedContext -> do
-                        outputStrLn (Text.unpack (green "✓" <> " Defined record " <> bold (prettyIdentifier name)))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (TypeAlias name params body) -> do
-                let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body params
-                    aliasKind = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) (Universe (UFixed (-1))) params
-                let updatedContext = extendContextDefinition name aliasKind aliasType ctx
-                outputStrLn (Text.unpack (green "✓" <> " Defined type " <> bold (prettyIdentifier name)))
-                liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (ClassDeclaration name params _ fields _) ->
-                case checkClassDeclaration ctx name params fields of
-                    Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right updatedContext -> do
-                        outputStrLn (Text.unpack (green "✓" <> " Defined class " <> bold (prettyIdentifier name)))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (InstanceDeclaration className params headType methods) ->
-                case checkInstanceDeclarationDetailed ctx className params headType methods of
-                    Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right updatedContext -> do
-                        outputStrLn (Text.unpack (green "✓" <> " Defined instance for " <> bold (prettyIdentifier className)))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (Definition isPartial name maybeType bodyTerm) ->
-                case checkDefinitionWithPartial isPartial ctx name maybeType bodyTerm of
-                    Left typeError ->
-                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right (updatedContext, finalType, goals) -> do
-                        if null goals
-                            then outputStrLn (Text.unpack (green "✓" <> " Defined " <> bold (prettyIdentifier name) <> " " <> dim ":" <> " " <> magenta (prettyExpressionWith cfg finalType)))
-                            else do
-                                outputStrLn (Text.unpack (yellow "⚠" <> " Defined " <> bold (prettyIdentifier name) <> " with " <> bold (Text.pack (show (length goals))) <> " goal(s):"))
-                                outputStr (Text.unpack (renderGoals goals))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = goals}))
-            Right (FunctionDefinition isPartial name maybeType clauses) ->
-                case checkFunctionDefinitionWithPartial isPartial ctx name maybeType clauses of
-                    Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
-                    Right (updatedContext, finalType, goals) -> do
-                        outputStrLn (Text.unpack (green "✓" <> " Defined " <> bold (prettyIdentifier name) <> " " <> dim ":" <> " " <> magenta (prettyExpressionWith cfg finalType)))
-                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = goals}))
-            Right (TypeSignature _ _) -> pure ()
-            Right (FunctionClause _) -> pure ()
-            Right (FixityDeclaration assoc prec ops) -> do
-                let newCtx = ctx
-                        { contextFixities =
-                            foldr
-                                (\op ex -> Map.insert op (Fixity assoc prec) ex)
-                                (contextFixities ctx)
-                                ops
-                        }
-                liftIO (modifyIORef' contextRef (\s -> s{replContext = newCtx, replLastGoals = []}))
-                outputStrLn (Text.unpack (green "✓" <> " Declared fixity for " <> cyan (Text.intercalate ", " (map prettyIdentifier ops))))
-            Right (ModuleHeader _) -> pure ()
-            Right (ImportStmt _ _ _ _) -> pure ()
             Right (Evaluation expression) -> do
                 case synthesize ctx expression of
                     Left typeError ->
@@ -510,7 +438,21 @@ processStatement contextRef input
                                 unless (null goals) $ do
                                     outputStrLn (Text.unpack (yellow "⚠" <> " Unsolved goal(s):"))
                                     outputStr (Text.unpack (renderGoals goals))
-                        liftIO (modifyIORef' contextRef (\s -> s{replLastGoals = goals}))
+                                liftIO (modifyIORef' contextRef (\s -> s{replLastGoals = goals}))
+            Right statement ->
+                case checkStatement ctx statement of
+                    Left typeError ->
+                        outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
+                    Right (updatedContext, _, goals) -> do
+                        let name = statementIdentifier statement
+                            suffix = if null goals
+                                then green "✓"
+                                else yellow "⚠"
+                        outputStrLn (Text.unpack (suffix <> " Processed " <> bold (prettyIdentifier name)))
+                        unless (null goals) $ do
+                            outputStrLn (Text.unpack (yellow "Unsolved goal(s):"))
+                            outputStr (Text.unpack (renderGoals goals))
+                        liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = goals}))
 
 runShellCommand :: String -> IO ()
 runShellCommand cmd = do
