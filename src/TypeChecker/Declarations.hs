@@ -188,7 +188,7 @@ checkRecordDeclaration context recName params univ fields mConName =
                                 , recordConName = conName
                                 }
                         finalContext =
-                            ctxWithProjections
+                            stripRecordParameters (map (\(_, p, _) -> p) allArgs) context ctxWithProjections
                                 { contextRecords =
                                     Map.insert recName recInfo (contextRecords ctxWithCon)
                                 }
@@ -196,6 +196,22 @@ checkRecordDeclaration context recName params univ fields mConName =
                     pure finalContext
             )
             (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
+
+stripRecordParameters :: [Identifier] -> Context -> Context -> Context
+stripRecordParameters parameters outer inner =
+    inner
+        { contextTypes = restore contextTypes
+        , contextValues = restore contextValues
+        , contextEnv = restore contextEnv
+        , contextRuntimeEnv = restore contextRuntimeEnv
+        , contextLocals = contextLocals outer
+        }
+  where
+    restore getter = foldr (restoreOne getter) (getter inner) parameters
+    restoreOne getter name current =
+        case Map.lookup name (getter outer) of
+            Just original -> Map.insert name original current
+            Nothing -> Map.delete name current
 
 checkClassDeclaration :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> [RecordField] -> Either TypeDiagnostic Context
 checkClassDeclaration context name params fields =
