@@ -35,6 +35,7 @@ import Layout (insertLayout)
 import Parser.Monad
 import Parser.Pattern (parseCasePattern)
 import Parser.Decl (groupStatements)
+import qualified Parser.Expr as Expr
 
 parseIdentifier :: Parser Identifier
 parseIdentifier = parseNamed <|> parseParenOp
@@ -903,16 +904,7 @@ parseFunctionEquation env isPartial = do
                 Nothing -> FunctionClause clause)
 
 parseLineExpression :: FixityEnv -> Parser Expression
-parseLineExpression env = Parser $ \tokens -> case tokens of
-    [] -> runParser (expressionParser env) []
-    PosToken start _ : _ ->
-        let (lineTokens, _) = span (sameLine start) tokens
-         in case runParser (expressionParser env) lineTokens of
-                Left err -> Left err
-                Right (expr, restLine) ->
-                    Right (expr, drop (length lineTokens - length restLine) tokens)
-  where
-    sameLine start (PosToken pos _) = posLine pos == posLine start
+parseLineExpression = Expr.parseLineExpression expressionParser
 
 normalizeTypeSugar :: Expression -> Expression
 normalizeTypeSugar (Located sp e) = Located sp (normalizeTypeSugar e)
