@@ -126,4 +126,5 @@ numericPrimitive name kind = case (name, kind) of
     (Identifier "/=", PTFloat) -> Just FloatEq
     _ -> Nothing
 coerceNumeric :: PrimType -> Expression -> Expression -> Expression
+coerceNumeric PTFloat expr (PrimType PTInt) = Application Explicit (PrimOp IntToFloat) expr
 coerceNumeric _ expr _ = expr
