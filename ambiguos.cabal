@@ -30,6 +30,7 @@ library
                     , Parser
                     , Parser.Monad
                     , Parser.Pattern
+                    , Parser.Decl
                     , Pretty
                     , Substitution
                     , TypeChecker
