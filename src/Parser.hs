@@ -35,52 +35,8 @@ import Layout (insertLayout)
 import Parser.Monad
 import Parser.Pattern (parseCasePattern)
 import Parser.Decl (groupStatements)
+import Parser.Expr (desugarList, parseIdentifier, parseParenOp)
 import qualified Parser.Expr as Expr
-
-parseIdentifier :: Parser Identifier
-parseIdentifier = parseNamed <|> parseParenOp
-  where
-    parseNamed = do
-        mPt <- peekPosToken
-        case mPt of
-            Just (PosToken _ (TokenIdentifier ident)) -> do
-                _ <- consumeToken
-                pure ident
-            Just (PosToken _ (TokenOperator ident)) -> do
-                _ <- consumeToken
-                pure ident
-            Just (PosToken _ (TokenHole Nothing)) -> do
-                _ <- consumeToken
-                pure (Identifier "_")
-            Just (PosToken _ (TokenHole (Just (Identifier name)))) -> do
-                _ <- consumeToken
-                pure (Identifier ("_" <> name))
-            _ -> empty
-
--- | Parse a parenthesized operator, e.g. `(+)`.
-parseParenOp :: Parser Identifier
-parseParenOp = do
-    mPt <- peekPosToken
-    case mPt of
-        Just (PosToken _ TokenLeftParen) -> do
-            _ <- consumeToken
-            pt <- consumeToken
-            case tokenValue pt of
-                TokenOperator ident -> do
-                    expectToken TokenRightParen "')'"
-                    pure ident
-                TokenColon -> do
-                    expectToken TokenRightParen "')'"
-                    pure (Identifier ":")
-                other -> Parser $ \_ -> Left (ExpectedToken "operator" other (tokenPos pt))
-        _ -> empty
-desugarList :: [Expression] -> Expression
-desugarList [] = Variable (Identifier "[]")
-desugarList (x : xs) =
-    Application
-        Explicit
-        (Application Explicit (Variable (Identifier ":")) x)
-        (desugarList xs)
 
 parseListElements :: FixityEnv -> Parser [Expression]
 parseListElements env = do
