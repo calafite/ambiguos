@@ -21,23 +21,12 @@ cabal run ambiguos
 
 ```text
 ● Verifying prelude.amb...
-✓ Verified prelude.amb (66 definitions)
-  identity, id, constant, flip, compose, (.), apply, ($), symmetry
-  transitivity, congruence, congruence2, substitute, transport, Not
-  absurd, doubleNegation, contraposition, Unit, unit, Ordering, less
-  equal, greater, Bool, true, false, not, and, (&&), booleanAnd
-  or, (||), booleanOr, xor, booleanXor, ifThenElse, booleanEliminator
-  boolToType, trueNotEqualFalse, falseNotEqualTrue, Pair, pair, first
-  second, fst, snd, swap, curry, uncurry, mapPair, nonContradiction
-  Sigma, dependentPair, proj1, proj2, Either, left, right, either
-  Maybe, nothing, just, maybe, fromMaybe, isJust, isNothing, mapMaybe
-  bindMaybe, predecessor, pred, isZero, addition, (+), multiplication
-  (*), power, (^), factorial, subtraction, (-), equalNat, (==)
-  notEqualNat, (/=), lessOrEqualNat, (<=), lessThanNat, (<)
-  greaterOrEqualNat, (>=), greaterThanNat, (>), compareNat, min, max
-  even, odd, List, nil, cons, foldRight, foldr, foldLeft, foldl
-  length, map, append, (++), concat, reverse, filter, all, any, isNil
-  isCons, headMaybe, head, tail, replicate, take, drop, zipWith, zip
+✓ Verified prelude.amb (<n> definitions)
+  identity, id, const, flip, compose, (.), ($), not, and, (&&), or, (||),
+  ifThenElse, Pair, pair, unit, Either, Maybe, List, foldr, foldl, map,
+  filter, append, length, reverse, head, tail, take, drop, Nat, addition,
+  multiplication, (+), (*), (^), (==), min, max
+```
 
 Numeric literals default to `Int`; `Nat` remains available explicitly for
 inductive definitions and proofs.
@@ -51,20 +40,21 @@ Type expressions or 'quit' to exit.
 ## REPL Commands
 
 ```text
-def <name> [: <type>] = <term>   typecheck and bind a global definition
-<expr>                           infer type and evaluate term to normal form
-:load <file>                     typecheck and load definitions from file, resetting context (alias: :l)
-:add <file>                      typecheck and load definitions from file, layering onto context (alias: :a)
-:reload | :r                     reload the last loaded file from an empty context
-:type <expr> | :t <expr>         synthesize and print the normalized type of <expr>
-:info <ident> | :i <ident>       show information about an identifier
-:browse | :env                   list all data types and symbols in scope with their types
-:goals                           re-print unsolved goals from the most recent statement
-:set +implicits | -implicits     show or hide implicit arguments in output
-:help | :?                       show a summary of REPL commands and syntax
-:paste                           paste mode (empty line or Ctrl-D to finish)
-:!<command>                      execute a system shell command
-quit                             exit the interactive session
+<name> = <term>              typecheck and bind a global definition
+<name> : <type> = <term>     typecheck and bind with an explicit type
+<expr>                       infer type and evaluate term to normal form
+:load <file>                 typecheck and load definitions from file, resetting context (alias: :l)
+:add <file>                  typecheck and load definitions from file, layering onto context (alias: :a)
+:reload | :r                 reload the last loaded file from an empty context
+:type <expr> | :t <expr>     synthesize and print the normalized type of <expr>
+:info <ident> | :i <ident>   show information about an identifier
+:browse | :env               list all data types and symbols in scope with their types
+:goals                       re-print unsolved goals from the most recent statement
+:set +implicits | -implicits show or hide implicit arguments in output
+:help | :?                   show a summary of REPL commands and syntax
+:paste                       paste mode (empty line or Ctrl-D to finish)
+:!<command>                  execute a system shell command
+quit                         exit the interactive session
 ```
 
 ---
@@ -135,39 +125,39 @@ From `prelude.amb`:
 ### Symmetry of Identity
 
 ```amb
-def symmetry : {A : Type} -> {x y : A} -> Id A x y -> Id A y x
-  = \p -> J A x (\(z : A) -> \_ -> Id A z x) (refl A x) y p
+symmetry :: {A :: Type} -> {x :: A} -> {y :: A} -> Id A x y -> Id A y x
+symmetry = \p -> J A x (\(z :: A) -> \_ -> Id A z x) (refl A x) y p
 ```
 
 ### Congruence
 
 ```amb
-def congruence : {A B : Type} -> (f : A -> B) -> {x y : A} -> Id A x y -> Id B (f x) (f y)
-  = \f p -> J A x (\(z : A) -> \_ -> Id B (f x) (f z)) (refl B (f x)) y p
+congruence :: {A :: Type} -> {B :: Type} -> (f :: A -> B) -> {x :: A} -> {y :: A} -> Id A x y -> Id B (f x) (f y)
+congruence = \f p -> J A x (\(z :: A) -> \_ -> Id B (f x) (f z)) (refl B (f x)) y p
 ```
 
 ### Natural Induction
 
 ```amb
-def addition : Nat -> Nat -> Nat
-  = \x y -> natRec (\_ -> Nat) y (\_ -> \rec -> successor rec) x
+addition :: Nat -> Nat -> Nat
+addition = \x y -> natRec (\_ -> Nat) y (\_ -> \rec -> successor rec) x
 
-def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
-  = \x -> natRec (\(n : Nat) -> Id Nat (addition n 0) n)
-               (refl Nat 0)
-               (\(k : Nat) -> \(ih : Id Nat (addition k 0) k) ->
-                   congruence successor ih)
-               x
+additionZeroRight :: (x :: Nat) -> Id Nat (addition x 0) x
+additionZeroRight = \x -> natRec (\(n :: Nat) -> Id Nat (addition n 0) n)
+             (refl Nat 0)
+             (\(k :: Nat) -> \(ih :: Id Nat (addition k 0) k) ->
+                 congruence successor ih)
+             x
 ```
 
 ### Tuples and destructuring
 
 ```amb
-def addPair : (Int, Int) -> Int
-  = \(x, y) -> x + y
+addPair :: (Int, Int) -> Int
+addPair = \(x, y) -> x + y
 
-def total : Int
-  = let (x, y, z) = (10, 20, 30) in x + y + z
+total :: Int
+total = let (x, y, z) = (10, 20, 30) in x + y + z
 ```
 
 ### binders.amb / bindings.amb
@@ -175,12 +165,12 @@ def total : Int
 `bindings.amb` builds on `prelude.amb` and can be loaded after it with `:add bindings.amb` or `:load` it from a prelude context:
 
 ```amb
-def additionZeroRight : (x : Nat) -> Id Nat (addition x 0) x
-  = \x ->
-      let motive = \(n : Nat) -> Id Nat (addition n 0) n in
-      let base   = refl Nat 0 in
-      let step   = \(k : Nat) -> \(ih : Id Nat (addition k 0) k) -> congruence successor ih in
-      natRec motive base step x
+additionZeroRight :: (x :: Nat) -> Id Nat (addition x 0) x
+additionZeroRight = \x ->
+    let motive = \(n :: Nat) -> Id Nat (addition n 0) n in
+    let base   = refl Nat 0 in
+    let step   = \(k :: Nat) -> \(ih :: Id Nat (addition k 0) k) -> congruence successor ih in
+    natRec motive base step x
 ```
 
 ---

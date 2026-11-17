@@ -90,7 +90,7 @@ printWelcomeBanner :: IO ()
 printWelcomeBanner = do
     TextIO.putStrLn ("\n" <> bold (magenta "Ambiguos") <> " " <> dim "v0.1.0" <> " — " <> dim "Formal Verification System")
     TextIO.putStrLn (dim "Calculus of Constructions with Martin-Löf Identity")
-    TextIO.putStrLn (dim "Commands: def <name> = <term> | data <name> ... | :load <file> | :add <file> | :reload | :type <expr> | :info <ident> | :browse | :goals | :set +/-implicits | :paste | :!<command> | :help | quit\n")
+    TextIO.putStrLn (dim "Commands: <name> = <term> | data <name> ... | :load <file> | :add <file> | :reload | :type <expr> | :info <ident> | :browse | :goals | :set +/-implicits | :paste | :!<command> | :help | quit\n")
 
 runReplWithHaskeline :: ReplState -> IO ()
 runReplWithHaskeline initialState = do
@@ -110,8 +110,7 @@ replCompletion contextRef = Haskeline.completeWord Nothing " \t(){}[];:" $ \word
     ReplState{replContext = ctx} <- liftIO (readIORef contextRef)
     let userDefs = map unIdentifier (Map.keys (contextTypes ctx) ++ Map.keys (contextData ctx))
         builtins =
-            [ "def"
-            , "partial"
+            [ "partial"
             , "data"
             , "where"
             , "case"
@@ -320,7 +319,8 @@ cmdSet contextRef rest = case rest of
 cmdHelp :: InputT IO ()
 cmdHelp = do
     outputStrLn (Text.unpack (bold "Ambiguos REPL commands:"))
-    outputStrLn (Text.unpack "  def <name> [: <type>] = <term>   typecheck and bind a global definition")
+    outputStrLn (Text.unpack "  <name> = <term>              typecheck and bind a global definition")
+    outputStrLn (Text.unpack "  <name> : <type> = <term>     typecheck and bind with an explicit type")
     outputStrLn (Text.unpack "  <expr>                         infer type and evaluate to normal form")
     outputStrLn (Text.unpack "  :load <file>                   load and verify a file, resetting context (alias: :l)")
     outputStrLn (Text.unpack "  :add <file>                    load and verify a file, layering onto context (alias: :a)")
