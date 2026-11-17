@@ -3,9 +3,14 @@
 module Parser.Decl
     ( groupStatements
     , normalizeTypeSugar
+    , parseFixityDeclaration
     ) where
 
-import AST (Clause (..), Expression (..), Identifier (..), Statement (..), Visibility (..))
+import AST (Associativity (..), Clause (..), Expression (..), Identifier (..), Statement (..), Visibility (..))
+import Control.Applicative (Alternative (..), many)
+import Lexer (PosToken (..), Token (..))
+import Parser.Expr (parseParenOp)
+import Parser.Monad
 
 groupStatements :: [Statement] -> [Statement]
 groupStatements [] = []
@@ -45,3 +50,23 @@ normalizeTypeSugar (Pi visibility name domain codomain) =
 normalizeTypeSugar (Annotation expression expressionType) =
     Annotation (normalizeTypeSugar expression) (normalizeTypeSugar expressionType)
 normalizeTypeSugar expression = expression
+
+parseFixityDeclaration :: FixityEnv -> Parser Statement
+parseFixityDeclaration _ = do
+    associativity <-
+        (AssocLeft <$ expectToken TokenKeywordInfixL "'infixl'")
+            <|> (AssocRight <$ expectToken TokenKeywordInfixR "'infixr'")
+            <|> (AssocNone <$ expectToken TokenKeywordInfix "'infix'")
+    mToken <- peekPosToken
+    case mToken of
+        Just (PosToken _ (TokenNatural precedence)) -> do
+            _ <- consumeToken
+            operators <- many parseFixityOperator
+            pure (FixityDeclaration associativity (fromInteger precedence) operators)
+        _ -> Parser $ \_ -> Left (UnexpectedEndOfInput Nothing)
+  where
+    parseFixityOperator = parseParenOp <|> do
+        mToken <- peekPosToken
+        case mToken of
+            Just (PosToken _ (TokenOperator operator)) -> consumeToken *> pure operator
+            _ -> empty

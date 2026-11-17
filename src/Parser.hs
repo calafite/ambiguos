@@ -34,7 +34,7 @@ import Diagnostics (SourceSpan (..), formatSourceSnippet)
 import Layout (insertLayout)
 import Parser.Monad
 import Parser.Pattern (parseCasePattern)
-import Parser.Decl (groupStatements, normalizeTypeSugar)
+import Parser.Decl (groupStatements, normalizeTypeSugar, parseFixityDeclaration)
 import Parser.Expr (desugarList, parseIdentifier, parseParenOp)
 import qualified Parser.Expr as Expr
 
@@ -493,31 +493,6 @@ parseConstructorDecl env = do
     expectToken TokenDoubleColon "'::'"
     cType <- expressionParser env
     pure (cName, cType)
-
-parseFixityOp :: Parser Identifier
-parseFixityOp = parseParenOp <|> parseOperatorIdent
-  where
-    parseOperatorIdent = do
-        mPt <- peekPosToken
-        case mPt of
-            Just (PosToken _ (TokenOperator op)) -> do
-                _ <- consumeToken
-                pure op
-            _ -> empty
-
-parseFixityDeclaration :: FixityEnv -> Parser Statement
-parseFixityDeclaration _env = do
-    assoc <- (AssocLeft <$ expectToken TokenKeywordInfixL "'infixl'")
-        <|> (AssocRight <$ expectToken TokenKeywordInfixR "'infixr'")
-        <|> (AssocNone <$ expectToken TokenKeywordInfix "'infix'")
-    mPt <- peekPosToken
-    case mPt of
-        Just (PosToken _ (TokenNatural n)) -> do
-            _ <- consumeToken
-            let prec = fromInteger n
-            ops <- many parseFixityOp
-            pure (FixityDeclaration assoc prec ops)
-        _ -> Parser $ \_ -> Left (UnexpectedEndOfInput Nothing)
 
 parseRecordField :: FixityEnv -> Parser RecordField
 parseRecordField env = do
