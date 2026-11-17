@@ -9,8 +9,6 @@ module TypeChecker.Primitives
     , numericKind
     , numericPrimitive
     , coerceNumeric
-    , isSuccessorExpression
-    , intSuccessorExpression
     ) where
 
 import AST
@@ -130,9 +128,3 @@ numericPrimitive name kind = case (name, kind) of
     _ -> Nothing
 coerceNumeric :: PrimType -> Expression -> Expression -> Expression
 coerceNumeric _ expr _ = expr
-
-isSuccessorExpression :: Expression -> Bool
-isSuccessorExpression _ = False
-
-intSuccessorExpression :: Expression -> Expression
-intSuccessorExpression value = value

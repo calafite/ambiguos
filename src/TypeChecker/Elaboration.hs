@@ -39,8 +39,6 @@ import TypeChecker.Meta
 import TypeChecker.PatternCheck (checkCaseBranches)
 import TypeChecker.Primitives
     ( coerceNumeric
-    , intSuccessorExpression
-    , isSuccessorExpression
     , numericKind
     , numericOperator
     , numericPrimitive
