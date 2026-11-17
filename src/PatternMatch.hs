@@ -1,13 +1,37 @@
 {-# LANGUAGE OverloadedStrings #-}
 module PatternMatch (compileClauses) where
 
-import AST (CaseBranch (..), Clause (..), Expression (..), GuardedRhs (..), Identifier (..), Literal (..), Pattern (..), PrimType (..), Visibility (..))
+import AST (CaseBranch (..), Clause (..), Expression (..), Guard (..), GuardedRhs (..), Identifier (..), Literal (..), Pattern (..), PrimType (..), Statement (..), Visibility (..))
 import Substitution (substitute)
 import qualified Data.Text as Text
 
--- | Clause body extraction: take the first RHS body (guards handled by type checker).
+-- | Compile guarded right-hand sides into ordinary case expressions.  Keeping
+-- the fallthrough explicit is important: a failed guard must try the next
+-- guarded RHS or equation instead of silently selecting the first body.
 clauseBody :: Clause -> Expression
-clauseBody = guardedRhsBody . head . clauseRhss
+clauseBody (Clause _ _ rhss wheres) = wrapWhere wheres (compileRhss rhss)
+  where
+    compileRhss [] = Hole Nothing
+    compileRhss (GuardedRhs guards body : rest) = compileGuards guards body (compileRhss rest)
+
+    compileGuards [] body _ = body
+    compileGuards (BoolGuard condition : guards) body fallback =
+        Case condition Nothing
+            [ CaseBranch (PatCon (Identifier "True") []) [GuardedRhs [] (compileGuards guards body fallback)] []
+            , CaseBranch (PatCon (Identifier "False") []) [GuardedRhs [] fallback] []
+            ]
+    compileGuards (PatGuard pattern expression : guards) body fallback =
+        Case expression Nothing
+            [ CaseBranch pattern [GuardedRhs [] (compileGuards guards body fallback)] []
+            , CaseBranch PatWild [GuardedRhs [] fallback] []
+            ]
+
+    wrapWhere [] body = body
+    wrapWhere (Definition _ name ty definition : statements) body =
+        Let name ty definition (wrapWhere statements body)
+    wrapWhere (FunctionDefinition partial name ty clauses : statements) body =
+        Let name ty (compileClauses ty clauses) (wrapWhere statements body)
+    wrapWhere (_ : statements) body = wrapWhere statements body
 
 compileClauses :: Maybe Expression -> [Clause] -> Expression
 compileClauses _ [] = Hole Nothing
