@@ -200,7 +200,8 @@ fuseListConstructor :: Identifier -> [(Visibility, Value)] -> Maybe Value
 fuseListConstructor (Identifier ":") args =
     case [v | (Explicit, v) <- args] of
         [VLit (LitChar c), VLit (LitString s)] -> Just (VLit (LitString (Text.cons c s)))
-        [VLit (LitChar c), VCon (Identifier "[]") []] -> Just (VLit (LitString (Text.singleton c)))
+        [VLit (LitChar c), VCon (Identifier "[]") tailArgs]
+            | null [v | (Explicit, v) <- tailArgs] -> Just (VLit (LitString (Text.singleton c)))
         _ -> Nothing
 fuseListConstructor _ _ = Nothing
 
@@ -261,23 +262,26 @@ applyPrimOp operation args = case (operation, args) of
     (IntMod, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a `mod` b))
     (IntPow, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (a ^ b))
     (IntNeg, [VLit (LitInt a)]) -> VLit (LitInt (-a))
-    (IntEq, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if a == b then 1 else 0))
-    (IntNeq, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if a /= b then 1 else 0))
-    (IntLt, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if a < b then 1 else 0))
-    (IntLe, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if a <= b then 1 else 0))
-    (IntGt, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if a > b then 1 else 0))
-    (IntGe, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if a >= b then 1 else 0))
-    (BoolEq, [VLit (LitInt a), VLit (LitInt b)]) -> VLit (LitInt (if a == b then 1 else 0))
+    (IntEq, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a == b)
+    (IntNeq, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a /= b)
+    (IntLt, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a < b)
+    (IntLe, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a <= b)
+    (IntGt, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a > b)
+    (IntGe, [VLit (LitInt a), VLit (LitInt b)]) -> boolValue (a >= b)
+    (BoolEq, [VCon (Identifier "True") [], VCon (Identifier "True") []]) -> boolValue True
+    (BoolEq, [VCon (Identifier "False") [], VCon (Identifier "False") []]) -> boolValue True
+    (BoolEq, [VCon (Identifier "True") [], VCon (Identifier "False") []]) -> boolValue False
+    (BoolEq, [VCon (Identifier "False") [], VCon (Identifier "True") []]) -> boolValue False
     (FloatAdd, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a + b))
     (FloatSub, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a - b))
     (FloatMul, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a * b))
     (FloatDiv, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitFloat (a / b))
-    (FloatEq, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitInt (if a == b then 1 else 0))
-    (FloatLt, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitInt (if a < b then 1 else 0))
-    (FloatLe, [VLit (LitFloat a), VLit (LitFloat b)]) -> VLit (LitInt (if a <= b then 1 else 0))
+    (FloatEq, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a == b)
+    (FloatLt, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a < b)
+    (FloatLe, [VLit (LitFloat a), VLit (LitFloat b)]) -> boolValue (a <= b)
     (StringAppend, [VLit (LitString a), VLit (LitString b)]) -> VLit (LitString (a <> b))
-    (StringEq, [VLit (LitString a), VLit (LitString b)]) -> VLit (LitInt (if a == b then 1 else 0))
-    (CharEq, [VLit (LitChar a), VLit (LitChar b)]) -> VLit (LitInt (if a == b then 1 else 0))
+    (StringEq, [VLit (LitString a), VLit (LitString b)]) -> boolValue (a == b)
+    (CharEq, [VLit (LitChar a), VLit (LitChar b)]) -> boolValue (a == b)
     (IntToFloat, [VLit (LitInt a)]) -> VLit (LitFloat (fromInteger a))
     (FloatToInt, [VLit (LitFloat a)]) -> VLit (LitInt (round a))
     (IntToString, [VLit (LitInt n)]) -> VLit (LitString (Text.pack (show n)))
@@ -289,6 +293,9 @@ applyPrimOp operation args = case (operation, args) of
     (StringToList, [VLit (LitString s)]) -> VPrimOp StringToList [VLit (LitString s)]
     (ListToString, [VPrimOp StringToList [VLit (LitString s)]]) -> VLit (LitString s)
     _ -> VPrimOp operation args
+  where
+    boolValue True = VCon (Identifier "True") []
+    boolValue False = VCon (Identifier "False") []
 
 evalJ :: Value -> Value -> Value -> Value -> Value -> Value -> Value
 evalJ typeA x motiveP baseCaseD y proof = case proof of
@@ -332,7 +339,6 @@ quote usedVars val = case val of
     VPrimType pt -> PrimType pt
     VVoidType -> VoidType
     VNeutral neu -> quoteNeutral usedVars neu
-    VUniverse _ -> Universe (UFixed (-1))
     VMetaVar _ -> Hole Nothing
     VHole _ -> Hole Nothing
 
@@ -397,6 +403,14 @@ equalVal usedVars v1 v2 = case (v1, v2) of
         equalVal usedVars a1 a2 && equalVal usedVars x1 x2 && equalVal usedVars y1 y2
     (VRefl a1 x1, VRefl a2 x2) ->
         equalVal usedVars a1 a2 && equalVal usedVars x1 x2
+    (VLambda vis1 param1 ty1 clos1, VLambda vis2 param2 ty2 clos2) ->
+        vis1 == vis2
+            && maybeEqual (equalVal usedVars) ty1 ty2
+            && equalClosure usedVars param1 clos1 param2 clos2
+    (VPi vis1 param1 dom1 clos1, VPi vis2 param2 dom2 clos2) ->
+        vis1 == vis2
+            && equalVal usedVars dom1 dom2
+            && equalClosure usedVars param1 clos1 param2 clos2
     (VPrimIdentity args1, VPrimIdentity args2) ->
         equalValList usedVars args1 args2
     (VPrimReflexivity args1, VPrimReflexivity args2) ->
@@ -407,7 +421,57 @@ equalVal usedVars v1 v2 = case (v1, v2) of
         equalValList usedVars args1 args2
     (VNeutral (NVar x), VNeutral (NVar y)) -> x == y
     (VNeutral (NMetaVar i), VNeutral (NMetaVar j)) -> i == j
+    (VNeutral (NHole x), VNeutral (NHole y)) -> x == y
+    (VNeutral (NApp f1 vis1 a1), VNeutral (NApp f2 vis2 a2)) ->
+        vis1 == vis2 && equalNeutral usedVars f1 f2 && equalVal usedVars a1 a2
+    (VNeutral (NCase t1 bs1 e1), VNeutral (NCase t2 bs2 e2)) ->
+        equalNeutral usedVars t1 t2 && bs1 == bs2 && e1 == e2
+    (VNeutral (NJ a1 x1 p1 d1 y1 prf1), VNeutral (NJ a2 x2 p2 d2 y2 prf2)) ->
+        and [ equalVal usedVars a1 a2
+            , equalVal usedVars x1 x2
+            , equalVal usedVars p1 p2
+            , equalVal usedVars d1 d2
+            , equalVal usedVars y1 y2
+            , equalNeutral usedVars prf1 prf2
+            ]
+    (VNeutral (NAbort t1 v1), VNeutral (NAbort t2 v2)) ->
+        equalVal usedVars t1 t2 && equalNeutral usedVars v1 v2
+    (VNeutral (NStuck x), VNeutral (NStuck y)) -> equalVal usedVars x y
+    (VNeutral (NPrimOp o1 as1), VNeutral (NPrimOp o2 as2)) ->
+        o1 == o2 && equalValList usedVars as1 as2
     _ -> False
+
+maybeEqual :: (a -> b -> Bool) -> Maybe a -> Maybe b -> Bool
+maybeEqual _ Nothing Nothing = True
+maybeEqual eq (Just x) (Just y) = eq x y
+maybeEqual _ _ _ = False
+
+equalClosure :: Set Identifier -> Identifier -> Closure -> Identifier -> Closure -> Bool
+equalClosure usedVars param1 clos1 param2 clos2 =
+    let fresh = freshIdentifier (Identifier "x") (Set.insert param1 (Set.insert param2 usedVars))
+        argument = VNeutral (NVar fresh)
+     in equalVal usedVars (instantiateClosure clos1 argument) (instantiateClosure clos2 argument)
+
+equalNeutral :: Set Identifier -> Neutral -> Neutral -> Bool
+equalNeutral usedVars (NVar x) (NVar y) = x == y
+equalNeutral _ (NMetaVar i) (NMetaVar j) = i == j
+equalNeutral _ (NHole x) (NHole y) = x == y
+equalNeutral usedVars (NApp f1 vis1 a1) (NApp f2 vis2 a2) =
+    vis1 == vis2 && equalNeutral usedVars f1 f2 && equalVal usedVars a1 a2
+equalNeutral usedVars (NJ a1 x1 p1 d1 y1 prf1) (NJ a2 x2 p2 d2 y2 prf2) =
+    and [ equalVal usedVars a1 a2
+        , equalVal usedVars x1 x2
+        , equalVal usedVars p1 p2
+        , equalVal usedVars d1 d2
+        , equalVal usedVars y1 y2
+        , equalNeutral usedVars prf1 prf2
+        ]
+equalNeutral usedVars (NAbort t1 v1) (NAbort t2 v2) =
+    equalVal usedVars t1 t2 && equalNeutral usedVars v1 v2
+equalNeutral usedVars (NStuck x) (NStuck y) = equalVal usedVars x y
+equalNeutral usedVars (NPrimOp o1 as1) (NPrimOp o2 as2) =
+    o1 == o2 && equalValList usedVars as1 as2
+equalNeutral _ _ _ = False
 
 equalPackedCons :: Set Identifier -> Text -> [(Visibility, Value)] -> Bool
 equalPackedCons usedVars s args =
