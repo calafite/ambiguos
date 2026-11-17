@@ -161,44 +161,68 @@ numericBinary context op left right = do
     (elabRight, rightType0) <- synthesizeElab context right
     leftType <- zonk leftType0
     rightType <- zonk rightType0
-    let boolType = Variable (Identifier "Bool")
-    if op `elem` map Identifier ["==", "/="] && leftType == boolType && rightType == boolType
-        then do
-            let core = Application Explicit (Application Explicit (PrimOp BoolEq) elabLeft) elabRight
-                result = if op == Identifier "/=" then Application Explicit (Variable (Identifier "not")) core else core
-            pure (result, boolType)
-        else if op == Identifier "++" && isListType leftType && isListType rightType
-            then pure (Application Explicit (Application Explicit (Variable (Identifier "append")) elabLeft) elabRight, leftType)
-            else numericBinaryRest elabLeft elabRight leftType rightType
+    case op of
+        Identifier "++" -> do
+            elementType <- freshMeta context (Universe (UFixed (-1)))
+            let listType = Application Explicit (Variable (Identifier "List")) elementType
+            unify context leftType listType
+            unify context rightType listType
+            resultType <- zonk listType
+            pure (Application Explicit (Application Explicit (Variable (Identifier "append")) elabLeft) elabRight, resultType)
+        Identifier "==" -> equality False elabLeft elabRight leftType rightType
+        Identifier "/=" -> equality True elabLeft elabRight leftType rightType
+        _ -> arithmetic elabLeft elabRight leftType rightType
   where
-    isListType ty = case unfoldApp ty of
-        (Variable (Identifier "List"), [_]) -> True
+    boolType = Variable (Identifier "Bool")
+    charListType = Application Explicit (Variable (Identifier "List")) (PrimType PTChar)
+
+    equality negated elabLeft elabRight leftType rightType = do
+        (target, primitive) <- case () of
+            _ | leftType == boolType || rightType == boolType -> pure (boolType, BoolEq)
+              | isCharList leftType || isCharList rightType -> pure (charListType, StringEq)
+              | Just PTFloat <- knownPrimitive leftType rightType -> pure (PrimType PTFloat, FloatEq)
+              | Just PTChar <- knownPrimitive leftType rightType -> pure (PrimType PTChar, CharEq)
+              | otherwise -> pure (PrimType PTInt, IntEq)
+        unify context leftType target
+        unify context rightType target
+        let core = Application Explicit (Application Explicit (PrimOp primitive) elabLeft) elabRight
+            result = if negated then Application Explicit (Variable (Identifier "not")) core else core
+        pure (result, boolType)
+
+    arithmetic elabLeft elabRight leftType rightType = do
+        let targetKind = case knownPrimitive leftType rightType of
+                Just PTFloat -> PTFloat
+                Just PTInt -> PTInt
+                _ -> PTInt
+            target = PrimType targetKind
+            comparison = op `elem` map Identifier ["<", "<=", ">", ">="]
+        left' <- prepareOperand targetKind leftType elabLeft
+        right' <- prepareOperand targetKind rightType elabRight
+        case numericPrimitive op targetKind of
+            Nothing -> throwError (TypeMismatch target leftType)
+            Just primitive -> do
+                let (firstArg, secondArg) = if op `elem` map Identifier [">", ">="] then (right', left') else (left', right')
+                    core = Application Explicit (Application Explicit (PrimOp primitive) firstArg) secondArg
+                pure (core, if comparison then boolType else target)
+
+    prepareOperand targetKind operandType operand
+        | targetKind == PTFloat && numericKind operandType == Just PTInt =
+            pure (coerceNumeric targetKind operand operandType)
+        | otherwise = do
+            unify context operandType (PrimType targetKind)
+            pure operand
+
+    knownPrimitive leftType rightType = case (numericKind leftType, numericKind rightType) of
+        (Just PTFloat, _) -> Just PTFloat
+        (_, Just PTFloat) -> Just PTFloat
+        (Just PTInt, _) -> Just PTInt
+        (_, Just PTInt) -> Just PTInt
+        (Just PTChar, Just PTChar) -> Just PTChar
+        _ -> Nothing
+
+    isCharList ty = case unfoldApp ty of
+        (Variable (Identifier "List"), [(_, element)]) -> element == PrimType PTChar
         _ -> False
-    numericBinaryRest elabLeft elabRight leftType rightType = do
-        let leftPrim = numericKind leftType
-            rightPrim = numericKind rightType
-            resultKind = case (leftPrim, rightPrim) of
-                (Just PTFloat, _) -> Just PTFloat
-                (_, Just PTFloat) -> Just PTFloat
-                (Just PTInt, _) -> Just PTInt
-                (_, Just PTInt) -> Just PTInt
-                (Just PTChar, Just PTChar) -> Just PTChar
-                _ -> Nothing
-            comparison = op `elem` map Identifier ["==", "/=", "<", "<=", ">", ">="]
-        case resultKind of
-            Just kind ->
-                case numericPrimitive op kind of
-                    Just primitive -> do
-                        let target = PrimType kind
-                            l' = coerceNumeric kind elabLeft leftType
-                            r' = coerceNumeric kind elabRight rightType
-                            resultType = if comparison then Variable (Identifier "Bool") else target
-                            (firstArg, secondArg) = if op `elem` map Identifier [">", ">="] then (r', l') else (l', r')
-                            core = Application Explicit (Application Explicit (PrimOp primitive) firstArg) secondArg
-                            result = if op == Identifier "/=" then Application Explicit (Variable (Identifier "not")) core else core
-                        pure (result, resultType)
-                    Nothing -> throwError (TypeMismatch (PrimType kind) leftType)
-            _ -> throwError (TypeMismatch leftType rightType)
 
 synthesizeElab :: Context -> Expression -> Elab (Expression, Expression)
 synthesizeElab context expression = case expression of
@@ -245,7 +269,7 @@ synthesizeElab context expression = case expression of
     Hole mName -> do
         tMeta <- freshMeta context (Universe (UFixed (-1)))
         mId <- freshMetaId
-        recordMeta mId mName context tMeta
+        recordMeta True mId mName context tMeta
         pure (MetaVar mId, tMeta)
     Annotation term annotationType -> do
         (elabAnnType, annTypeUniverse) <- checkIsType context annotationType
@@ -362,8 +386,16 @@ synthesizeElab context expression = case expression of
         (bodyTypeExpr, bodyUniverse) <- synthesizeElab extendedContext bodyType
         _ <- extractUniverseLevel extendedContext bodyUniverse
         pure (Lambda vis parameter (Just elabParamType) bodyExpr, Pi vis parameter elabParamType bodyTypeExpr)
-    Lambda _ _ Nothing _ ->
-        throwError (CannotSynthesizeType expression)
+    Lambda vis parameter Nothing body -> do
+        parameterType <- freshMeta context (Universe (UFixed (-1)))
+        let extendedContext = extendContextType parameter parameterType context
+        (bodyExpr, bodyType) <- synthesizeElab extendedContext body
+        zonkedParameterType <- zonk parameterType
+        zonkedBodyType <- zonk bodyType
+        pure
+            ( Lambda vis parameter (Just zonkedParameterType) bodyExpr
+            , Pi vis parameter zonkedParameterType zonkedBodyType
+            )
 
 checkElab :: Context -> Expression -> Expression -> Elab Expression
 checkElab context expression expType = case expression of
@@ -392,7 +424,7 @@ checkElab context expression expType = case expression of
             (Literal (LitString s), ty) | ty == listCharType -> pure (Literal (LitString s))
             (Hole mName, _) -> do
                 mId <- freshMetaId
-                recordMeta mId mName context zonkedExpected
+                recordMeta True mId mName context zonkedExpected
                 pure (MetaVar mId)
             (Case target mMotive branches, _) -> do
                 (elabTarget, rawTargetType) <- synthesizeElab context target
