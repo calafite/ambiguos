@@ -14,7 +14,6 @@ module TypeChecker.Primitives
 import AST
     ( Expression (..)
     , Identifier (..)
-    , Literal (..)
     , PrimOp (..)
     , PrimType (..)
     , UniverseLevel (..)
