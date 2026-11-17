@@ -5,11 +5,13 @@ module Main (main) where
 import AST (Expression (..), Literal (..), Pattern (..), Identifier (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Evaluation (Neutral (..), Value (..), areDefinitionallyEqual, emptyEnvironment, evaluate)
 import Lexer (PosToken (..), Token (..), tokenize)
+import qualified Module
 import Parser (parseExpression, parseProgram)
 import Pretty (prettyExpression)
-import Evaluation (Value (..), emptyEnvironment, evaluate, areDefinitionallyEqual)
 import System.Exit (exitFailure)
+import TypeChecker (Context (..))
 
 assert :: Bool -> String -> IO ()
 assert True _ = pure ()
@@ -19,6 +21,16 @@ parseOrDie :: Text -> IO Expression
 parseOrDie source = case parseExpression source of
     Right e -> pure e
     Left err -> putStrLn ("FAIL: parse error in " ++ Text.unpack source ++ ": " ++ show err) >> exitFailure
+
+loadOrDie :: FilePath -> IO Context
+loadOrDie path = do
+    result <- Module.loadModule path
+    case result of
+        Left err -> putStrLn ("FAIL: module load " ++ path ++ ": " ++ show err) >> exitFailure
+        Right context -> pure context
+
+evalOrDie :: Context -> Text -> IO Value
+evalOrDie context source = evaluate (contextRuntimeEnv context) <$> parseOrDie source
 
 main :: IO ()
 main = do
@@ -55,6 +67,16 @@ main = do
     case parseProgram (Text.pack prelude) of
         Left err -> putStrLn ("FAIL: prelude parses: " ++ show err) >> exitFailure
         Right _ -> pure ()
+    preludeContext <- loadOrDie "prelude.amb"
+    reversed <- evalOrDie preludeContext "reverse \"hello\""
+    assert (reversed == VLit (LitString "olleh")) "prelude reverse evaluates"
+    lengthValue <- evalOrDie preludeContext "length \"hello\""
+    assert (lengthValue == VLit (LitInt 5)) "prelude length evaluates"
+    appended <- evalOrDie preludeContext "append \"foo\" \"bar\""
+    assert (appended == VLit (LitString "foobar")) "prelude string append evaluates"
+    bindingsContext <- loadOrDie "bindings.amb"
+    proof <- evalOrDie bindingsContext "additionZeroRight Zero"
+    assert (proof == VRefl (VNeutral (NVar (Identifier "Nat"))) (VCon (Identifier "Zero") [])) "dependent proof evaluates"
     putStrLn "ok"
 
 unwrap :: Expression -> Expression
