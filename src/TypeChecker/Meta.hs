@@ -73,7 +73,7 @@ generalizeInference context body expressionType = do
             ( Pi Implicit name (Universe (UFixed (-1))) ty
             , Lambda Implicit name (Just (Universe (UFixed (-1)))) term
             )
-        (finalType, finalBody) = foldl wrap (generalizedType, generalizedBody) names
+        (finalType, finalBody) = foldr (\name acc -> wrap acc name) (generalizedType, generalizedBody) names
     pure (finalBody, finalType)
   where
     orderedMetaIds expression = case expression of

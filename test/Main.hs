@@ -129,7 +129,7 @@ main = do
     assert (floatSum == VLit (LitFloat 2.5)) "mixed int/float arithmetic coerces to float"
     polymorphicContext <- defineOrDie inferredContext2 "myId x = x\nmyApply f x = f x"
     assertType polymorphicContext "myId" "{a :: Type} -> (x :: a) -> a"
-    assertType polymorphicContext "myApply" "{b :: Type} -> {a :: Type} -> (f :: a -> b) -> (x :: a) -> b"
+    assertType polymorphicContext "myApply" "{a :: Type} -> {b :: Type} -> (f :: a -> b) -> (x :: a) -> b"
     myIdTrue <- evalOrDie polymorphicContext "myId True"
     myIdInt <- evalOrDie polymorphicContext "myId 42"
     assert (myIdTrue == VCon (Identifier "True") []) "generalized identity accepts Bool"
