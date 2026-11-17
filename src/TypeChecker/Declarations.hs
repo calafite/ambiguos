@@ -2,6 +2,7 @@
 
 module TypeChecker.Declarations
     ( checkDataDeclaration
+    , checkStatement
     , checkRecordDeclaration
     , checkClassDeclaration
     , checkInstanceDeclaration
@@ -20,11 +21,13 @@ import AST
     ( CaseBranch (..)
     , Clause (..)
     , Expression (..)
+    , Fixity (..)
     , GuardedRhs (..)
     , Identifier (..)
     , Pattern (..)
     , RecordField (..)
     , RecordInfo (..)
+    , Statement (..)
     , UniverseLevel (..)
     , Visibility (..)
     )
@@ -61,6 +64,44 @@ import TypeChecker.Universe
     , peelIndexTelescope
     , solveUnivConstraints
     )
+
+checkStatement :: Context -> Statement -> Either TypeDiagnostic (Context, [Identifier], [Goal])
+checkStatement context statement = case statement of
+    DataDeclaration name params universe constructors ->
+        withNames (name : map fst constructors) (checkDataDeclaration context name params universe constructors)
+    RecordDeclaration name params universe fields constructor ->
+        withNames (name : map recordFieldName fields) (checkRecordDeclaration context name params universe fields constructor)
+    TypeAlias name params body ->
+        let aliasType = foldr (\(_, parameter, parameterType) codomain -> Pi Explicit parameter parameterType codomain) body params
+            aliasKind = foldr (\(_, parameter, parameterType) codomain -> Pi Explicit parameter parameterType codomain) (Universe (UFixed (-1))) params
+         in Right (extendContextDefinition name aliasKind aliasType context, [name], [])
+    Definition partial name maybeType body ->
+        withDefinitionName name (checkDefinitionWithPartial partial context name maybeType body)
+    FunctionDefinition partial name maybeType clauses ->
+        withDefinitionName name (checkFunctionDefinitionWithPartial partial context name maybeType clauses)
+    ClassDeclaration name params _ fields _ ->
+        withNames [name] (checkClassDeclaration context name params fields)
+    InstanceDeclaration className params headType methods ->
+        withNames [className] (checkInstanceDeclarationDetailed context className params headType methods)
+    Evaluation expression -> do
+        (_, _, goals) <- synthesize context expression
+        pure (context, [], goals)
+    FixityDeclaration associativity precedence operators ->
+        let updated = context{contextFixities = foldr (\operator -> Map.insert operator (Fixity associativity precedence)) (contextFixities context) operators}
+         in Right (updated, [], [])
+    _ -> Right (context, statementNames statement, [])
+  where
+    withNames names result = do
+        updated <- result
+        pure (updated, names, [])
+    withDefinitionName name result = do
+        (updated, _, goals) <- result
+        pure (updated, [name], goals)
+
+statementNames :: Statement -> [Identifier]
+statementNames statement = case statement of
+    FunctionClause (Clause name _ _ _) -> [name]
+    _ -> []
 
 checkDataDeclaration ::
     Context ->

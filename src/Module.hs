@@ -6,7 +6,7 @@ module Module
     , loadModuleWithPaths
     ) where
 
-import AST (Expression (..), Statement (..), UniverseLevel (..), Visibility (..))
+import AST (Statement (..))
 import AST (Identifier (..))
 import Control.Monad (foldM)
 import qualified Data.Map.Strict as Map
@@ -15,7 +15,7 @@ import qualified Data.Text as Text
 import Parser (parseProgramWith, defaultFixityEnv)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>), (<.>), takeExtension)
-import TypeChecker (Context (..), checkClassDeclaration, checkDataDeclaration, checkDefinitionWithPartial, checkFunctionDefinitionWithPartial, checkInstanceDeclarationDetailed, checkRecordDeclaration, emptyContext, extendContextDefinition)
+import TypeChecker (Context (..), checkStatement, emptyContext)
 
 data ModuleError
     = ModuleNotFound [FilePath]
@@ -49,8 +49,8 @@ loadModuleWithPaths searchPaths entry = do
                                 (Left err, c) -> pure (Left err, c)
                                 (Right base, c) ->
                                     case verify base statements of
-                                        Nothing -> pure (Left (ModuleTypeError path), c)
-                                        Just ctx -> pure (Right ctx, Map.insert path ctx c)
+                                        Left _ -> pure (Left (ModuleTypeError path), c)
+                                        Right ctx -> pure (Right ctx, Map.insert path ctx c)
 
     loadImport _ _ (Left err, c) _ = pure (Left err, c)
     loadImport _ stack (Right base, c) (ImportStmt _ path _ _) = do
@@ -60,19 +60,7 @@ loadModuleWithPaths searchPaths entry = do
 
     verify base statements = foldM step base statements
       where
-        step ctx stmt = case stmt of
-            DataDeclaration n ps u cs -> either (const Nothing) Just (checkDataDeclaration ctx n ps u cs)
-            TypeAlias n ps body ->
-                let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body ps
-                    aliasKind = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) (Universe (UFixed (-1))) ps
-                 in Just (extendContextDefinition n aliasKind aliasType ctx)
-            RecordDeclaration n ps u fs con -> either (const Nothing) Just (checkRecordDeclaration ctx n ps u fs con)
-            Definition partial n ty body -> either (const Nothing) (Just . first3) (checkDefinitionWithPartial partial ctx n ty body)
-            FunctionDefinition partial n ty clauses -> either (const Nothing) (Just . first3) (checkFunctionDefinitionWithPartial partial ctx n ty clauses)
-            ClassDeclaration n ps _ fs _ -> either (const Nothing) Just (checkClassDeclaration ctx n ps fs)
-            InstanceDeclaration n ps h methods -> either (const Nothing) Just (checkInstanceDeclarationDetailed ctx n ps h methods)
-            _ -> Just ctx
-        first3 (ctx, _, _) = ctx
+        step ctx stmt = fmap (\(updated, _, _) -> updated) (checkStatement ctx stmt)
 
     mergeContexts a b = Context
         { contextTypes = Map.union (contextTypes a) (contextTypes b)

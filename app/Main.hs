@@ -40,6 +40,7 @@ import TypeChecker (
     Context (..),
     DataInfo (..),
     Goal (..),
+    checkStatement,
     checkDataDeclaration,
     checkRecordDeclaration,
     checkClassDeclaration,
@@ -587,72 +588,12 @@ runStatements :: Context -> [Identifier] -> FilePath -> Text -> [Statement] -> I
 runStatements currentContext accNames _ _ [] = pure (Just (currentContext, reverse accNames))
 runStatements currentContext accNames filePath content (statement : remaining) = do
     let name = statementIdentifier statement
-    execResult <- Exception.try $ Exception.evaluate $ case statement of
-        DataDeclaration dName params univ constrs ->
-            case checkDataDeclaration currentContext dName params univ constrs of
-                Left typeError ->
-                    Left (red "✗ " <> "Type error in data '" <> bold (prettyIdentifier dName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right updatedContext -> Right updatedContext
-        RecordDeclaration rName params univ fields conName ->
-            case checkRecordDeclaration currentContext rName params univ fields conName of
-                Left typeError -> Left (red "✗ " <> "Type error in record '" <> bold (prettyIdentifier rName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right updatedContext -> Right updatedContext
-        Definition isPartial defName maybeType bodyTerm ->
-            case checkDefinitionWithPartial isPartial currentContext defName maybeType bodyTerm of
-                Left typeError ->
-                    Left (red "✗ " <> "Type error in definition '" <> bold (prettyIdentifier defName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right (updatedContext, _, goals) ->
-                    if null goals
-                        then Right updatedContext
-                        else
-                            Left
-                                ( red "✗ "
-                                    <> "Definition '"
-                                    <> bold (prettyIdentifier defName)
-                                    <> "' contains "
-                                    <> bold (Text.pack (show (length goals)))
-                                    <> " unsolved goal(s):\n"
-                                    <> renderGoals goals
-                                )
-        FunctionDefinition isPartial defName maybeType clauses ->
-            case checkFunctionDefinitionWithPartial isPartial currentContext defName maybeType clauses of
-                Left typeError -> Left (red "✗ " <> "Type error in definition '" <> bold (prettyIdentifier defName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right (updatedContext, _, goals) ->
-                    if null goals then Right updatedContext else Left (red "✗ Definition contains unsolved goals:\n" <> renderGoals goals)
-        TypeSignature _ _ -> Right currentContext
-        TypeAlias alias params body ->
-            let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body params
-                aliasKind = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) (Universe (UFixed (-1))) params
-             in Right (extendContextDefinition alias aliasKind aliasType currentContext)
-        FunctionClause _ -> Right currentContext
-        FixityDeclaration assoc prec ops ->
-            Right
-                ( currentContext
-                    { contextFixities =
-                        foldr
-                            (\op ex -> Map.insert op (Fixity assoc prec) ex)
-                            (contextFixities currentContext)
-                            ops
-                    }
-                )
-        Evaluation expression ->
-            case synthesize currentContext expression of
-                Left typeError ->
-                    Left (red "✗ " <> "Error in expression: " <> renderTypeDiagnostic Nothing (Just content) typeError)
-                Right (_, _, goals) ->
-                    if null goals
-                        then Right currentContext
-                        else Left (red "✗ " <> "Expression contains unsolved goal(s):\n" <> renderGoals goals)
-        ModuleHeader _ -> Right currentContext
-        ImportStmt _ _ _ _ -> Right currentContext
-        ClassDeclaration clsName params _ fields _defaults ->
-            case checkClassDeclaration currentContext clsName params fields of
-                Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier clsName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right updatedContext -> Right updatedContext
-        InstanceDeclaration className params headType methods ->
-            case checkInstanceDeclarationDetailed currentContext className params headType methods of
-                Left typeError -> Left (red "✗ " <> "Type error in instance '" <> bold (prettyIdentifier className) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
-                Right updatedContext -> Right updatedContext
+    execResult <- Exception.try $ Exception.evaluate $ case checkStatement currentContext statement of
+            Left typeError -> Left (red "✗ " <> "Type error in '" <> bold (prettyIdentifier name) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
+            Right (updatedContext, _, goals) ->
+                if null goals
+                    then Right updatedContext
+                    else Left (red "✗ Statement contains unsolved goal(s):\n" <> renderGoals goals)
     case execResult of
         Left (ex :: Exception.SomeException) -> do
             TextIO.putStrLn (red "✗ " <> "Internal runtime exception in '" <> bold (prettyIdentifier name) <> "': " <> Text.pack (show ex))

@@ -10,6 +10,7 @@ module TypeChecker
     , extendContextType
     , extendContextDefinition
     , checkDataDeclaration
+    , checkStatement
     , checkRecordDeclaration
     , checkClassDeclaration
     , checkInstanceDeclaration
@@ -30,6 +31,7 @@ import TypeChecker.Declarations
     ( check
     , checkClassDeclaration
     , checkDataDeclaration
+    , checkStatement
     , checkDefinition
     , checkDefinitionWithPartial
     , checkFunctionDefinition
