@@ -627,15 +627,10 @@ parseInstanceDeclaration env = parseDetailed <|> parseLegacy
         rest <- many (expectToken TokenPipe "'|'" *> parseClause)
         pure (first : rest)
     parseClause = do
-        patterns <- many (normalize <$> parseCasePattern)
+        patterns <- many parseCasePattern
         expectToken TokenEquals "'='"
         body <- expressionParser env
         pure (patterns, body)
-    normalize (PatCon n [])
-        | unIdentifier n `notElem` ["nil", "true", "false", "zero", "successor", "nothing"] = PatVar n
-    normalize (PatCon n ps) = PatCon n (map normalize ps)
-    normalize (PatTuple ps) = PatTuple (map normalize ps)
-    normalize p = p
     parseLegacy = do
         expectToken TokenKeywordInstance "'instance'"
         className <- parseIdentifier
