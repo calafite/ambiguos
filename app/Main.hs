@@ -3,7 +3,7 @@
 
 module Main (main) where
 
-import AST (Clause (..), Expression (..), Fixity (..), Identifier (..), RecordField (..), Statement (..), Visibility (..))
+import AST (Clause (..), Expression (..), Fixity (..), Identifier (..), RecordField (..), Statement (..), UniverseLevel (..), Visibility (..))
 import qualified Control.Exception as Exception
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (unless)
@@ -43,12 +43,11 @@ import TypeChecker (
     checkDataDeclaration,
     checkRecordDeclaration,
     checkClassDeclaration,
-    checkInstanceDeclaration,
     checkInstanceDeclarationDetailed,
     checkDefinitionWithPartial,
     checkFunctionDefinitionWithPartial,
     emptyContext,
-    extendContextType,
+    extendContextDefinition,
     lookupContext,
     renderGoals,
     renderTypeDiagnostic,
@@ -441,7 +440,8 @@ processStatement contextRef input
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
             Right (TypeAlias name params body) -> do
                 let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body params
-                let updatedContext = extendContextType name aliasType ctx
+                    aliasKind = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) (Universe (UFixed (-1))) params
+                let updatedContext = extendContextDefinition name aliasKind aliasType ctx
                 outputStrLn (Text.unpack (green "✓" <> " Defined type " <> bold (prettyIdentifier name)))
                 liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
             Right (ClassDeclaration name params _ fields _) ->
@@ -450,8 +450,8 @@ processStatement contextRef input
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined class " <> bold (prettyIdentifier name)))
                         liftIO (modifyIORef' contextRef (\s -> s{replContext = updatedContext, replLastGoals = []}))
-            Right (InstanceDeclaration className _params headType _methods) ->
-                case checkInstanceDeclaration ctx className headType [] of
+            Right (InstanceDeclaration className params headType methods) ->
+                case checkInstanceDeclarationDetailed ctx className params headType methods of
                     Left typeError -> outputStrLn (Text.unpack (red "✗ " <> renderTypeDiagnostic Nothing (Just input) typeError))
                     Right updatedContext -> do
                         outputStrLn (Text.unpack (green "✓" <> " Defined instance for " <> bold (prettyIdentifier className)))
@@ -622,7 +622,8 @@ runStatements currentContext accNames filePath content (statement : remaining) =
         TypeSignature _ _ -> Right currentContext
         TypeAlias alias params body ->
             let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body params
-             in Right (extendContextType alias aliasType currentContext)
+                aliasKind = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) (Universe (UFixed (-1))) params
+             in Right (extendContextDefinition alias aliasKind aliasType currentContext)
         FunctionClause _ -> Right currentContext
         FixityDeclaration assoc prec ops ->
             Right
@@ -648,8 +649,8 @@ runStatements currentContext accNames filePath content (statement : remaining) =
             case checkClassDeclaration currentContext clsName params fields of
                 Left typeError -> Left (red "✗ " <> "Type error in class '" <> bold (prettyIdentifier clsName) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
-        InstanceDeclaration className _params headType _methods ->
-            case checkInstanceDeclaration currentContext className headType [] of
+        InstanceDeclaration className params headType methods ->
+            case checkInstanceDeclarationDetailed currentContext className params headType methods of
                 Left typeError -> Left (red "✗ " <> "Type error in instance '" <> bold (prettyIdentifier className) <> "':\n  " <> renderTypeDiagnostic (Just filePath) (Just content) typeError)
                 Right updatedContext -> Right updatedContext
     case execResult of

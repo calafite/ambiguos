@@ -6,7 +6,7 @@ module Module
     , loadModuleWithPaths
     ) where
 
-import AST (Expression (..), Statement (..), Visibility (..))
+import AST (Expression (..), Statement (..), UniverseLevel (..), Visibility (..))
 import AST (Identifier (..))
 import Control.Monad (foldM)
 import qualified Data.Map.Strict as Map
@@ -15,7 +15,7 @@ import qualified Data.Text as Text
 import Parser (parseProgramWith, defaultFixityEnv)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>), (<.>), takeExtension)
-import TypeChecker (Context (..), checkClassDeclaration, checkDataDeclaration, checkDefinitionWithPartial, checkFunctionDefinitionWithPartial, checkInstanceDeclaration, checkInstanceDeclarationDetailed, checkRecordDeclaration, emptyContext, extendContextType)
+import TypeChecker (Context (..), checkClassDeclaration, checkDataDeclaration, checkDefinitionWithPartial, checkFunctionDefinitionWithPartial, checkInstanceDeclarationDetailed, checkRecordDeclaration, emptyContext, extendContextDefinition)
 
 data ModuleError
     = ModuleNotFound [FilePath]
@@ -64,12 +64,13 @@ loadModuleWithPaths searchPaths entry = do
             DataDeclaration n ps u cs -> either (const Nothing) Just (checkDataDeclaration ctx n ps u cs)
             TypeAlias n ps body ->
                 let aliasType = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) body ps
-                 in Just (extendContextType n aliasType ctx)
+                    aliasKind = foldr (\(_, p, ty) cod -> Pi Explicit p ty cod) (Universe (UFixed (-1))) ps
+                 in Just (extendContextDefinition n aliasKind aliasType ctx)
             RecordDeclaration n ps u fs con -> either (const Nothing) Just (checkRecordDeclaration ctx n ps u fs con)
             Definition partial n ty body -> either (const Nothing) (Just . first3) (checkDefinitionWithPartial partial ctx n ty body)
             FunctionDefinition partial n ty clauses -> either (const Nothing) (Just . first3) (checkFunctionDefinitionWithPartial partial ctx n ty clauses)
             ClassDeclaration n ps _ fs _ -> either (const Nothing) Just (checkClassDeclaration ctx n ps fs)
-            InstanceDeclaration n _ps h _methods -> either (const Nothing) Just (checkInstanceDeclaration ctx n h [])
+            InstanceDeclaration n ps h methods -> either (const Nothing) Just (checkInstanceDeclarationDetailed ctx n ps h methods)
             _ -> Just ctx
         first3 (ctx, _, _) = ctx
 

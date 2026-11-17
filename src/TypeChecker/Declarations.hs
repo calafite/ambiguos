@@ -201,16 +201,13 @@ checkClassDeclaration :: Context -> Identifier -> [(Visibility, Identifier, Expr
 checkClassDeclaration context name params fields =
     checkRecordDeclaration context name params (Universe (UFixed (-1))) fields Nothing
 
-checkInstanceDeclarationDetailed :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> Expression -> [Clause] -> Either TypeDiagnostic Context
-checkInstanceDeclarationDetailed context className _params headType clauses = do
-    info <- case Map.lookup className (contextRecords context) of
-        Just x -> Right x
+checkInstanceDeclarationDetailed :: Context -> Identifier -> [(Visibility, Identifier, Expression)] -> Expression -> [(Identifier, [Clause])] -> Either TypeDiagnostic Context
+checkInstanceDeclarationDetailed context className _params headType methods = do
+    case Map.lookup className (contextRecords context) of
         Nothing -> Left (TypeDiagnostic Nothing [] (UnboundVariable className))
-    field <- case recordFields info of
-        (f : _) -> Right f
-        [] -> Left (TypeDiagnostic Nothing [] (CannotSynthesizeType (Variable className)))
-    let methodBody = compileClauses Nothing clauses
-    checkInstanceDeclaration context className headType [(recordFieldName field, methodBody)]
+        Just _info ->
+            let supplied = [(name, compileClauses Nothing clauses) | (name, clauses) <- methods]
+             in checkInstanceDeclaration context className headType supplied
 
 checkInstanceDeclaration :: Context -> Identifier -> Expression -> [(Identifier, Expression)] -> Either TypeDiagnostic Context
 checkInstanceDeclaration context className headType fields = do
