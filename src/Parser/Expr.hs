@@ -9,7 +9,6 @@ module Parser.Expr
 
 import AST (Expression (..), Identifier (..), Visibility (..))
 import Control.Applicative (Alternative (..))
-import qualified Data.Text as Text
 import Lexer (Token (..), PosToken (..), SourcePos (..))
 import Parser.Monad
 
