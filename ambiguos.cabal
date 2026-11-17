@@ -28,6 +28,7 @@ library
                     , Layout
                     , Lexer
                     , Parser
+                    , Parser.Monad
                     , Pretty
                     , Substitution
                     , TypeChecker
