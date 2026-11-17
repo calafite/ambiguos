@@ -28,6 +28,7 @@ library
                     , Layout
                     , Lexer
                     , Parser
+                    , Parser.Grammar
                     , Parser.Monad
                     , Parser.Pattern
                     , Parser.Decl
