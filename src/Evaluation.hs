@@ -139,10 +139,35 @@ evalCase env targetVal branches =
     matchBranches _ _ [] = Nothing
     matchBranches e v (CaseBranch pat rhss _ : bs) =
         case tryMatch pat v of
-            Just bindings -> Just (evaluate (foldr (uncurry Map.insert) e bindings) (guardedRhsBody (head rhss)))
+            Just bindings -> case evalGuards e bindings rhss of
+                Just res -> Just res
+                Nothing -> matchBranches e v bs
             Nothing -> matchBranches e v bs
+
+    evalGuards e bindings [] = Nothing
+    evalGuards e bindings (GuardedRhs guards body : rest) =
+        let e' = insertBindings e bindings
+         in case allGuardsTrue e' guards of
+                Just True  -> Just (evaluate e' body)
+                Just False -> evalGuards e bindings rest
+                Nothing    -> evalGuards e bindings rest
+
+    allGuardsTrue _ [] = Just True
+    allGuardsTrue env (BoolGuard cond : gs) =
+        case evaluate env cond of
+            VCon (Identifier "True") [] -> allGuardsTrue env gs
+            VCon (Identifier "False") [] -> Just False
+            _ -> Nothing
+    allGuardsTrue env (PatGuard _ _ : _) = Nothing
+
+    insertBindings env bindings = foldr (uncurry Map.insert) env bindings
+
     tryMatch PatWild _ = Just []
     tryMatch (PatVar x) v = Just [(x, v)]
+    tryMatch (PatAs x pat) v =
+        case tryMatch pat v of
+            Just bindings -> Just ((x, v) : bindings)
+            Nothing -> Nothing
     tryMatch (PatLit lit) (VLit vlit) | lit == vlit = Just []
     tryMatch (PatLit _) _ = Nothing
     tryMatch (PatCon (Identifier "[]") []) (VLit (LitString s))
@@ -155,8 +180,15 @@ evalCase env targetVal branches =
         case val of
             VCon c args | c == con ->
                 let explicitArgs = [a | (Explicit, a) <- args]
-                 in if length explicitArgs == length pats then concat <$> zipWithM tryMatch pats explicitArgs else Nothing
+                in if length explicitArgs == length pats
+                       then concat <$> zipWithM tryMatch pats explicitArgs
+                       else Nothing
             _ -> Nothing
+    tryMatch (PatTuple pats) (VCon (Identifier "Pair") args) =
+        let explicitArgs = [a | (Explicit, a) <- args]
+        in if length explicitArgs == length pats
+               then concat <$> zipWithM tryMatch pats explicitArgs
+               else Nothing
     tryMatch _ _ = Nothing
 
 -- | Semantic function application.
@@ -298,9 +330,9 @@ applyPrimOp operation args = case (operation, args) of
     boolValue False = VCon (Identifier "False") []
 
 evalJ :: Value -> Value -> Value -> Value -> Value -> Value -> Value
-evalJ typeA x motiveP baseCaseD y proof = case proof of
-    VRefl _ _ | x == y -> baseCaseD
-    _ -> VNeutral (NJ typeA x motiveP baseCaseD y (NStuck proof))
+evalJ _ _ _ baseCaseD _ (VRefl _ _) = baseCaseD
+evalJ typeA x motiveP baseCaseD y proof =
+    VNeutral (NJ typeA x motiveP baseCaseD y (NStuck proof))
 
 evalAbort :: Value -> Value
 evalAbort v = VNeutral (NAbort VVoidType (NStuck v))
@@ -471,6 +503,8 @@ equalNeutral usedVars (NAbort t1 v1) (NAbort t2 v2) =
 equalNeutral usedVars (NStuck x) (NStuck y) = equalVal usedVars x y
 equalNeutral usedVars (NPrimOp o1 as1) (NPrimOp o2 as2) =
     o1 == o2 && equalValList usedVars as1 as2
+equalNeutral usedVars (NCase t1 bs1 e1) (NCase t2 bs2 e2) =
+    equalNeutral usedVars t1 t2 && bs1 == bs2 && e1 == e2
 equalNeutral _ _ _ = False
 
 equalPackedCons :: Set Identifier -> Text -> [(Visibility, Value)] -> Bool
