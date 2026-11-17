@@ -45,7 +45,7 @@ import TypeChecker.Elaboration
     ( checkElab
     , synthesizeElab
     )
-import TypeChecker.Meta (collectUnsolvedGoals, zonk)
+import TypeChecker.Meta (collectUnsolvedGoals, generalizeInference, zonk)
 import TypeChecker.Termination (checkPositive, checkTerminationElab)
 import TypeChecker.Types
     ( Context (..)
@@ -356,13 +356,17 @@ checkDefinitionWithPartial isPartial context name maybeDeclaredType bodyTerm =
                                 unless isPartial (checkTerminationElab name zonkedBodyTerm)
                                 zonkedFinalType <- zonk zonkedType
                                 pure (zonkedBodyTerm, zonkedFinalType)
+                    (finalBody, generalizedType) <-
+                        if maybeDeclaredType == Nothing
+                            then generalizeInference context zonkedBody finalType
+                            else pure (zonkedBody, finalType)
                     goals <- collectUnsolvedGoals
                     solveUnivConstraints
                     let updatedContext =
                             if isPartial
-                                then extendContextPartialDefinition name finalType zonkedBody context
-                                else extendContextDefinition name finalType zonkedBody context
-                    pure (updatedContext, finalType, goals)
+                                then extendContextPartialDefinition name generalizedType finalBody context
+                                else extendContextDefinition name generalizedType finalBody context
+                    pure (updatedContext, generalizedType, goals)
             )
             (ElabState 0 Map.empty Map.empty Nothing [] 0 [])
 
