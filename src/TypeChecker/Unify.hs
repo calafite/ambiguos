@@ -8,9 +8,11 @@ module TypeChecker.Unify
 
 import AST
     ( Expression (..)
+    , Identifier (..)
     , Visibility (..)
     )
 import Control.Monad.State.Strict (gets)
+import Control.Monad (foldM)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Evaluation (areDefinitionallyEqual, evaluateWeakHeadNormalForm)
@@ -34,6 +36,7 @@ import TypeChecker.Types
     , extendContextType
     , throwError
     , tryElab
+    , catchElab
     )
 import TypeChecker.Universe (addUnivConstraint)
 
@@ -147,27 +150,56 @@ instantiateLeadingImplicits context expr exprType = do
             pure (expr, zonkedType)
 
 resolveInstance :: Context -> Expression -> Elab Expression
-resolveInstance context domain = do
-    let (headExpr, _) = unfoldApp domain
-        className = case headExpr of
-            Variable name -> Just name
-            _ -> Nothing
-        localCandidates =
-            [ name
-            | name <- contextLocals context
-            , Just ty <- [Map.lookup name (contextTypes context)]
-            , areDefinitionallyEqual (contextEnv context) ty domain
-            ]
-        registeredCandidates = case className of
-            Nothing -> []
-            Just name ->
-                [ instanceName
-                | instanceName <- Map.findWithDefault [] name (contextInstances context)
-                , Just ty <- [Map.lookup instanceName (contextTypes context)]
-                , areDefinitionallyEqual (contextEnv context) ty domain
-                ]
-        candidates = Set.toList (Set.fromList (localCandidates ++ registeredCandidates))
-    case candidates of
-        [name] -> pure (Variable name)
-        [] -> throwError (NoInstanceFound domain)
-        names -> throwError (AmbiguousInstance domain names)
+resolveInstance context domain = resolveInstanceDepth context 10 domain
+
+-- | Resolve a type class instance for `domain` (e.g. `Eq Int`, `Ord a`).
+-- Handles constrained instances (`C a => D b`) by recursively resolving the
+-- constraint, with a depth limit to avoid non-terminating resolution.
+resolveInstanceDepth :: Context -> Int -> Expression -> Elab Expression
+resolveInstanceDepth _ 0 dom = throwError (NoInstanceFound dom)
+resolveInstanceDepth context depth dom =
+    case depth <= 0 of
+        True -> throwError (NoInstanceFound dom)
+        False -> do
+            let (headExpr, _) = unfoldApp dom
+                mClass = case headExpr of
+                    Variable n -> Just n
+                    _ -> Nothing
+            case mClass of
+                Nothing -> throwError (NoInstanceFound dom)
+                Just cn -> do
+                    let candidates = Map.findWithDefault [] cn (contextInstances context)
+                    result <- foldM (\acc name -> case acc of
+                                        Just _ -> pure acc
+                                        Nothing -> tryCandidate context depth name dom) Nothing candidates
+                    case result of
+                        Just expr -> pure expr
+                        Nothing -> throwError (NoInstanceFound dom)
+
+tryCandidate :: Context -> Int -> Identifier -> Expression -> Elab (Maybe Expression)
+tryCandidate context depth name dom = do
+    let mTy = Map.lookup name (contextTypes context)
+    case mTy of
+        Nothing -> pure Nothing
+        Just ty -> catchElab
+            (do
+                result <- matchInstance context ty dom
+                case result of
+                    Nothing -> pure Nothing
+                    Just (mConstraint, dictExpr) -> case mConstraint of
+                        Nothing -> pure (Just dictExpr)
+                        Just constraint -> do
+                            ev <- resolveInstanceDepth context (depth - 1) constraint
+                            pure (Just (Application Explicit dictExpr ev))
+            )
+            (\_ -> pure Nothing)
+  where
+    matchInstance :: Context -> Expression -> Expression -> Elab (Maybe (Maybe Expression, Expression))
+    matchInstance ctx ty dom =
+        case ty of
+            Pi Instance _ constraint result -> do
+                unify ctx result dom
+                pure (Just (Just constraint, Variable name))
+            _ -> do
+                unify ctx ty dom
+                pure (Just (Nothing, Variable name))

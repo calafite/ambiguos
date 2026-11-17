@@ -689,7 +689,7 @@ parseInstanceDeclaration env = parseDetailed <|> parseLegacy
         params <- many (parseDataParameter env)
         expectToken TokenArrow "'->'"
         className <- parseIdentifier
-        headType <- parseInfix env 0
+        headType <- expressionParser env
         expectToken TokenKeywordWhere "'where'"
         expectToken TokenLeftBrace "'{'"
         clauses <- parseClauses
@@ -709,9 +709,9 @@ parseInstanceDeclaration env = parseDetailed <|> parseLegacy
     parseLegacy = do
         expectToken TokenKeywordInstance "'instance'"
         className <- parseIdentifier
-        headType <- parseInfix env 0
+        headType <- expressionParser env
         expectToken TokenKeywordWhere "'where'"
-        expectToken TokenLeftBrace "'{'"
+        expectToken TokenLeftBrace "'}'"
         fields <- parseInstanceFields
         expectToken TokenRightBrace "'}'"
         pure (InstanceDeclaration className [] headType

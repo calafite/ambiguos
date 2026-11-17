@@ -277,9 +277,12 @@ checkInstanceDeclaration context className headType fields = do
         ordered = traverse (\f -> case Map.lookup (recordFieldName f) supplied of
                 Just value -> Right value
                 Nothing -> maybe (Left (TypeDiagnostic Nothing [] (UnknownField (recordFieldName f) className))) Right (Map.lookup (recordFieldName f) defaults)) (recordFields info)
-        instanceType = Application Explicit (Variable className) headType
     values <- ordered
-    let dict = foldl (Application Explicit) (Variable (recordConName info)) values
+    let instanceType =
+            case headType of
+                Pi Instance _ _ _ -> headType
+                _ -> Application Explicit (Variable className) headType
+        dict = foldl (Application Explicit) (Variable (recordConName info)) values
     (updated, _, _) <- checkDefinition context instanceName (Just instanceType) dict
     Right updated { contextInstances = Map.insertWith (++) className [instanceName] (contextInstances updated) }
 
