@@ -59,6 +59,7 @@ data Goal = Goal
 
 data MetaInfo = MetaInfo
     { metaInfoName :: !(Maybe Identifier)
+    , metaIsUserHole :: !Bool
     , metaInfoExpected :: !Expression
     , metaInfoContext :: !Context
     }
