@@ -2,7 +2,7 @@
 
 module Main (main) where
 
-import AST (Expression (..), Literal (..), Pattern (..), Identifier (..))
+import AST (Expression (..), Literal (..), Pattern (..), Identifier (..), PrimType (..), Visibility (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Evaluation (Neutral (..), Value (..), areDefinitionallyEqual, emptyEnvironment, evaluate)
@@ -11,7 +11,7 @@ import qualified Module
 import Parser (parseExpression, parseProgram)
 import Pretty (prettyExpression)
 import System.Exit (exitFailure)
-import TypeChecker (Context (..))
+import TypeChecker (Context (..), synthesize)
 
 assert :: Bool -> String -> IO ()
 assert True _ = pure ()
@@ -30,7 +30,11 @@ loadOrDie path = do
         Right context -> pure context
 
 evalOrDie :: Context -> Text -> IO Value
-evalOrDie context source = evaluate (contextRuntimeEnv context) <$> parseOrDie source
+evalOrDie context source = do
+    expression <- parseOrDie source
+    case synthesize context expression of
+        Left err -> putStrLn ("FAIL: type error in " ++ Text.unpack source ++ ": " ++ show err) >> exitFailure
+        Right (elaborated, _, _) -> pure (evaluate (contextRuntimeEnv context) elaborated)
 
 main :: IO ()
 main = do
@@ -77,6 +81,11 @@ main = do
     bindingsContext <- loadOrDie "bindings.amb"
     proof <- evalOrDie bindingsContext "additionZeroRight Zero"
     assert (proof == VRefl (VNeutral (NVar (Identifier "Nat"))) (VCon (Identifier "Zero") [])) "dependent proof evaluates"
+    chuddyContext <- loadOrDie "chuddy.amb"
+    fibonacciValue <- evalOrDie chuddyContext "fibonacci 8"
+    assert (fibonacciValue == VLit (LitInt 21)) "partial fibonacci evaluates"
+    lastValue <- evalOrDie chuddyContext "lastElement [1, 2, 3]"
+    assert (lastValue == VCon (Identifier "Just") [(Implicit, VPrimType PTInt), (Explicit, VLit (LitInt 3))]) "polymorphic list pattern evaluates"
     putStrLn "ok"
 
 unwrap :: Expression -> Expression
