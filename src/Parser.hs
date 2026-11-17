@@ -1028,7 +1028,9 @@ parseFunctionEquation env isPartial = do
                 _ -> do
                     hasDefinition <- optional (expectToken TokenEquals "'='")
                     case hasDefinition of
-                        Nothing -> pure (TypeSignature name signature)
+                        Nothing
+                            | isPartial -> pure (FunctionDefinition True name (Just signature) [])
+                            | otherwise -> pure (TypeSignature name signature)
                         Just () -> do
                             bodyExpr <- parseLineExpression env
                             pure (Definition isPartial name (Just signature) bodyExpr)
