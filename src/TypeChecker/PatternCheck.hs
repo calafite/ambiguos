@@ -28,7 +28,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Evaluation (evaluateWeakHeadNormalForm)
 import Substitution (substitute)
-import TypeChecker.Meta (freshMeta, unfoldApp)
+import TypeChecker.Meta (freshMeta, unfoldApp, zonk)
 import TypeChecker.Types
     ( Context (..)
     , DataInfo (..)
@@ -51,9 +51,50 @@ checkCaseBranches ::
     [CaseBranch] ->
     Elab [CaseBranch]
 checkCaseBranches checkElab' context elabTarget whnfTargetType expType mMotive branches = do
-    case whnfTargetType of
+    zonkedTargetType <- zonk whnfTargetType
+    inferredTargetType <- inferMetaTargetType context zonkedTargetType branches
+    let targetType = evaluateWeakHeadNormalForm (contextEnv context) inferredTargetType
+    case targetType of
         PrimType pt -> checkPrimitiveCaseBranches checkElab' context pt expType branches
-        _ -> checkDataCaseBranches checkElab' context elabTarget whnfTargetType expType mMotive branches
+        _ -> checkDataCaseBranches checkElab' context elabTarget targetType expType mMotive branches
+
+inferMetaTargetType :: Context -> Expression -> [CaseBranch] -> Elab Expression
+inferMetaTargetType context targetType branches = case targetType of
+    MetaVar i -> do
+        case firstConstructor branches of
+            Just constructor ->
+                case findConstructorType constructor (Map.toList (contextData context)) of
+                    Just (dataName, info) -> do
+                        parameters <- mapM (\(_, _, parameterType) -> freshMeta context parameterType) (dataParams info)
+                        let inferred = foldl (Application Explicit) (Variable dataName) parameters
+                        unify context (MetaVar i) inferred
+                        zonk inferred
+                    Nothing -> pure targetType
+            Nothing -> case firstLiteral branches of
+                Just literal -> do
+                    let inferred = literalType literal
+                    unify context (MetaVar i) inferred
+                    pure inferred
+                Nothing -> pure targetType
+    _ -> pure targetType
+  where
+    firstConstructor [] = Nothing
+    firstConstructor (CaseBranch (PatCon constructor _) _ _ : _) = Just constructor
+    firstConstructor (_ : rest) = firstConstructor rest
+
+    firstLiteral [] = Nothing
+    firstLiteral (CaseBranch (PatLit literal) _ _ : _) = Just literal
+    firstLiteral (_ : rest) = firstLiteral rest
+
+    findConstructorType _ [] = Nothing
+    findConstructorType constructor ((dataName, info) : rest)
+        | any ((== constructor) . fst) (dataConstructors info) = Just (dataName, info)
+        | otherwise = findConstructorType constructor rest
+
+    literalType (LitInt _) = PrimType PTInt
+    literalType (LitFloat _) = PrimType PTFloat
+    literalType (LitChar _) = PrimType PTChar
+    literalType (LitString _) = Application Explicit (Variable (Identifier "List")) (PrimType PTChar)
 
 checkPrimitiveCaseBranches ::
     (Context -> Expression -> Expression -> Elab Expression) ->
@@ -63,7 +104,7 @@ checkPrimitiveCaseBranches ::
     [CaseBranch] ->
     Elab [CaseBranch]
 checkPrimitiveCaseBranches checkElab' context pt expType branches = do
-    let defaultSeen = any (\(CaseBranch pat _ _) -> case pat of { PatWild -> True; PatVar _ -> True; PatCon _ [] -> True; _ -> False }) branches
+    let defaultSeen = any (\(CaseBranch pat _ _) -> case pat of { PatWild -> True; PatVar _ -> True; _ -> False }) branches
     if not defaultSeen
         then throwError (NonExhaustivePatternMatch (Identifier (Text.pack (show pt))) [Identifier "_"])
         else traverse checkOne branches
@@ -73,7 +114,6 @@ checkPrimitiveCaseBranches checkElab' context pt expType branches = do
                 GuardedRhs _ rhs : _ -> rhs
                 [] -> Hole Nothing
             (effectivePat, branchContext) = case pat of
-                PatCon n [] -> (PatVar n, extendContextType n (PrimType pt) context)
                 PatVar n -> (PatVar n, extendContextType n (PrimType pt) context)
                 PatWild -> (PatWild, context)
                 PatLit (LitInt n) | pt == PTInt -> (PatLit (LitInt n), context)
