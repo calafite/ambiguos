@@ -66,10 +66,7 @@ freeVariablesRhs (GuardedRhs guards body) =
 freeVariablesGuard :: Guard -> Set Identifier
 freeVariablesGuard (BoolGuard expr) = freeVariables expr
 freeVariablesGuard (PatGuard pat expr) =
-    Set.delete (patternVar pat) (freeVariables expr)
-  where
-    patternVar (PatVar v) = v
-    patternVar _ = error "freeVariablesGuard: non-variable pattern guard"
+    foldr Set.delete (freeVariables expr) (patternBindings pat)
 
 freshIdentifier :: Identifier -> Set Identifier -> Identifier
 freshIdentifier (Identifier baseName) usedIdentifiers =
