@@ -36,7 +36,7 @@ import TypeChecker.Meta
     , unfoldApp
     , zonk
     )
-import TypeChecker.PatternCheck (checkCaseBranches, compilePatternCase)
+import TypeChecker.PatternCheck (checkCaseBranches)
 import TypeChecker.Primitives
     ( coerceNumeric
     , intSuccessorExpression

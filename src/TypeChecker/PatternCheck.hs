@@ -1,8 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module TypeChecker.PatternCheck
-    ( compilePatternCase
-    , peelConstructorArgs
+    ( peelConstructorArgs
     , isConNonAbsurd
     , extractConIndexArgs
     , unifyIndexArgs
@@ -299,6 +298,7 @@ peelConstructorArgs ctx (v : vs) ty = do
         other ->
             throwError (ExpectedFunctionType other)
 
+{- Dead legacy compiler retained temporarily for source compatibility history.
 compilePatternCase ::
     (Context -> Expression -> Elab (Expression, Expression)) ->
     Context ->
@@ -348,3 +348,4 @@ compilePatternCase synElab context target clauses = do
                  in [CaseBranch (PatCon con (map PatVar args)) [GuardedRhs [] nested] []]
             PatLit _ -> expandWild body
     pure (concatMap (uncurry compileTop) clauses)
+-}
