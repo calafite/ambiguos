@@ -12,6 +12,7 @@ module TypeChecker.Meta
     , checkPatternSpine
     , isLinear
     , solvePattern
+    , generalizeInference
     ) where
 
 import AST
@@ -23,8 +24,10 @@ import AST
     , Visibility (..)
     )
 import Control.Monad.State.Strict (gets, modify)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import qualified Data.Text as Text
 import Evaluation (evaluateWeakHeadNormalForm)
 import Substitution (freeVariables)
 import TypeChecker.Types
@@ -46,19 +49,84 @@ freshMetaId = do
 freshMeta :: Context -> Expression -> Elab Expression
 freshMeta ctx expType = do
     mId <- freshMetaId
-    recordMeta mId Nothing ctx expType
+    recordMeta False mId Nothing ctx expType
     pure (MetaVar mId)
 
-recordMeta :: Int -> Maybe Identifier -> Context -> Expression -> Elab ()
-recordMeta mId mName context expType = do
-    let info = MetaInfo mName expType context
+generalizeInference :: Context -> Expression -> Expression -> Elab (Expression, Expression)
+generalizeInference context body expressionType = do
+    registry <- gets metaRegistry
+    substitutions <- gets metaSubst
+    let candidates =
+            List.nub
+                [ mId
+                | mId <- orderedMetaIds expressionType
+                , Map.notMember mId substitutions
+                , Just info <- [Map.lookup mId registry]
+                , not (metaIsUserHole info)
+                ]
+        used = Set.unions [Set.fromList (Map.keys (contextTypes context)), freeVariables expressionType, freeVariables body]
+        names = freshNames used candidates
+        replacements = Map.fromList (zip candidates names)
+        generalizedType = replaceMetas replacements expressionType
+        generalizedBody = replaceMetas replacements body
+        wrap (ty, term) name =
+            ( Pi Implicit name (Universe (UFixed (-1))) ty
+            , Lambda Implicit name (Just (Universe (UFixed (-1)))) term
+            )
+        (finalType, finalBody) = foldl wrap (generalizedType, generalizedBody) names
+    pure (finalBody, finalType)
+  where
+    orderedMetaIds expression = case expression of
+        MetaVar mId -> [mId]
+        Application _ f a -> orderedMetaIds f ++ orderedMetaIds a
+        Lambda _ _ maybeType term -> maybe [] orderedMetaIds maybeType ++ orderedMetaIds term
+        Pi _ _ domain codomain -> orderedMetaIds domain ++ orderedMetaIds codomain
+        Let _ maybeType definition term -> maybe [] orderedMetaIds maybeType ++ orderedMetaIds definition ++ orderedMetaIds term
+        Case target motive branches ->
+            orderedMetaIds target
+                ++ maybe [] (orderedMetaIds . snd) motive
+                ++ concatMap (concatMap (orderedMetaIds . guardedRhsBody . id) . branchRhss) branches
+        Annotation term ty -> orderedMetaIds term ++ orderedMetaIds ty
+        Located _ inner -> orderedMetaIds inner
+        Projection term _ -> orderedMetaIds term
+        RecordLiteral _ fields -> concatMap (orderedMetaIds . snd) fields
+        Tuple elements -> concatMap orderedMetaIds elements
+        _ -> []
+
+    freshNames used ids =
+        take (length ids) [candidate | index <- [0 ..], let candidate = nameAt index, Set.notMember candidate used]
+      where
+        nameAt index
+            | index < 26 = Identifier (Text.singleton (toEnum (fromEnum 'a' + index)))
+            | otherwise = Identifier ("a" <> Text.pack (show index))
+
+    replaceMetas replacements expression = case expression of
+        MetaVar mId -> maybe expression Variable (Map.lookup mId replacements)
+        Application visibility f a -> Application visibility (replaceMetas replacements f) (replaceMetas replacements a)
+        Lambda visibility parameter maybeType body -> Lambda visibility parameter (replaceMetas replacements <$> maybeType) (replaceMetas replacements body)
+        Pi visibility parameter domain codomain -> Pi visibility parameter (replaceMetas replacements domain) (replaceMetas replacements codomain)
+        Let parameter maybeType definition body -> Let parameter (replaceMetas replacements <$> maybeType) (replaceMetas replacements definition) (replaceMetas replacements body)
+        Case target motive branches -> Case (replaceMetas replacements target) ((\(name, ty) -> (name, replaceMetas replacements ty)) <$> motive) (map replaceBranch branches)
+          where
+            replaceBranch branch = branch{branchRhss = map replaceRhs (branchRhss branch)}
+            replaceRhs rhs = rhs{guardedRhsBody = replaceMetas replacements (guardedRhsBody rhs)}
+        Annotation term ty -> Annotation (replaceMetas replacements term) (replaceMetas replacements ty)
+        Located spanInfo inner -> Located spanInfo (replaceMetas replacements inner)
+        Projection term field -> Projection (replaceMetas replacements term) field
+        RecordLiteral recName fields -> RecordLiteral recName [(name, replaceMetas replacements value) | (name, value) <- fields]
+        Tuple elements -> Tuple (map (replaceMetas replacements) elements)
+        other -> other
+
+recordMeta :: Bool -> Int -> Maybe Identifier -> Context -> Expression -> Elab ()
+recordMeta isUserHole mId mName context expType = do
+    let info = MetaInfo mName isUserHole expType context
     modify (\s -> s{metaRegistry = Map.insert mId info (metaRegistry s)})
 
 collectUnsolvedGoals :: Elab [Goal]
 collectUnsolvedGoals = do
     registry <- gets metaRegistry
     substMap <- gets metaSubst
-    let unsolved = Map.filterWithKey (\mId _ -> Map.notMember mId substMap) registry
+    let unsolved = Map.filterWithKey (\mId info -> metaIsUserHole info && Map.notMember mId substMap) registry
     traverse toGoal (Map.toList unsolved)
   where
     toGoal (mId, info) = do
