@@ -17,7 +17,6 @@ module Parser (
 
 import AST (CaseBranch (..), Clause (..), Expression (..), Fixity (..), Guard (..), GuardedRhs (..), Identifier (..), Literal (..), Pattern (..), PrimOp (..), PrimType (..), RecordField (..), Statement (..), UniverseLevel (..), Associativity (..), Visibility (..))
 import Control.Applicative (Alternative (..), optional)
-import Data.Char (isUpper)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -34,6 +33,7 @@ import Lexer (
 import Diagnostics (SourceSpan (..), formatSourceSnippet)
 import Layout (insertLayout)
 import Parser.Monad
+import Parser.Pattern (parseCasePattern)
 
 parseIdentifier :: Parser Identifier
 parseIdentifier = parseNamed <|> parseParenOp
@@ -462,64 +462,6 @@ parseIf env = do
 -- Patterns used by the ordinary `case` form.  A leading identifier is kept as
 -- a constructor candidate; the type checker can reinterpret a nullary name as
 -- a variable when the scrutinee has a primitive type.
-parseCasePattern :: Parser Pattern
-parseCasePattern = do
-    left <- parseCasePatternAtom
-    hasCons <- optional (expectToken TokenColon "':'")
-    case hasCons of
-        Nothing -> pure left
-        Just () -> do
-            right <- parseCasePattern
-            pure (PatCon (Identifier ":") [left, right])
-
-parseCasePatternAtom :: Parser Pattern
-parseCasePatternAtom = parseListPattern <|> do
-    mPt <- peekPosToken
-    case mPt of
-        Just (PosToken _ (TokenNatural n)) -> consumeToken *> pure (PatLit (LitInt (fromInteger n)))
-        Just (PosToken _ (TokenFloat n)) -> consumeToken *> pure (PatLit (LitFloat n))
-        Just (PosToken _ (TokenChar c)) -> consumeToken *> pure (PatLit (LitChar c))
-        Just (PosToken _ (TokenString s)) -> consumeToken *> pure (PatLit (LitString s))
-        Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
-        Just (PosToken _ (TokenIdentifier con)) -> do
-            _ <- consumeToken
-            args <- many parseAtomicCasePattern
-            pure (if constructorName con then PatCon con args else PatVar con)
-        Just (PosToken _ TokenLeftParen) -> do
-            expectToken TokenLeftParen "'('"
-            p <- parseCasePattern
-            expectToken TokenRightParen "')'"
-            pure p
-        _ -> empty
-  where
-    constructorName (Identifier name) = case Text.uncons name of
-        Just (c, _) -> isUpper c
-        Nothing -> False
-
-    parseAtomicCasePattern = do
-        mPt <- peekPosToken
-        case mPt of
-            Just (PosToken _ (TokenIdentifier name)) -> consumeToken *> pure (PatVar name)
-            Just (PosToken _ (TokenNatural n)) -> consumeToken *> pure (PatLit (LitInt (fromInteger n)))
-            Just (PosToken _ (TokenFloat n)) -> consumeToken *> pure (PatLit (LitFloat n))
-            Just (PosToken _ (TokenChar c)) -> consumeToken *> pure (PatLit (LitChar c))
-            Just (PosToken _ (TokenString s)) -> consumeToken *> pure (PatLit (LitString s))
-            Just (PosToken _ (TokenHole Nothing)) -> consumeToken *> pure PatWild
-            Just (PosToken _ TokenLeftParen) -> parseCasePattern
-            _ -> empty
-
-parseListPattern :: Parser Pattern
-parseListPattern = do
-    expectToken TokenLeftBracket "'['"
-    nextTok <- peekToken
-    case nextTok of
-        Just TokenRightBracket -> consumeToken *> pure (PatList [])
-        _ -> do
-            first <- parseCasePattern
-            rest <- many (expectToken TokenComma "','" *> parseCasePattern)
-            expectToken TokenRightBracket "']'"
-            pure (PatList (first : rest))
-
 parseCase :: FixityEnv -> Parser Expression
 parseCase env = do
     expectToken TokenKeywordCase "'case'"
